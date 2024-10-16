@@ -20,7 +20,9 @@ func main() {
 	if err == nil {
 		if ch, err := cs.Start(ctx, logList); err == nil {
 			for b := range ch {
-				fmt.Printf("%s %d\n", b.LogSourceName, len(b.Logs))
+				for _, l := range b.Logs {
+					fmt.Printf("%v\n", l.Body.Cert.Domains)
+				}
 			}
 			return
 		}

@@ -29,7 +29,6 @@ type LogStream struct {
 	*loglist3.Operator
 	*loglist3.Log
 	*client.LogClient
-	*scanner.Fetcher
 }
 
 func (ls *LogStream) String() string {
@@ -55,27 +54,29 @@ func makeHttpClient(cd proxy.ContextDialer) *http.Client {
 func NewLogStream(ctx context.Context, cs *CertStream, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
 	var logClient *client.LogClient
 	if logClient, err = client.New(log.URL, makeHttpClient(cs), jsonclient.Options{UserAgent: userAgent}); err == nil {
-		opts := &scanner.FetcherOptions{
-			BatchSize:     cs.BatchSize,
-			ParallelFetch: cs.Workers,
-			StartIndex:    0,
-			Continuous:    true,
-		}
 		ls = &LogStream{
-			Operator:  op,
-			Log:       log,
-			LogClient: logClient,
-			Fetcher:   scanner.NewFetcher(logClient, opts),
+			CertStream: cs,
+			Operator:   op,
+			Log:        log,
+			LogClient:  logClient,
 		}
 	}
 	return
 }
 
 func (ls *LogStream) Run(ctx context.Context, batchCh chan<- *certificate.Batch) {
-	sth, err := ls.Fetcher.Prepare(ctx)
+	sth, err := ls.LogClient.GetSTH(ctx)
 	if err == nil {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
-			ls.Fetcher.Run(ctx, func(eb scanner.EntryBatch) {
+			opts := &scanner.FetcherOptions{
+				BatchSize:     ls.BatchSize,
+				ParallelFetch: ls.Workers,
+				StartIndex:    int64(sth.TreeSize),
+				EndIndex:      int64(sth.TreeSize),
+				Continuous:    true,
+			}
+			fetcher := scanner.NewFetcher(ls.LogClient, opts)
+			fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				certs := make([]certificate.Log, 0, len(eb.Entries))
 				for n, entry := range eb.Entries {
 					index := eb.Start + int64(n)

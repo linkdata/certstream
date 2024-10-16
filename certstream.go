@@ -29,7 +29,7 @@ func New() *CertStream {
 	return &CertStream{
 		StatusFilter:  defaultStatusFilter,
 		BatchSize:     256,
-		Workers:       8,
+		Workers:       2,
 		ContextDialer: &net.Dialer{},
 	}
 }
