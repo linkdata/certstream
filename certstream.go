@@ -65,11 +65,10 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 		if cs.OperatorFilter == nil || cs.OperatorFilter(op) {
 			for _, log := range op.Logs {
 				if cs.StatusFilter == nil || cs.StatusFilter(log.State.LogStatus()) {
-					var ls *LogStream
-					if ls, err = NewLogStream(ctx, cs, op, log); err == nil {
+					if ls, err2 := NewLogStream(ctx, cs, op, log); err2 == nil {
 						logStreams = append(logStreams, ls)
 					} else {
-						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err))
+						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 					}
 				}
 			}
