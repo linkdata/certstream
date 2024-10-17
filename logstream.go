@@ -63,12 +63,12 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 			opts := &scanner.FetcherOptions{
 				BatchSize:     ls.BatchSize,
 				ParallelFetch: ls.ParallelFetch,
-				StartIndex:    int64(sth.TreeSize),
-				EndIndex:      int64(sth.TreeSize),
+				StartIndex:    int64(sth.TreeSize), //#nosec G115
+				EndIndex:      int64(sth.TreeSize), //#nosec G115
 				Continuous:    true,
 			}
 			fetcher := scanner.NewFetcher(ls.LogClient, opts)
-			fetcher.Run(ctx, func(eb scanner.EntryBatch) {
+			err = fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				for n, entry := range eb.Entries {
 					var le *ct.LogEntry
 					index := eb.Start + int64(n)
