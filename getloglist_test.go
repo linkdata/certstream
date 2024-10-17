@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +22,7 @@ func TestGetAllLogList(t *testing.T) {
 		w.Write([]byte(sampleLogData))
 	}))
 	defer srv.Close()
-	ll, err := GetLogList(context.Background(), &net.Dialer{}, srv.URL)
+	ll, err := GetLogList(context.Background(), nil, srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

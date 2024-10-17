@@ -4,54 +4,46 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
-	"golang.org/x/net/proxy"
 )
 
 //go:generate go run github.com/cparta/makeversion/v2/cmd/mkver@latest -name CertStream -out version.gen.go
 
 type CertStream struct {
-	OperatorFilter func(op *loglist3.Operator) bool // if nil, accepts all operators
-	StatusFilter   func(loglist3.LogStatus) bool    // DefaultStatusFilter only accepts loglist3.LogStatusUsable
-	MakeHttpClient func(cd proxy.ContextDialer) *http.Client
+	MakeHttpClient func(op *loglist3.Operator, log *loglist3.Log) *http.Client // return nil to skip the operator or log
 	BatchSize      int
 	Workers        int
-	proxy.ContextDialer
 }
 
-func DefaultStatusFilter(status loglist3.LogStatus) bool {
-	return status == loglist3.UsableLogStatus
-}
-
-func DefaultMakeHttpClient(cd proxy.ContextDialer) *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			DialContext:           cd.DialContext,
-			TLSHandshakeTimeout:   30 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
-			MaxIdleConnsPerHost:   10,
-			DisableKeepAlives:     false,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+// DefaultMakeHttpClient returns a http.Client for all operators and logs where the log is usable.
+func DefaultMakeHttpClient(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client) {
+	if log.State.LogStatus() == loglist3.UsableLogStatus {
+		httpClient = &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSHandshakeTimeout:   30 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				MaxIdleConnsPerHost:   10,
+				DisableKeepAlives:     false,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+		}
 	}
+	return
 }
 
 // New returns a CertStream with reasonable defaults.
 func New() *CertStream {
 	return &CertStream{
-		StatusFilter:   DefaultStatusFilter,
 		MakeHttpClient: DefaultMakeHttpClient,
 		BatchSize:      256,
 		Workers:        2,
-		ContextDialer:  &net.Dialer{},
 	}
 }
 
@@ -62,14 +54,12 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 
 	var logStreams []*LogStream
 	for _, op := range logList.Operators {
-		if cs.OperatorFilter == nil || cs.OperatorFilter(op) {
-			for _, log := range op.Logs {
-				if cs.StatusFilter == nil || cs.StatusFilter(log.State.LogStatus()) {
-					if ls, err2 := NewLogStream(ctx, cs, op, log); err2 == nil {
-						logStreams = append(logStreams, ls)
-					} else {
-						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
-					}
+		for _, log := range op.Logs {
+			if httpClient := cs.MakeHttpClient(op, log); httpClient != nil {
+				if ls, err2 := NewLogStream(cs, httpClient, op, log); err2 == nil {
+					logStreams = append(logStreams, ls)
+				} else {
+					err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 				}
 			}
 		}

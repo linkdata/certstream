@@ -11,12 +11,11 @@ import (
 )
 
 func main() {
-
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
 	cs := certstream.New()
-	logList, err := certstream.GetLogList(ctx, cs, loglist3.AllLogListURL)
+	logList, err := certstream.GetLogList(ctx, nil, loglist3.AllLogListURL)
 	if err == nil {
 		if ch, err := cs.Start(ctx, logList); err == nil {
 			for le := range ch {

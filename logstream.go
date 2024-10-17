@@ -22,12 +22,12 @@ type LogStream struct {
 }
 
 func (ls *LogStream) String() string {
-	return fmt.Sprintf("%s:%s", ls.Operator.Name, ls.Log.URL)
+	return fmt.Sprintf("LogStream{%q, %q}", ls.Operator.Name, ls.Log.URL)
 }
 
-func NewLogStream(ctx context.Context, cs *CertStream, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
+func NewLogStream(cs *CertStream, httpClient *http.Client, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
 	var logClient *client.LogClient
-	if logClient, err = client.New(log.URL, cs.MakeHttpClient(cs), jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
+	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
 		ls = &LogStream{
 			CertStream: cs,
 			Operator:   op,
