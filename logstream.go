@@ -14,7 +14,6 @@ import (
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
 	"github.com/google/certificate-transparency-go/scanner"
-	"k8s.io/klog/v2"
 )
 
 type LogStream struct {
@@ -49,7 +48,7 @@ func OperatorDomain(urlString string) string {
 
 func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
 	var logClient *client.LogClient
-	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
+	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{}); err == nil {
 		if startIndex < 0 {
 			startIndex = math.MaxInt64
 		}
@@ -63,12 +62,6 @@ func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op 
 		}
 	}
 	return
-}
-
-func (ls *LogStream) maybeLog(err error) {
-	if err != nil {
-		klog.Errorf("%s: %v", ls, err)
-	}
 }
 
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
@@ -86,7 +79,6 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 		if sth, err = fetcher.Prepare(ctx); err != nil {
 			if rspErr, ok := err.(client.RspError); ok {
 				if rspErr.StatusCode == http.StatusTooManyRequests {
-					klog.Infof("retry prepare %q", ls.URL)
 					time.Sleep(backoff)
 					backoff = min(backoff*2, time.Minute)
 					err = nil
@@ -98,7 +90,6 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 	if err == nil {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
 			opts.StartIndex = min(ls.startIndex, opts.EndIndex)
-			klog.Infof("fetching %q from %v", ls.URL, opts.StartIndex)
 			err = fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				for n, entry := range eb.Entries {
 					var le *ct.LogEntry
@@ -117,5 +108,10 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 			})
 		}
 	}
-	ls.maybeLog(err)
+	if err != nil {
+		entryCh <- &LogEntry{
+			LogStream: ls,
+			Err:       err,
+		}
+	}
 }

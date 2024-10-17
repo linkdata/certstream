@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/linkdata/certstream"
-	"k8s.io/klog/v2"
 )
 
 func main() {
@@ -15,9 +14,10 @@ func main() {
 
 	ch, err := certstream.New().Start(ctx, nil)
 	if err != nil {
-		klog.Fatal(err)
-	}
-	for le := range ch {
-		fmt.Printf("%q %v\n", le.OperatorDomain, le.DNSNames())
+		fmt.Println(err)
+	} else {
+		for le := range ch {
+			fmt.Printf("%q %v\n", le.OperatorDomain, le.DNSNames())
+		}
 	}
 }

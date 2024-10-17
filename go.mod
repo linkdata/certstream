@@ -2,10 +2,7 @@ module github.com/linkdata/certstream
 
 go 1.23.2
 
-require (
-	github.com/google/certificate-transparency-go v1.2.1
-	k8s.io/klog/v2 v2.130.1
-)
+require github.com/google/certificate-transparency-go v1.2.1
 
 require (
 	github.com/go-logr/logr v1.4.1 // indirect
@@ -16,4 +13,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
 	google.golang.org/grpc v1.64.0 // indirect
 	google.golang.org/protobuf v1.34.1 // indirect
+	k8s.io/klog/v2 v2.130.1 // indirect
 )

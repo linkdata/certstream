@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
-	"k8s.io/klog/v2"
 )
 
 //go:generate go run github.com/cparta/makeversion/v2/cmd/mkver@latest -name CertStream -out version.gen.go
@@ -21,6 +20,7 @@ type CertStream struct {
 	LogStreamInit LogStreamInitFn
 	BatchSize     int
 	ParallelFetch int
+	Operators     []string // list active OperatorDomain
 }
 
 var DefaultHttpClient = &http.Client{
@@ -64,14 +64,13 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 		logList, err = GetLogList(ctx, DefaultHttpClient, loglist3.AllLogListURL)
 	}
 
-	var operators []string
 	if logList != nil {
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
 				if httpClient, startIndex := cs.LogStreamInit(op, log); httpClient != nil {
 					if ls, err2 := NewLogStream(cs, httpClient, startIndex, op, log); err2 == nil {
-						if !slices.Contains(operators, ls.OperatorDomain) {
-							operators = append(operators, ls.OperatorDomain)
+						if !slices.Contains(cs.Operators, ls.OperatorDomain) {
+							cs.Operators = append(cs.Operators, ls.OperatorDomain)
 						}
 						logStreams = append(logStreams, ls)
 					} else {
@@ -80,10 +79,8 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 				}
 			}
 		}
+		slices.Sort(cs.Operators)
 	}
-
-	slices.Sort(operators)
-	klog.Infof("streaming from %v", operators)
 
 	go func() {
 		var wg sync.WaitGroup
