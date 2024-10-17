@@ -1,1 +1,4 @@
-Adapted from https://github.com/pogzyb/certificate.stream
+# CertStream
+
+Small library wrapping github.com/google/certificate-transparency-go.
+

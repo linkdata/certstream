@@ -19,10 +19,8 @@ func main() {
 	logList, err := certstream.GetLogList(ctx, cs, loglist3.AllLogListURL)
 	if err == nil {
 		if ch, err := cs.Start(ctx, logList); err == nil {
-			for b := range ch {
-				for _, l := range b.Logs {
-					fmt.Printf("%v\n", l.Body.Cert.Domains)
-				}
+			for le := range ch {
+				fmt.Printf("%s %v\n", le, le.DNSNames())
 			}
 			return
 		}
