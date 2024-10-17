@@ -52,19 +52,25 @@ func New() *CertStream {
 	}
 }
 
-// Start returns a channel to read results from.
+// Start returns a channel to read results from. If logList is nil, we fetch the list from loglist3.AllLogListURL using DefaultHttpClient.
 func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
+	var logStreams []*LogStream
 	sendEntryCh := make(chan *LogEntry, cs.ParallelFetch*cs.BatchSize)
 	entryCh = sendEntryCh
 
-	var logStreams []*LogStream
-	for _, op := range logList.Operators {
-		for _, log := range op.Logs {
-			if httpClient, startIndex := cs.LogStreamInit(op, log); httpClient != nil {
-				if ls, err2 := NewLogStream(cs, httpClient, startIndex, op, log); err2 == nil {
-					logStreams = append(logStreams, ls)
-				} else {
-					err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+	if logList == nil {
+		logList, err = GetLogList(ctx, DefaultHttpClient, loglist3.AllLogListURL)
+	}
+
+	if logList != nil {
+		for _, op := range logList.Operators {
+			for _, log := range op.Logs {
+				if httpClient, startIndex := cs.LogStreamInit(op, log); httpClient != nil {
+					if ls, err2 := NewLogStream(cs, httpClient, startIndex, op, log); err2 == nil {
+						logStreams = append(logStreams, ls)
+					} else {
+						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+					}
 				}
 			}
 		}

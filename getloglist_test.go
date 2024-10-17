@@ -17,12 +17,12 @@ var sampleLogData = `{"is_all_logs":true,"version":"1.1.1c","log_list_timestamp"
 	`{"name":"Bob's CT Log Shop","email":["bob@example.com"],"logs":[` +
 	`{"description":"Bob's Dubious Log","log_id":"zbUXm3/BwEb+6jETaj+PAC5hgvr4iW/syLL1tatgSQA=","key":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECyPLhWKYYUgEc+tUXfPQB4wtGS2MNvXrjwFCCnyYJifBtd2Sk7Cu+Js9DNhMTh35FftHaHu6ZrclnNBKwmbbSA==","url":"https://log.bob.io","dns":"dubious-bob.ct.googleapis.com","mmd":86400,"previous_operators":[ {"name":"Alice's Shady Log","end_time":"2014-11-06T12:00:00Z"}],"state":{"retired":{"timestamp":"2016-04-15T00:00:00Z"}},"temporal_interval":{"start_inclusive":"2014-11-07T12:00:00Z","end_exclusive":"2015-03-07T12:00:00Z"}}]}]}`
 
-func TestGetAllLogList(t *testing.T) {
+func TestGetLogList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(sampleLogData))
 	}))
 	defer srv.Close()
-	ll, err := GetLogList(context.Background(), nil, srv.URL)
+	ll, err := GetLogList(context.Background(), DefaultHttpClient, srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
