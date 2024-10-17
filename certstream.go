@@ -16,7 +16,7 @@ import (
 type CertStream struct {
 	MakeHttpClient func(op *loglist3.Operator, log *loglist3.Log) *http.Client // return nil to skip the operator or log
 	BatchSize      int
-	Workers        int
+	ParallelFetch  int
 }
 
 // DefaultMakeHttpClient returns a http.Client for all operators and logs where the log is usable.
@@ -43,13 +43,13 @@ func New() *CertStream {
 	return &CertStream{
 		MakeHttpClient: DefaultMakeHttpClient,
 		BatchSize:      256,
-		Workers:        2,
+		ParallelFetch:  2,
 	}
 }
 
 // Start returns a channel to read results from.
 func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
-	sendEntryCh := make(chan *LogEntry, cs.Workers*cs.BatchSize)
+	sendEntryCh := make(chan *LogEntry, cs.ParallelFetch*cs.BatchSize)
 	entryCh = sendEntryCh
 
 	var logStreams []*LogStream

@@ -62,7 +62,7 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
 			opts := &scanner.FetcherOptions{
 				BatchSize:     ls.BatchSize,
-				ParallelFetch: ls.Workers,
+				ParallelFetch: ls.ParallelFetch,
 				StartIndex:    int64(sth.TreeSize),
 				EndIndex:      int64(sth.TreeSize),
 				Continuous:    true,
