@@ -5,6 +5,7 @@ import (
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/google/certificate-transparency-go/x509"
 )
 
 type LogEntry struct {
@@ -33,18 +34,29 @@ func (le *LogEntry) String() (s string) {
 	return string(b)
 }
 
-func (le *LogEntry) DNSNames() (names []string) {
+// Cert returns the cert from LogEntry.X509Cert or LogEntry.Precert.TBSCertificate, or nil.
+func (le *LogEntry) Cert() (cert *x509.Certificate) {
 	if le.LogEntry != nil {
-		if le.LogEntry.X509Cert != nil {
-			names = le.LogEntry.X509Cert.DNSNames
-		} else if le.LogEntry.Precert != nil {
-			names = le.LogEntry.Precert.TBSCertificate.DNSNames
+		if cert = le.LogEntry.X509Cert; cert == nil {
+			if le.LogEntry.Precert != nil {
+				cert = le.LogEntry.Precert.TBSCertificate
+			}
 		}
 	}
 	return
 }
 
+// DNSNames returns Cert().DNSNames if possible.
+func (le *LogEntry) DNSNames() (names []string) {
+	if cert := le.Cert(); cert != nil {
+		names = cert.DNSNames
+	}
+	return
+}
+
+// Index returns the log index or -1 if none is available.
 func (le *LogEntry) Index() (index int64) {
+	index = -1
 	if le.RawLogEntry != nil {
 		index = le.RawLogEntry.Index
 	}
