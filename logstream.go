@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"time"
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/client"
@@ -50,22 +49,6 @@ func (ls *LogStream) maybeLog(err error) {
 	}
 }
 
-func prepareFetcher(ctx context.Context, fetcher *scanner.Fetcher) (sth *ct.SignedTreeHead, err error) {
-	backoff := time.Second * 2
-	for sth == nil && err == nil {
-		if sth, err = fetcher.Prepare(ctx); err != nil {
-			if rspErr, ok := err.(client.RspError); ok {
-				if rspErr.StatusCode == http.StatusTooManyRequests {
-					time.Sleep(backoff)
-					backoff = min(backoff*2, time.Minute)
-					err = nil
-				}
-			}
-		}
-	}
-	return
-}
-
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 	opts := &scanner.FetcherOptions{
 		BatchSize:     ls.BatchSize,
@@ -73,7 +56,7 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 		Continuous:    true,
 	}
 	fetcher := scanner.NewFetcher(ls.LogClient, opts)
-	sth, err := prepareFetcher(ctx, fetcher)
+	sth, err := fetcher.Prepare(ctx)
 	if err == nil {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
 			opts.StartIndex = min(ls.startIndex, opts.EndIndex)
