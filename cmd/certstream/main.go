@@ -18,6 +18,6 @@ func main() {
 		klog.Fatal(err)
 	}
 	for le := range ch {
-		fmt.Printf("%s %v\n", le, le.DNSNames())
+		fmt.Printf("%q %v\n", le.OperatorDomain, le.DNSNames())
 	}
 }

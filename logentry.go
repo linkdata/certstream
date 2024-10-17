@@ -4,13 +4,11 @@ import (
 	"strconv"
 
 	ct "github.com/google/certificate-transparency-go"
-	"github.com/google/certificate-transparency-go/loglist3"
 	"github.com/google/certificate-transparency-go/x509"
 )
 
 type LogEntry struct {
-	Operator     *loglist3.Operator
-	Log          *loglist3.Log
+	*LogStream
 	Err          error           // error from RawLogEntryFromLeaf or ToLogEntry, or nil
 	RawLogEntry  *ct.RawLogEntry // may be nil in case of error
 	*ct.LogEntry                 // may be nil in case of error

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
+	"k8s.io/klog/v2"
 )
 
 //go:generate go run github.com/cparta/makeversion/v2/cmd/mkver@latest -name CertStream -out version.gen.go
@@ -62,11 +64,15 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 		logList, err = GetLogList(ctx, DefaultHttpClient, loglist3.AllLogListURL)
 	}
 
+	var operators []string
 	if logList != nil {
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
 				if httpClient, startIndex := cs.LogStreamInit(op, log); httpClient != nil {
 					if ls, err2 := NewLogStream(cs, httpClient, startIndex, op, log); err2 == nil {
+						if !slices.Contains(operators, ls.OperatorDomain) {
+							operators = append(operators, ls.OperatorDomain)
+						}
 						logStreams = append(logStreams, ls)
 					} else {
 						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
@@ -75,6 +81,9 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 			}
 		}
 	}
+
+	slices.Sort(operators)
+	klog.Infof("streaming from %v", operators)
 
 	go func() {
 		var wg sync.WaitGroup

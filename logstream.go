@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/client"
@@ -19,25 +22,42 @@ type LogStream struct {
 	*loglist3.Operator
 	*loglist3.Log
 	*client.LogClient
-	startIndex int64
+	OperatorDomain string // e.g. "letsencrypt.org" or "googleapis.com"
+	startIndex     int64
 }
 
 func (ls *LogStream) String() string {
-	return fmt.Sprintf("LogStream{%q, %q}", ls.Operator.Name, ls.Log.URL)
+	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
+}
+
+func makeOperatorDomain(host string) string {
+	if idx := strings.LastIndexByte(host, ':'); idx > 0 {
+		host = host[:idx]
+	}
+	if idx := strings.LastIndexByte(host, '.'); idx > 0 {
+		if idx := strings.LastIndexByte(host[:idx], '.'); idx > 0 {
+			host = host[idx+1:]
+		}
+	}
+	return host
 }
 
 func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
-	var logClient *client.LogClient
-	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
-		if startIndex < 0 {
-			startIndex = math.MaxInt64
-		}
-		ls = &LogStream{
-			CertStream: cs,
-			Operator:   op,
-			Log:        log,
-			LogClient:  logClient,
-			startIndex: startIndex,
+	var u *url.URL
+	if u, err = url.Parse(log.URL); err == nil {
+		var logClient *client.LogClient
+		if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
+			if startIndex < 0 {
+				startIndex = math.MaxInt64
+			}
+			ls = &LogStream{
+				CertStream:     cs,
+				Operator:       op,
+				Log:            log,
+				LogClient:      logClient,
+				OperatorDomain: makeOperatorDomain(u.Host),
+				startIndex:     startIndex,
+			}
 		}
 	}
 	return
@@ -56,10 +76,27 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 		Continuous:    true,
 	}
 	fetcher := scanner.NewFetcher(ls.LogClient, opts)
-	sth, err := fetcher.Prepare(ctx)
+
+	var sth *ct.SignedTreeHead
+	var err error
+	backoff := time.Second * 2
+	for sth == nil && err == nil {
+		if sth, err = fetcher.Prepare(ctx); err != nil {
+			if rspErr, ok := err.(client.RspError); ok {
+				if rspErr.StatusCode == http.StatusTooManyRequests {
+					klog.Infof("retry prepare %q", ls.URL)
+					time.Sleep(backoff)
+					backoff = min(backoff*2, time.Minute)
+					err = nil
+				}
+			}
+		}
+	}
+
 	if err == nil {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
 			opts.StartIndex = min(ls.startIndex, opts.EndIndex)
+			klog.Infof("fetching %q from %v", ls.URL, opts.StartIndex)
 			err = fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				for n, entry := range eb.Entries {
 					var le *ct.LogEntry
@@ -69,8 +106,7 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 						le, leaferr = rle.ToLogEntry()
 					}
 					entryCh <- &LogEntry{
-						Operator:    ls.Operator,
-						Log:         ls.Log,
+						LogStream:   ls,
 						Err:         leaferr,
 						RawLogEntry: rle,
 						LogEntry:    le,
