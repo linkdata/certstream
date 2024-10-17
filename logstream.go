@@ -3,6 +3,7 @@ package certstream
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -29,6 +30,9 @@ func (ls *LogStream) String() string {
 func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
 	var logClient *client.LogClient
 	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
+		if startIndex < 0 {
+			startIndex = math.MaxInt64
+		}
 		ls = &LogStream{
 			CertStream: cs,
 			Operator:   op,
@@ -40,10 +44,16 @@ func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op 
 	return
 }
 
-func (ls *LogStream) getSTH(ctx context.Context) (sth *ct.SignedTreeHead, err error) {
+func (ls *LogStream) maybeLog(err error) {
+	if err != nil {
+		klog.Errorf("%s: %v", ls, err)
+	}
+}
+
+func prepareFetcher(ctx context.Context, fetcher *scanner.Fetcher) (sth *ct.SignedTreeHead, err error) {
 	backoff := time.Second * 2
 	for sth == nil && err == nil {
-		if sth, err = ls.LogClient.GetSTH(ctx); err != nil {
+		if sth, err = fetcher.Prepare(ctx); err != nil {
 			if rspErr, ok := err.(client.RspError); ok {
 				if rspErr.StatusCode == http.StatusTooManyRequests {
 					time.Sleep(backoff)
@@ -56,29 +66,17 @@ func (ls *LogStream) getSTH(ctx context.Context) (sth *ct.SignedTreeHead, err er
 	return
 }
 
-func (ls *LogStream) maybeLog(err error) {
-	if err != nil {
-		klog.Errorf("%s: %v", ls, err)
-	}
-}
-
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
-	sth, err := ls.getSTH(ctx)
+	opts := &scanner.FetcherOptions{
+		BatchSize:     ls.BatchSize,
+		ParallelFetch: ls.ParallelFetch,
+		Continuous:    true,
+	}
+	fetcher := scanner.NewFetcher(ls.LogClient, opts)
+	sth, err := prepareFetcher(ctx, fetcher)
 	if err == nil {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
-			endIndex := int64(sth.TreeSize) //#nosec G115
-			startIndex := min(ls.startIndex, endIndex)
-			if startIndex < 0 {
-				startIndex = endIndex
-			}
-			opts := &scanner.FetcherOptions{
-				BatchSize:     ls.BatchSize,
-				ParallelFetch: ls.ParallelFetch,
-				StartIndex:    startIndex,
-				EndIndex:      endIndex,
-				Continuous:    true,
-			}
-			fetcher := scanner.NewFetcher(ls.LogClient, opts)
+			opts.StartIndex = min(ls.startIndex, opts.EndIndex)
 			err = fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				for n, entry := range eb.Entries {
 					var le *ct.LogEntry

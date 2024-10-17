@@ -17,12 +17,14 @@ func main() {
 	cs := certstream.New()
 	logList, err := certstream.GetLogList(ctx, nil, loglist3.AllLogListURL)
 	if err == nil {
-		if ch, err := cs.Start(ctx, logList); err == nil {
-			for le := range ch {
-				fmt.Printf("%s %v\n", le, le.DNSNames())
-			}
-			return
+		ch, err := cs.Start(ctx, logList)
+		if err != nil {
+			klog.Error(err)
 		}
+		for le := range ch {
+			fmt.Printf("%s %v\n", le, le.DNSNames())
+		}
+		return
 	}
 	klog.Fatal(err)
 }
