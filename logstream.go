@@ -30,34 +30,36 @@ func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
 }
 
-func makeOperatorDomain(host string) string {
-	if idx := strings.LastIndexByte(host, ':'); idx > 0 {
-		host = host[:idx]
-	}
-	if idx := strings.LastIndexByte(host, '.'); idx > 0 {
-		if idx := strings.LastIndexByte(host[:idx], '.'); idx > 0 {
-			host = host[idx+1:]
+// OperatorDomain returns the TLD+1 given an URL.
+func OperatorDomain(urlString string) string {
+	opDom := urlString
+	if u, err := url.Parse(urlString); err == nil {
+		opDom = u.Host
+		if idx := strings.LastIndexByte(opDom, ':'); idx > 0 {
+			opDom = opDom[:idx]
+		}
+		if idx := strings.LastIndexByte(opDom, '.'); idx > 0 {
+			if idx := strings.LastIndexByte(opDom[:idx], '.'); idx > 0 {
+				opDom = opDom[idx+1:]
+			}
 		}
 	}
-	return host
+	return opDom
 }
 
 func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
-	var u *url.URL
-	if u, err = url.Parse(log.URL); err == nil {
-		var logClient *client.LogClient
-		if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
-			if startIndex < 0 {
-				startIndex = math.MaxInt64
-			}
-			ls = &LogStream{
-				CertStream:     cs,
-				Operator:       op,
-				Log:            log,
-				LogClient:      logClient,
-				OperatorDomain: makeOperatorDomain(u.Host),
-				startIndex:     startIndex,
-			}
+	var logClient *client.LogClient
+	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{UserAgent: PkgName + "/" + PkgVersion}); err == nil {
+		if startIndex < 0 {
+			startIndex = math.MaxInt64
+		}
+		ls = &LogStream{
+			CertStream:     cs,
+			Operator:       op,
+			Log:            log,
+			LogClient:      logClient,
+			OperatorDomain: OperatorDomain(log.URL),
+			startIndex:     startIndex,
 		}
 	}
 	return
