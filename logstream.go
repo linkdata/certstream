@@ -64,14 +64,14 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 				for n, entry := range eb.Entries {
 					var le *ct.LogEntry
 					index := eb.Start + int64(n)
-					rle, err := ct.RawLogEntryFromLeaf(index, &entry)
-					if err == nil {
-						le, err = rle.ToLogEntry()
+					rle, leaferr := ct.RawLogEntryFromLeaf(index, &entry)
+					if leaferr == nil {
+						le, leaferr = rle.ToLogEntry()
 					}
 					entryCh <- &LogEntry{
 						Operator:    ls.Operator,
 						Log:         ls.Log,
-						Err:         err,
+						Err:         leaferr,
 						RawLogEntry: rle,
 						LogEntry:    le,
 					}
