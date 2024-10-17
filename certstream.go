@@ -19,21 +19,23 @@ type CertStream struct {
 	ParallelFetch  int
 }
 
-// DefaultMakeHttpClient returns a http.Client for all operators and logs where the log is usable.
+var DefaultHttpClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConnsPerHost:   10,
+		DisableKeepAlives:     false,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
+
+// DefaultMakeHttpClient returns DefaultHttpClient for all operators and logs where the log is usable.
 func DefaultMakeHttpClient(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client) {
 	if log.State.LogStatus() == loglist3.UsableLogStatus {
-		httpClient = &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   30 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
-				MaxIdleConnsPerHost:   10,
-				DisableKeepAlives:     false,
-				MaxIdleConns:          100,
-				IdleConnTimeout:       90 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-			},
-		}
+		httpClient = DefaultHttpClient
 	}
 	return
 }
