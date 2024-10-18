@@ -5,14 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"sync"
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
 )
-
-//go:generate go run github.com/cparta/makeversion/v2/cmd/mkver@latest -name CertStream -out version.gen.go
 
 type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, startIndex int64)
 
@@ -20,7 +17,7 @@ type CertStream struct {
 	LogStreamInit LogStreamInitFn
 	BatchSize     int
 	ParallelFetch int
-	Operators     []string // list active OperatorDomain
+	Operators     map[string]*LogOperator // operators by operator domain
 }
 
 var DefaultHttpClient = &http.Client{
@@ -51,12 +48,25 @@ func New() *CertStream {
 		LogStreamInit: DefaultLogStreamInit,
 		BatchSize:     256,
 		ParallelFetch: 2,
+		Operators:     make(map[string]*LogOperator),
 	}
+}
+
+func (cs *CertStream) CountStreams() (running, stopped int) {
+	for _, logop := range cs.Operators {
+		for _, strm := range logop.Streams {
+			if strm.Stopped() {
+				stopped++
+			} else {
+				running++
+			}
+		}
+	}
+	return
 }
 
 // Start returns a channel to read results from. If logList is nil, we fetch the list from loglist3.AllLogListURL using DefaultHttpClient.
 func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
-	var logStreams []*LogStream
 	sendEntryCh := make(chan *LogEntry, cs.ParallelFetch*cs.BatchSize)
 	entryCh = sendEntryCh
 
@@ -68,29 +78,37 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
 				if httpClient, startIndex := cs.LogStreamInit(op, log); httpClient != nil {
-					if ls, err2 := NewLogStream(cs, httpClient, startIndex, op, log); err2 == nil {
-						if !slices.Contains(cs.Operators, ls.OperatorDomain) {
-							cs.Operators = append(cs.Operators, ls.OperatorDomain)
+					opDom := OperatorDomain(log.URL)
+					logop := cs.Operators[opDom]
+					if logop == nil {
+						logop = &LogOperator{
+							CertStream: cs,
+							Operator:   op,
+							Domain:     opDom,
 						}
-						logStreams = append(logStreams, ls)
+					}
+					if ls, err2 := NewLogStream(logop, httpClient, startIndex, log); err2 == nil {
+						cs.Operators[opDom] = logop
+						logop.Streams = append(logop.Streams, ls)
 					} else {
 						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 					}
 				}
 			}
 		}
-		slices.Sort(cs.Operators)
 	}
 
 	go func() {
 		var wg sync.WaitGroup
 		defer close(sendEntryCh)
-		for _, logStream := range logStreams {
-			wg.Add(1)
-			go func(ls *LogStream) {
-				defer wg.Done()
-				ls.Run(ctx, sendEntryCh)
-			}(logStream)
+		for _, logOp := range cs.Operators {
+			for _, logStream := range logOp.Streams {
+				wg.Add(1)
+				go func(ls *LogStream) {
+					defer wg.Done()
+					ls.Run(ctx, sendEntryCh)
+				}(logStream)
+			}
 		}
 		wg.Wait()
 	}()

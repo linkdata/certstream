@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/url"
-	"strings"
+	"sync/atomic"
 	"time"
 
 	ct "github.com/google/certificate-transparency-go"
@@ -17,54 +16,40 @@ import (
 )
 
 type LogStream struct {
-	*CertStream
-	*loglist3.Operator
+	*LogOperator
 	*loglist3.Log
 	*client.LogClient
-	OperatorDomain string // e.g. "letsencrypt.org" or "googleapis.com"
-	startIndex     int64
+	Err        error // set if Stopped() returns true
+	startIndex int64
+	stopped    int32 // atomic
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
 }
 
-// OperatorDomain returns the TLD+1 given an URL.
-func OperatorDomain(urlString string) string {
-	opDom := urlString
-	if u, err := url.Parse(urlString); err == nil {
-		opDom = u.Host
-		if idx := strings.LastIndexByte(opDom, ':'); idx > 0 {
-			opDom = opDom[:idx]
-		}
-		if idx := strings.LastIndexByte(opDom, '.'); idx > 0 {
-			if idx := strings.LastIndexByte(opDom[:idx], '.'); idx > 0 {
-				opDom = opDom[idx+1:]
-			}
-		}
-	}
-	return opDom
-}
-
-func NewLogStream(cs *CertStream, httpClient *http.Client, startIndex int64, op *loglist3.Operator, log *loglist3.Log) (ls *LogStream, err error) {
+func NewLogStream(logop *LogOperator, httpClient *http.Client, startIndex int64, log *loglist3.Log) (ls *LogStream, err error) {
 	var logClient *client.LogClient
 	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{}); err == nil {
 		if startIndex < 0 {
 			startIndex = math.MaxInt64
 		}
 		ls = &LogStream{
-			CertStream:     cs,
-			Operator:       op,
-			Log:            log,
-			LogClient:      logClient,
-			OperatorDomain: OperatorDomain(log.URL),
-			startIndex:     startIndex,
+			LogOperator: logop,
+			Log:         log,
+			LogClient:   logClient,
+			startIndex:  startIndex,
 		}
 	}
 	return
 }
 
+func (ls *LogStream) Stopped() bool {
+	return atomic.LoadInt32(&ls.stopped) != 0
+}
+
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
+	defer atomic.StoreInt32(&ls.stopped, 1)
 	opts := &scanner.FetcherOptions{
 		BatchSize:     ls.BatchSize,
 		ParallelFetch: ls.ParallelFetch,
@@ -108,10 +93,5 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 			})
 		}
 	}
-	if err != nil {
-		entryCh <- &LogEntry{
-			LogStream: ls,
-			Err:       err,
-		}
-	}
+	ls.Err = err
 }
