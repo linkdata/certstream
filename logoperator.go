@@ -6,5 +6,6 @@ type LogOperator struct {
 	*CertStream
 	*loglist3.Operator
 	Domain  string // e.g. "letsencrypt.org" or "googleapis.com"
+	Count   int64  // atomic; sum of the stream's Count
 	Streams []*LogStream
 }

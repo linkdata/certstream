@@ -20,6 +20,9 @@ type LogStream struct {
 	*loglist3.Log
 	*client.LogClient
 	Err        error // set if Stopped() returns true
+	Count      int64 // atomic; number of certificates sent to the channel
+	Index      int64 // atomic; highest index sent to the channel
+	EndIndex   int64 // atomic: highest index that was available on startup
 	startIndex int64
 	stopped    int32 // atomic
 }
@@ -75,6 +78,7 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 	if err == nil {
 		if err = ls.VerifySTHSignature(*sth); err == nil {
 			opts.StartIndex = min(ls.startIndex, opts.EndIndex)
+			atomic.StoreInt64(&ls.EndIndex, opts.EndIndex)
 			err = fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				for n, entry := range eb.Entries {
 					var le *ct.LogEntry
@@ -88,6 +92,11 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 						Err:         leaferr,
 						RawLogEntry: rle,
 						LogEntry:    le,
+					}
+					atomic.AddInt64(&ls.Count, 1)
+					atomic.AddInt64(&ls.LogOperator.Count, 1)
+					if index > atomic.LoadInt64(&ls.Index) {
+						atomic.StoreInt64(&ls.Index, index)
 					}
 				}
 			})
