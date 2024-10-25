@@ -2,129 +2,117 @@ package certdb
 
 var TablePrefix = "certdb_"
 
-var TableOperator = &TableInfo{
-	Name:      "operator",
-	Columns:   []string{"name", "email"},
-	Conflicts: []string{"name", "email"},
-	HasId:     true,
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-id BIGINT {IdColumnConstraint},
-name VARCHAR(128) NOT NULL,
-email VARCHAR(256) NOT NULL
-);
-{ConflictIndex}
-`,
-}
+var Initialize = `
+CREATE EXTENSION IF NOT EXISTS LTREE;
 
-var TableStream = &TableInfo{
-	Name:      "stream",
-	Columns:   []string{"url", "operator", "lastindex", "json"},
-	Conflicts: []string{"url", "operator"},
-	HasId:     true,
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-id BIGINT {IdColumnConstraint},
-url VARCHAR(128) NOT NULL, -- CT log stream URL
-operator BIGINT NOT NULL, -- operator.id
-lastindex BIGINT NOT NULL, -- last CT log entry index written
+CREATE OR REPLACE FUNCTION array_reverse(anyarray) RETURNS anyarray AS $$
+SELECT ARRAY(
+    SELECT $1[i]
+    FROM generate_subscripts($1,1) AS s(i)
+    ORDER BY i DESC
+);
+$$ LANGUAGE 'sql' STRICT IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION rname_to_name(ltree) RETURNS TEXT AS $$
+SELECT
+	replace(
+		reverse(
+			array_to_string(
+				array_reverse(
+					string_to_array(
+						reverse(ltree2text($1))
+					,'.')
+				),
+			'.')
+		),
+	'STAR', '*');
+$$ LANGUAGE 'sql' STRICT IMMUTABLE;
+`
+
+var TableOperator = `CREATE TABLE IF NOT EXISTS {Prefix}operator (
+id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+name TEXT NOT NULL,
+email TEXT NOT NULL,
+UNIQUE(name, email)
+);
+`
+
+var TableStream = `CREATE TABLE IF NOT EXISTS {Prefix}stream (
+id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+url TEXT NOT NULL UNIQUE,
+operator BIGINT NOT NULL REFERENCES {Prefix}operator (id),
+lastindex BIGINT NOT NULL,
 json TEXT NOT NULL
 );
-{ConflictIndex}
-`,
-}
+`
 
-var TableCert = &TableInfo{
-	Name:      "cert",
-	Columns:   []string{"sig", "notbefore", "notafter", "organization", "province", "country"},
-	Conflicts: []string{"sig"},
-	HasId:     true,
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-id BIGINT {IdColumnConstraint},
-sig VARCHAR(64) NOT NULL,
-notbefore TIMESTAMP NOT NULL,
-notafter TIMESTAMP NOT NULL,
+var TableIdent = `CREATE TABLE IF NOT EXISTS {Prefix}ident (
+id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
 organization TEXT,
 province TEXT,
-country TEXT
+country TEXT,
+UNIQUE (organization, province, country)
 );
-{ConflictIndex}
-CREATE INDEX IF NOT EXISTS {TableName}_notbefore_idx ON {TableName} (notbefore);
-CREATE INDEX IF NOT EXISTS {TableName}_notafter_idx ON {TableName} (notafter);
-`,
-}
+`
 
-var TableEntry = &TableInfo{
-	Name:       "entry",
-	ForeignKey: "stream",
-	Columns:    []string{"stream", "index", "cert"},
-	Conflicts:  []string{"stream", "index"},
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-stream BIGINT NOT NULL, -- stream.id
-index BIGINT NOT NULL, -- CT log entry index
-cert BIGINT NOT NULL, -- cert.id
+var TableCert = `CREATE TABLE IF NOT EXISTS {Prefix}cert (
+id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+commonname TEXT,
+subject BIGINT NOT NULL REFERENCES {Prefix}ident (id),
+issuer BIGINT NOT NULL REFERENCES {Prefix}ident (id),
+notbefore TIMESTAMP NOT NULL,
+notafter TIMESTAMP NOT NULL,
+sha256 BYTEA NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS {Prefix}cert_sha256_idx ON {Prefix}cert (sha256);
+CREATE INDEX IF NOT EXISTS {Prefix}cert_commonname_idx ON {Prefix}cert (commonname);
+CREATE INDEX IF NOT EXISTS {Prefix}cert_notbefore_idx ON {Prefix}cert (notbefore);
+CREATE INDEX IF NOT EXISTS {Prefix}cert_notafter_idx ON {Prefix}cert (notafter);
+`
+
+var TableEntry = `CREATE TABLE IF NOT EXISTS {Prefix}entry (
+stream BIGINT NOT NULL REFERENCES {Prefix}stream (id),
+index BIGINT NOT NULL,
+cert BIGINT NOT NULL REFERENCES {Prefix}cert (id),
 PRIMARY KEY (stream, index)
 );
-{AlterTableForeignKey}
-`,
-}
+`
 
-var TableDNSName = &TableInfo{
-	Name:       "dnsname",
-	ForeignKey: "cert",
-	Columns:    []string{"cert", "name", "rname"},
-	Conflicts:  []string{"cert", "name"},
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-cert BIGINT NOT NULL, -- cert.id
-name VARCHAR(256) NOT NULL, -- e.g. 'foo.example.com'
-rname VARCHAR(256) NOT NULL, -- e.g. 'com.example.foo'
-PRIMARY KEY (cert, name)
+var TableRDNSName = `CREATE TABLE IF NOT EXISTS {Prefix}rdnsname (
+cert BIGINT NOT NULL REFERENCES {Prefix}cert (id),
+rname LTREE NOT NULL,
+PRIMARY KEY (cert, rname)
 );
-CREATE INDEX IF NOT EXISTS {TableName}_name_idx ON {TableName} (name);
-CREATE INDEX IF NOT EXISTS {TableName}_rname_idx ON {TableName} (rname);
-{AlterTableForeignKey}
-`,
-}
+CREATE INDEX IF NOT EXISTS {Prefix}rdnsname_rname_idx ON {Prefix}rdnsname USING GIST (rname);
+`
 
-var TableIPAddress = &TableInfo{
-	Name:       "ipaddress",
-	ForeignKey: "cert",
-	Columns:    []string{"cert", "addr"},
-	Conflicts:  []string{"cert", "addr"},
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-cert BIGINT NOT NULL, -- cert.id
-addr VARCHAR(45) NOT NULL, -- e.g. '192.168.1.1'
+var ViewDNSName = `CREATE OR REPLACE VIEW {Prefix}dnsname AS
+SELECT *,
+	rname_to_name(rname) AS name,
+	(SELECT CONCAT('https://crt.sh/?q=',encode(sha256, 'hex')) FROM {Prefix}cert WHERE {Prefix}cert.id=cert) AS crtsh
+	FROM {Prefix}rdnsname;
+`
+
+var TableIPAddress = `CREATE TABLE IF NOT EXISTS {Prefix}ipaddress (
+cert BIGINT NOT NULL REFERENCES {Prefix}cert (id),
+addr INET NOT NULL,
 PRIMARY KEY (cert, addr)
 );
-CREATE INDEX IF NOT EXISTS {TableName}_addr_idx ON {TableName} (addr);
-{AlterTableForeignKey}
-`,
-}
+CREATE INDEX IF NOT EXISTS {Prefix}ipaddress_addr_idx ON {Prefix}ipaddress (addr);
+`
 
-var TableEmail = &TableInfo{
-	Name:       "email",
-	ForeignKey: "cert",
-	Columns:    []string{"cert", "email"},
-	Conflicts:  []string{"cert", "email"},
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-cert BIGINT NOT NULL, -- cert.id
-email VARCHAR(128) NOT NULL, -- e.g. 'user@example.com'
+var TableEmail = `CREATE TABLE IF NOT EXISTS {Prefix}email (
+cert BIGINT NOT NULL REFERENCES {Prefix}cert (id),
+email TEXT NOT NULL,
 PRIMARY KEY (cert, email)
 );
-CREATE INDEX IF NOT EXISTS {TableName}_email_idx ON {TableName} (email);
-{AlterTableForeignKey}
-`,
-}
+CREATE INDEX IF NOT EXISTS {Prefix}email_email_idx ON {Prefix}email (email);
+`
 
-var TableURI = &TableInfo{
-	Name:       "uri",
-	ForeignKey: "cert",
-	Columns:    []string{"cert", "uri"},
-	Conflicts:  []string{"cert", "uri"},
-	Create: `CREATE TABLE IF NOT EXISTS {TableName} (
-cert BIGINT NOT NULL, -- cert.id
-uri VARCHAR(1024) NOT NULL, -- e.g. 'https://www.example.com/path'
+var TableURI = `CREATE TABLE IF NOT EXISTS {Prefix}uri (
+cert BIGINT NOT NULL REFERENCES {Prefix}cert (id),
+uri TEXT NOT NULL,
 PRIMARY KEY (cert, uri)
 );
-CREATE INDEX IF NOT EXISTS {TableName}_uri_idx ON {TableName} (uri);
-{AlterTableForeignKey}
-`,
-}
+CREATE INDEX IF NOT EXISTS {Prefix}uri_uri_idx ON {Prefix}uri (uri);
+`

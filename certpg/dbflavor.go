@@ -38,26 +38,22 @@ var SigType = map[Dbflavor]string{
 	FlavorMySQL:      "VARBINARY(32)",
 }
 
-func UpsertSQL(flavor Dbflavor, ti *TableInfo) (stmt string) {
+func UpsertSQL(table string, hasid bool, keycols, datacols []string) (stmt string) {
 	var dollarargs []string
 	var assignments []string
-	for i := 0; i < len(ti.Columns); i++ {
+	var columns []string
+	columns = append(columns, keycols...)
+	columns = append(columns, datacols...)
+	for i := 0; i < len(columns); i++ {
 		dollararg := "$" + strconv.Itoa(i+1)
 		dollarargs = append(dollarargs, dollararg)
-		assignments = append(assignments, ti.Columns[i]+"="+dollararg)
+		assignments = append(assignments, columns[i]+"="+dollararg)
 	}
-	stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, TablePrefix+ti.Name, strings.Join(ti.Columns, ","), strings.Join(dollarargs, ","))
-	if len(ti.Conflicts) > 0 {
-		switch flavor {
-		case FlavorPostgreSQL:
-			stmt += fmt.Sprintf(` ON CONFLICT (%s) DO UPDATE SET %s`, strings.Join(ti.Conflicts, ","), strings.Join(assignments, ","))
-		case FlavorMySQL:
-			stmt += ` ON DUPLICATE KEY UPDATE ` + strings.Join(assignments, ",")
-		case FlavorSQLite:
-			stmt += ` ON CONFLICT DO UPDATE SET ` + strings.Join(assignments, ",")
-		}
+	stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, TablePrefix+table, strings.Join(columns, ","), strings.Join(dollarargs, ","))
+	if len(keycols) > 0 {
+		stmt += fmt.Sprintf(` ON CONFLICT (%s) DO UPDATE SET %s`, strings.Join(keycols, ","), strings.Join(assignments, ","))
 	}
-	if ti.HasId {
+	if hasid {
 		stmt += ` RETURNING id`
 	}
 	return
