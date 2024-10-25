@@ -1,4 +1,4 @@
-package certdb
+package certpg
 
 import (
 	"context"
@@ -14,7 +14,7 @@ func createStmt(templ string) (s string) {
 	return
 }
 
-func CreateSchema(ctx context.Context, db *sql.DB, flavor Dbflavor) (err error) {
+func CreateSchema(ctx context.Context, db *sql.DB) (err error) {
 	if _, err = db.ExecContext(ctx, Initialize); err == nil {
 		if _, err = db.ExecContext(ctx, createStmt(TableOperator)); err == nil {
 			if _, err = db.ExecContext(ctx, createStmt(TableStream)); err == nil {

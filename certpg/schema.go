@@ -1,4 +1,4 @@
-package certdb
+package certpg
 
 var TablePrefix = "certdb_"
 

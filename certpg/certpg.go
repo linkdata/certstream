@@ -1,4 +1,4 @@
-package certdb
+package certpg
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/linkdata/certstream"
@@ -28,6 +29,27 @@ type CertPG struct {
 	upsertURI       *sql.Stmt
 }
 
+func UpsertSQL(table string, hasid bool, keycols, datacols []string) (stmt string) {
+	var dollarargs []string
+	var assignments []string
+	var columns []string
+	columns = append(columns, keycols...)
+	columns = append(columns, datacols...)
+	for i := 0; i < len(columns); i++ {
+		dollararg := "$" + strconv.Itoa(i+1)
+		dollarargs = append(dollarargs, dollararg)
+		assignments = append(assignments, columns[i]+"="+dollararg)
+	}
+	stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, TablePrefix+table, strings.Join(columns, ","), strings.Join(dollarargs, ","))
+	if len(keycols) > 0 {
+		stmt += fmt.Sprintf(` ON CONFLICT (%s) DO UPDATE SET %s`, strings.Join(keycols, ","), strings.Join(assignments, ","))
+	}
+	if hasid {
+		stmt += ` RETURNING id`
+	}
+	return
+}
+
 func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, datacols []string) (stmt *sql.Stmt) {
 	var err error
 	txt := UpsertSQL(table, hasid, keycols, datacols)
@@ -40,8 +62,7 @@ func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, d
 
 // New creates a Certdb and creates the needed tables and indices if they don't exist.
 func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
-	flavor := GetDbflavor(ctx, db)
-	if err = CreateSchema(ctx, db, flavor); err == nil {
+	if err = CreateSchema(ctx, db); err == nil {
 		cdb = &CertPG{
 			db:             db,
 			upsertOperator: prepareUpsert(&err, db, "operator", true, []string{"name", "email"}, nil),
