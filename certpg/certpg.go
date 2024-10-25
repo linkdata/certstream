@@ -182,34 +182,36 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 			cert.NotAfter,
 		)
 		var certId int64
-		if err = row.Scan(&certId); err == nil {
-			if _, err = tx.StmtContext(ctx, cdb.upsertEntry).ExecContext(ctx, le.LogStream.Id, le.Index(), certId); err == nil {
-				for _, dnsname := range cert.DNSNames {
-					if parts := strings.Split(strings.ToLower(dnsname), "."); len(parts) > 0 {
-						if parts[0] == "*" {
-							parts[0] = "STAR"
-						}
-						slices.Reverse(parts)
-						if _, err = tx.StmtContext(ctx, cdb.upsertRDNSname).ExecContext(ctx, certId, strings.Join(parts, ".")); err != nil {
-							return
-						}
-					}
+		if err = row.Scan(&certId); err != nil {
+			return
+		}
+		if _, err = tx.StmtContext(ctx, cdb.upsertEntry).ExecContext(ctx, le.LogStream.Id, le.Index(), certId); err != nil {
+			return
+		}
+		for _, dnsname := range cert.DNSNames {
+			if parts := strings.Split(strings.ToLower(dnsname), "."); len(parts) > 0 {
+				if parts[0] == "*" {
+					parts[0] = "STAR"
 				}
-				for _, ip := range cert.IPAddresses {
-					if _, err = tx.StmtContext(ctx, cdb.upsertIPAddress).ExecContext(ctx, certId, ip.String()); err != nil {
-						return
-					}
+				slices.Reverse(parts)
+				if _, err = tx.StmtContext(ctx, cdb.upsertRDNSname).ExecContext(ctx, certId, strings.Join(parts, ".")); err != nil {
+					return
 				}
-				for _, email := range cert.EmailAddresses {
-					if _, err = tx.StmtContext(ctx, cdb.upsertEmail).ExecContext(ctx, certId, email); err != nil {
-						return
-					}
-				}
-				for _, uri := range cert.URIs {
-					if _, err = tx.StmtContext(ctx, cdb.upsertURI).ExecContext(ctx, certId, uri); err != nil {
-						return
-					}
-				}
+			}
+		}
+		for _, ip := range cert.IPAddresses {
+			if _, err = tx.StmtContext(ctx, cdb.upsertIPAddress).ExecContext(ctx, certId, ip.String()); err != nil {
+				return
+			}
+		}
+		for _, email := range cert.EmailAddresses {
+			if _, err = tx.StmtContext(ctx, cdb.upsertEmail).ExecContext(ctx, certId, email); err != nil {
+				return
+			}
+		}
+		for _, uri := range cert.URIs {
+			if _, err = tx.StmtContext(ctx, cdb.upsertURI).ExecContext(ctx, certId, uri); err != nil {
+				return
 			}
 		}
 	}
