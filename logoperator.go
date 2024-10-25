@@ -8,4 +8,5 @@ type LogOperator struct {
 	Domain  string // e.g. "letsencrypt.org" or "googleapis.com"
 	Count   int64  // atomic; sum of the stream's Count
 	Streams []*LogStream
+	Id      int64 // database ID, if available
 }

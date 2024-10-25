@@ -20,7 +20,7 @@ func main() {
 		fmt.Println(err)
 	} else {
 		for le := range ch {
-			fmt.Printf("%q %v\n", le.Domain, le.DNSNames())
+			fmt.Printf("%q %v\n", le.Domain, le.Cert().DNSNames)
 		}
 	}
 }

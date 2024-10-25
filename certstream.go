@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -86,6 +87,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 							Operator:   op,
 							Domain:     opDom,
 						}
+						sort.Strings(op.Email)
 					}
 					if ls, err2 := NewLogStream(logop, httpClient, startIndex, log); err2 == nil {
 						cs.Operators[opDom] = logop

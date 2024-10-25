@@ -12,6 +12,7 @@ type LogEntry struct {
 	Err          error           // error from RawLogEntryFromLeaf or ToLogEntry, or nil
 	RawLogEntry  *ct.RawLogEntry // may be nil in case of error
 	*ct.LogEntry                 // may be nil in case of error
+	Id           int64           // database id, if available
 }
 
 func (le *LogEntry) String() (s string) {
@@ -40,14 +41,6 @@ func (le *LogEntry) Cert() (cert *x509.Certificate) {
 				cert = le.LogEntry.Precert.TBSCertificate
 			}
 		}
-	}
-	return
-}
-
-// DNSNames returns Cert().DNSNames if possible.
-func (le *LogEntry) DNSNames() (names []string) {
-	if cert := le.Cert(); cert != nil {
-		names = cert.DNSNames
 	}
 	return
 }

@@ -23,6 +23,7 @@ type LogStream struct {
 	Count      int64 // atomic; number of certificates sent to the channel
 	Index      int64 // atomic; highest index sent to the channel
 	EndIndex   int64 // atomic: highest index that was available on startup
+	Id         int64 // database ID, if available
 	startIndex int64
 	stopped    int32 // atomic
 }
@@ -49,6 +50,17 @@ func NewLogStream(logop *LogOperator, httpClient *http.Client, startIndex int64,
 
 func (ls *LogStream) Stopped() bool {
 	return atomic.LoadInt32(&ls.stopped) != 0
+}
+
+func shouldIgnore(le *LogEntry) bool {
+	if cert := le.Cert(); cert != nil {
+		for _, dnsname := range cert.DNSNames {
+			if dnsname == "flowers-to-the-world.com" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
@@ -81,22 +93,25 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 			atomic.StoreInt64(&ls.EndIndex, opts.EndIndex)
 			err = fetcher.Run(ctx, func(eb scanner.EntryBatch) {
 				for n, entry := range eb.Entries {
-					var le *ct.LogEntry
+					var ctle *ct.LogEntry
 					index := eb.Start + int64(n)
-					rle, leaferr := ct.RawLogEntryFromLeaf(index, &entry)
+					ctrle, leaferr := ct.RawLogEntryFromLeaf(index, &entry)
 					if leaferr == nil {
-						le, leaferr = rle.ToLogEntry()
+						ctle, leaferr = ctrle.ToLogEntry()
 					}
-					entryCh <- &LogEntry{
+					le := &LogEntry{
 						LogStream:   ls,
 						Err:         leaferr,
-						RawLogEntry: rle,
-						LogEntry:    le,
+						RawLogEntry: ctrle,
+						LogEntry:    ctle,
 					}
-					atomic.AddInt64(&ls.Count, 1)
-					atomic.AddInt64(&ls.LogOperator.Count, 1)
-					if index > atomic.LoadInt64(&ls.Index) {
-						atomic.StoreInt64(&ls.Index, index)
+					if !shouldIgnore(le) {
+						entryCh <- le
+						atomic.AddInt64(&ls.Count, 1)
+						atomic.AddInt64(&ls.LogOperator.Count, 1)
+						if index > atomic.LoadInt64(&ls.Index) {
+							atomic.StoreInt64(&ls.Index, index)
+						}
 					}
 				}
 			})
