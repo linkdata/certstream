@@ -41,7 +41,7 @@ var TableStream = `CREATE TABLE IF NOT EXISTS {Prefix}stream (
 id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
 url TEXT NOT NULL UNIQUE,
 operator BIGINT NOT NULL REFERENCES {Prefix}operator (id),
-lastindex BIGINT NOT NULL,
+seenindex BIGINT NOT NULL,
 json TEXT NOT NULL
 );
 `

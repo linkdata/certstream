@@ -20,6 +20,7 @@ type CertPG struct {
 	db              *sql.DB
 	upsertOperator  *sql.Stmt
 	upsertStream    *sql.Stmt
+	updateSeenIndex *sql.Stmt
 	upsertIdent     *sql.Stmt
 	upsertCert      *sql.Stmt
 	upsertEntry     *sql.Stmt
@@ -54,8 +55,16 @@ func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, d
 	var err error
 	txt := UpsertSQL(table, hasid, keycols, datacols)
 	if stmt, err = db.Prepare(txt); err != nil {
-		fmt.Println(txt, err)
-		*perr = errors.Join(*perr, err)
+		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
+	}
+	return
+}
+
+func prepareUpdateSeenIndex(perr *error, db *sql.DB) (stmt *sql.Stmt) {
+	var err error
+	txt := fmt.Sprintf(`UPDATE %sstream SET seenindex=$2 WHERE id=$1 AND seenindex<$2;`, TablePrefix)
+	if stmt, err = db.Prepare(txt); err != nil {
+		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
 	}
 	return
 }
@@ -64,10 +73,11 @@ func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, d
 func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
 	if err = CreateSchema(ctx, db); err == nil {
 		cdb = &CertPG{
-			db:             db,
-			upsertOperator: prepareUpsert(&err, db, "operator", true, []string{"name", "email"}, nil),
-			upsertStream:   prepareUpsert(&err, db, "stream", true, []string{"url"}, []string{"operator", "lastindex", "json"}),
-			upsertIdent:    prepareUpsert(&err, db, "ident", true, []string{"organization", "province", "country"}, nil),
+			db:              db,
+			upsertOperator:  prepareUpsert(&err, db, "operator", true, []string{"name", "email"}, nil),
+			upsertStream:    prepareUpsert(&err, db, "stream", true, []string{"url"}, []string{"operator", "seenindex", "json"}),
+			updateSeenIndex: prepareUpdateSeenIndex(&err, db),
+			upsertIdent:     prepareUpsert(&err, db, "ident", true, []string{"organization", "province", "country"}, nil),
 			upsertCert: prepareUpsert(&err, db, "cert", true, []string{"sha256"},
 				[]string{
 					"commonname",
@@ -104,6 +114,7 @@ func closeAll(closers ...io.Closer) (err error) {
 func (cdb *CertPG) Close() error {
 	return closeAll(
 		cdb.upsertOperator,
+		cdb.updateSeenIndex,
 		cdb.upsertStream,
 		cdb.upsertIdent,
 		cdb.upsertCert,
@@ -136,82 +147,104 @@ func (cdb *CertPG) Stream(ctx context.Context, ls *certstream.LogStream) (err er
 	return
 }
 
+func (cdb *CertPG) SetSeenIndex(ctx context.Context, ls *certstream.LogStream, seenIndex int64) (err error) {
+	_, err = cdb.updateSeenIndex.ExecContext(ctx, ls.Id, seenIndex)
+	return
+}
+
+func (cdb *CertPG) GetSeenIndex(ctx context.Context, streamUrl string) (seenIndex int64, err error) {
+	row := cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT seenindex FROM %sstream WHERE url='%s';", TablePrefix, streamUrl))
+	if err = row.Scan(&seenIndex); errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return
+}
+
 func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err error) {
-	cert := le.Cert()
-	var tx *sql.Tx
-	if tx, err = cdb.db.Begin(); err == nil {
-		defer func() {
-			if err != nil {
-				tx.Rollback()
-			} else {
-				tx.Commit()
-			}
-		}()
-		var sig []byte
-		if sig = cert.Signature; len(sig) != 16 {
-			shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
-			sig = shasig[:]
-		}
+	if cert := le.Cert(); cert != nil {
+		var tx *sql.Tx
+		if tx, err = cdb.db.Begin(); err == nil {
+			index := le.Index()
 
-		row := tx.StmtContext(ctx, cdb.upsertIdent).QueryRowContext(ctx,
-			strings.Join(cert.Issuer.Organization, ","),
-			strings.Join(cert.Issuer.Province, ","),
-			strings.Join(cert.Issuer.Country, ","),
-		)
-		var issuerId int64
-		if err = row.Scan(&issuerId); err != nil {
-			return
-		}
-
-		row = tx.StmtContext(ctx, cdb.upsertIdent).QueryRowContext(ctx,
-			strings.Join(cert.Subject.Organization, ","),
-			strings.Join(cert.Subject.Province, ","),
-			strings.Join(cert.Subject.Country, ","),
-		)
-		var subjectId int64
-		if err = row.Scan(&subjectId); err != nil {
-			return
-		}
-
-		row = tx.StmtContext(ctx, cdb.upsertCert).QueryRowContext(ctx,
-			sig,
-			cert.Subject.CommonName,
-			subjectId,
-			issuerId,
-			cert.NotBefore,
-			cert.NotAfter,
-		)
-		var certId int64
-		if err = row.Scan(&certId); err != nil {
-			return
-		}
-		if _, err = tx.StmtContext(ctx, cdb.upsertEntry).ExecContext(ctx, le.LogStream.Id, le.Index(), certId); err != nil {
-			return
-		}
-		for _, dnsname := range cert.DNSNames {
-			if parts := strings.Split(strings.ToLower(dnsname), "."); len(parts) > 0 {
-				if parts[0] == "*" {
-					parts[0] = "STAR"
+			defer func() {
+				if err != nil {
+					tx.Rollback()
+				} else {
+					tx.Commit()
 				}
-				slices.Reverse(parts)
-				if _, err = tx.StmtContext(ctx, cdb.upsertRDNSname).ExecContext(ctx, certId, strings.Join(parts, ".")); err != nil {
+			}()
+
+			var sig []byte
+			if sig = cert.Signature; len(sig) != 16 {
+				if le.RawLogEntry != nil {
+					shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
+					sig = shasig[:]
+				} else {
+					shasig := sha256.Sum256(cert.RawTBSCertificate)
+					sig = shasig[:]
+				}
+			}
+
+			row := tx.StmtContext(ctx, cdb.upsertIdent).QueryRowContext(ctx,
+				strings.Join(cert.Issuer.Organization, ","),
+				strings.Join(cert.Issuer.Province, ","),
+				strings.Join(cert.Issuer.Country, ","),
+			)
+			var issuerId int64
+			if err = row.Scan(&issuerId); err != nil {
+				return
+			}
+
+			row = tx.StmtContext(ctx, cdb.upsertIdent).QueryRowContext(ctx,
+				strings.Join(cert.Subject.Organization, ","),
+				strings.Join(cert.Subject.Province, ","),
+				strings.Join(cert.Subject.Country, ","),
+			)
+			var subjectId int64
+			if err = row.Scan(&subjectId); err != nil {
+				return
+			}
+
+			row = tx.StmtContext(ctx, cdb.upsertCert).QueryRowContext(ctx,
+				sig,
+				cert.Subject.CommonName,
+				subjectId,
+				issuerId,
+				cert.NotBefore,
+				cert.NotAfter,
+			)
+			var certId int64
+			if err = row.Scan(&certId); err != nil {
+				return
+			}
+			if _, err = tx.StmtContext(ctx, cdb.upsertEntry).ExecContext(ctx, le.LogStream.Id, index, certId); err != nil {
+				return
+			}
+			for _, dnsname := range cert.DNSNames {
+				if parts := strings.Split(strings.ToLower(dnsname), "."); len(parts) > 0 {
+					if parts[0] == "*" {
+						parts[0] = "STAR"
+					}
+					slices.Reverse(parts)
+					if _, err = tx.StmtContext(ctx, cdb.upsertRDNSname).ExecContext(ctx, certId, strings.Join(parts, ".")); err != nil {
+						return
+					}
+				}
+			}
+			for _, ip := range cert.IPAddresses {
+				if _, err = tx.StmtContext(ctx, cdb.upsertIPAddress).ExecContext(ctx, certId, ip.String()); err != nil {
 					return
 				}
 			}
-		}
-		for _, ip := range cert.IPAddresses {
-			if _, err = tx.StmtContext(ctx, cdb.upsertIPAddress).ExecContext(ctx, certId, ip.String()); err != nil {
-				return
+			for _, email := range cert.EmailAddresses {
+				if _, err = tx.StmtContext(ctx, cdb.upsertEmail).ExecContext(ctx, certId, email); err != nil {
+					return
+				}
 			}
-		}
-		for _, email := range cert.EmailAddresses {
-			if _, err = tx.StmtContext(ctx, cdb.upsertEmail).ExecContext(ctx, certId, email); err != nil {
-				return
-			}
-		}
-		for _, uri := range cert.URIs {
-			if _, err = tx.StmtContext(ctx, cdb.upsertURI).ExecContext(ctx, certId, uri); err != nil {
-				return
+			for _, uri := range cert.URIs {
+				if _, err = tx.StmtContext(ctx, cdb.upsertURI).ExecContext(ctx, certId, uri); err != nil {
+					return
+				}
 			}
 		}
 	}
