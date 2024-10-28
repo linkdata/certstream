@@ -12,7 +12,7 @@ import (
 	"github.com/google/certificate-transparency-go/loglist3"
 )
 
-type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, startIndex int64)
+type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, minIndex, maxIndex int64)
 
 type CertStream struct {
 	LogStreamInit LogStreamInitFn
@@ -34,11 +34,12 @@ var DefaultHttpClient = &http.Client{
 	},
 }
 
-// DefaultLogStreamInit returns (DefaultHttpClient, -1) for all operators and logs where the log is usable.
-func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, startIndex int64) {
+// DefaultLogStreamInit returns (DefaultHttpClient, -1, -1) for all operators and logs where the log is usable.
+func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, minIndex, maxIndex int64) {
 	if log.State.LogStatus() == loglist3.UsableLogStatus {
 		httpClient = DefaultHttpClient
-		startIndex = -1
+		minIndex = -1
+		maxIndex = -1
 	}
 	return
 }
@@ -47,7 +48,7 @@ func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient 
 func New() *CertStream {
 	return &CertStream{
 		LogStreamInit: DefaultLogStreamInit,
-		BatchSize:     256,
+		BatchSize:     512,
 		ParallelFetch: 2,
 		Operators:     make(map[string]*LogOperator),
 	}
@@ -78,7 +79,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 	if logList != nil {
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
-				if httpClient, startIndex := cs.LogStreamInit(op, log); httpClient != nil {
+				if httpClient, minIndex, maxIndex := cs.LogStreamInit(op, log); httpClient != nil {
 					opDom := OperatorDomain(log.URL)
 					logop := cs.Operators[opDom]
 					if logop == nil {
@@ -89,7 +90,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 						}
 						sort.Strings(op.Email)
 					}
-					if ls, err2 := NewLogStream(logop, httpClient, startIndex, log); err2 == nil {
+					if ls, err2 := NewLogStream(logop, httpClient, minIndex, maxIndex, log); err2 == nil {
 						cs.Operators[opDom] = logop
 						logop.Streams = append(logop.Streams, ls)
 					} else {
@@ -108,8 +109,15 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 				wg.Add(1)
 				go func(ls *LogStream) {
 					defer wg.Done()
-					ls.Run(ctx, sendEntryCh)
+					ls.RunForward(ctx, sendEntryCh)
 				}(logStream)
+				if logStream.minIndex > 0 {
+					wg.Add(1)
+					go func(ls *LogStream) {
+						defer wg.Done()
+						ls.RunBackward(ctx, sendEntryCh)
+					}(logStream)
+				}
 			}
 		}
 		wg.Wait()

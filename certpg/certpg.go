@@ -20,7 +20,6 @@ type CertPG struct {
 	db              *sql.DB
 	upsertOperator  *sql.Stmt
 	upsertStream    *sql.Stmt
-	updateSeenIndex *sql.Stmt
 	upsertIdent     *sql.Stmt
 	upsertCert      *sql.Stmt
 	upsertEntry     *sql.Stmt
@@ -60,24 +59,14 @@ func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, d
 	return
 }
 
-func prepareUpdateSeenIndex(perr *error, db *sql.DB) (stmt *sql.Stmt) {
-	var err error
-	txt := fmt.Sprintf(`UPDATE %sstream SET seenindex=$2 WHERE id=$1 AND seenindex<$2;`, TablePrefix)
-	if stmt, err = db.Prepare(txt); err != nil {
-		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
-	}
-	return
-}
-
 // New creates a Certdb and creates the needed tables and indices if they don't exist.
 func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
 	if err = CreateSchema(ctx, db); err == nil {
 		cdb = &CertPG{
-			db:              db,
-			upsertOperator:  prepareUpsert(&err, db, "operator", true, []string{"name", "email"}, nil),
-			upsertStream:    prepareUpsert(&err, db, "stream", true, []string{"url"}, []string{"operator", "seenindex", "json"}),
-			updateSeenIndex: prepareUpdateSeenIndex(&err, db),
-			upsertIdent:     prepareUpsert(&err, db, "ident", true, []string{"organization", "province", "country"}, nil),
+			db:             db,
+			upsertOperator: prepareUpsert(&err, db, "operator", true, []string{"name", "email"}, nil),
+			upsertStream:   prepareUpsert(&err, db, "stream", true, []string{"url"}, []string{"operator", "json"}),
+			upsertIdent:    prepareUpsert(&err, db, "ident", true, []string{"organization", "province", "country"}, nil),
 			upsertCert: prepareUpsert(&err, db, "cert", true, []string{"sha256"},
 				[]string{
 					"commonname",
@@ -87,7 +76,7 @@ func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
 					"notafter",
 				},
 			),
-			upsertEntry:     prepareUpsert(&err, db, "entry", false, []string{"stream", "index"}, []string{"cert"}),
+			upsertEntry:     prepareUpsert(&err, db, "entry", false, []string{"stream", "index"}, []string{"cert", "seen"}),
 			upsertRDNSname:  prepareUpsert(&err, db, "rdnsname", false, []string{"cert", "rname"}, nil),
 			upsertIPAddress: prepareUpsert(&err, db, "ipaddress", false, []string{"cert", "addr"}, nil),
 			upsertEmail:     prepareUpsert(&err, db, "email", false, []string{"cert", "email"}, nil),
@@ -114,7 +103,6 @@ func closeAll(closers ...io.Closer) (err error) {
 func (cdb *CertPG) Close() error {
 	return closeAll(
 		cdb.upsertOperator,
-		cdb.updateSeenIndex,
 		cdb.upsertStream,
 		cdb.upsertIdent,
 		cdb.upsertCert,
@@ -141,20 +129,19 @@ func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (er
 func (cdb *CertPG) Stream(ctx context.Context, ls *certstream.LogStream) (err error) {
 	var b []byte
 	if b, err = json.Marshal(ls.Log); err == nil {
-		row := cdb.upsertStream.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, ls.Index, string(b))
+		row := cdb.upsertStream.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, ls.LastIndex, string(b))
 		err = row.Scan(&ls.Id)
 	}
 	return
 }
 
-func (cdb *CertPG) SetSeenIndex(ctx context.Context, ls *certstream.LogStream, seenIndex int64) (err error) {
-	_, err = cdb.updateSeenIndex.ExecContext(ctx, ls.Id, seenIndex)
-	return
-}
-
-func (cdb *CertPG) GetSeenIndex(ctx context.Context, streamUrl string) (seenIndex int64, err error) {
-	row := cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT seenindex FROM %sstream WHERE url='%s';", TablePrefix, streamUrl))
-	if err = row.Scan(&seenIndex); errors.Is(err, sql.ErrNoRows) {
+func (cdb *CertPG) GetMinMaxIndexes(ctx context.Context, streamUrl string) (minIndex, maxIndex int64, err error) {
+	streamUrl = strings.ReplaceAll(streamUrl, "'", "''")
+	row := cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT MIN(index), MAX(index) FROM %sentry WHERE stream=(SELECT id FROM %sstream WHERE url='%s');",
+		TablePrefix, TablePrefix, streamUrl))
+	if err = row.Scan(&minIndex, &maxIndex); errors.Is(err, sql.ErrNoRows) {
+		minIndex = -1
+		maxIndex = -1
 		err = nil
 	}
 	return

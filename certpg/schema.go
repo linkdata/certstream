@@ -6,31 +6,38 @@ var Initialize = `
 CREATE EXTENSION IF NOT EXISTS LTREE;
 
 CREATE OR REPLACE FUNCTION array_reverse(anyarray) RETURNS anyarray AS $$
-SELECT ARRAY(
-    SELECT $1[i]
-    FROM generate_subscripts($1,1) AS s(i)
-    ORDER BY i DESC
-);
+SELECT
+	ARRAY(
+		SELECT $1[i]
+		FROM generate_subscripts($1,1) AS s(i)
+		ORDER BY i DESC
+	)
+;
 $$ LANGUAGE 'sql' STRICT IMMUTABLE;
 
-CREATE OR REPLACE FUNCTION rname_to_name(ltree) RETURNS TEXT AS $$
+CREATE OR REPLACE FUNCTION ltree_reverse(ltree) RETURNS ltree AS $$
 SELECT
-	replace(
+	text2ltree(
 		reverse(
 			array_to_string(
 				array_reverse(
 					string_to_array(
 						reverse(ltree2text($1))
-					,'.')
-				),
-			'.')
-		),
-	'STAR', '*');
+					, '.')
+				)
+			, '.')
+		)
+	)
+;
+$$ LANGUAGE 'sql' STRICT IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION rname_to_name(ltree) RETURNS text AS $$
+SELECT replace(ltree2text(ltree_reverse($1)), 'STAR', '*');
 $$ LANGUAGE 'sql' STRICT IMMUTABLE;
 `
 
 var TableOperator = `CREATE TABLE IF NOT EXISTS {Prefix}operator (
-id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
 name TEXT NOT NULL,
 email TEXT NOT NULL,
 UNIQUE(name, email)
@@ -38,30 +45,29 @@ UNIQUE(name, email)
 `
 
 var TableStream = `CREATE TABLE IF NOT EXISTS {Prefix}stream (
-id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
 url TEXT NOT NULL UNIQUE,
-operator BIGINT NOT NULL REFERENCES {Prefix}operator (id),
-seenindex BIGINT NOT NULL,
+operator INTEGER NOT NULL REFERENCES {Prefix}operator (id),
 json TEXT NOT NULL
 );
 `
 
 var TableIdent = `CREATE TABLE IF NOT EXISTS {Prefix}ident (
-id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
 organization TEXT,
 province TEXT,
-country TEXT,
-UNIQUE (organization, province, country)
+country TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS {Prefix}ident_full_idx ON {Prefix}ident (organization, province, country);
 `
 
 var TableCert = `CREATE TABLE IF NOT EXISTS {Prefix}cert (
 id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-commonname TEXT,
-subject BIGINT NOT NULL REFERENCES {Prefix}ident (id),
-issuer BIGINT NOT NULL REFERENCES {Prefix}ident (id),
 notbefore TIMESTAMP NOT NULL,
 notafter TIMESTAMP NOT NULL,
+commonname TEXT,
+subject INTEGER NOT NULL REFERENCES {Prefix}ident (id),
+issuer INTEGER NOT NULL REFERENCES {Prefix}ident (id),
 sha256 BYTEA NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS {Prefix}cert_sha256_idx ON {Prefix}cert (sha256);
@@ -71,9 +77,9 @@ CREATE INDEX IF NOT EXISTS {Prefix}cert_notafter_idx ON {Prefix}cert (notafter);
 `
 
 var TableEntry = `CREATE TABLE IF NOT EXISTS {Prefix}entry (
-stream BIGINT NOT NULL REFERENCES {Prefix}stream (id),
 index BIGINT NOT NULL,
 cert BIGINT NOT NULL REFERENCES {Prefix}cert (id),
+stream INTEGER NOT NULL REFERENCES {Prefix}stream (id),
 PRIMARY KEY (stream, index)
 );
 `
@@ -87,7 +93,7 @@ CREATE INDEX IF NOT EXISTS {Prefix}rdnsname_rname_idx ON {Prefix}rdnsname USING 
 `
 
 var ViewDNSName = `CREATE OR REPLACE VIEW {Prefix}dnsname AS
-SELECT *,
+SELECT cert, rname,
 	rname_to_name(rname) AS name,
 	(SELECT CONCAT('https://crt.sh/?q=',encode(sha256, 'hex')) FROM {Prefix}cert WHERE {Prefix}cert.id=cert) AS crtsh
 	FROM {Prefix}rdnsname;
