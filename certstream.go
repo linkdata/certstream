@@ -20,8 +20,6 @@ type Logger interface {
 
 type CertStream struct {
 	LogStreamInit LogStreamInitFn
-	BatchSize     int
-	ParallelFetch int
 	Operators     map[string]*LogOperator // operators by operator domain
 	Logger
 }
@@ -53,8 +51,6 @@ func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient 
 func New() *CertStream {
 	return &CertStream{
 		LogStreamInit: DefaultLogStreamInit,
-		BatchSize:     512,
-		ParallelFetch: 2,
 		Operators:     make(map[string]*LogOperator),
 	}
 }
@@ -80,7 +76,7 @@ func (cs *CertStream) CountStreams() (running, stopped int) {
 
 // Start returns a channel to read results from. If logList is nil, we fetch the list from loglist3.AllLogListURL using DefaultHttpClient.
 func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
-	sendEntryCh := make(chan *LogEntry, cs.ParallelFetch*cs.BatchSize)
+	sendEntryCh := make(chan *LogEntry, 1024)
 	entryCh = sendEntryCh
 
 	if logList == nil {

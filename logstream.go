@@ -60,8 +60,8 @@ func (ls *LogStream) Stopped() bool {
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 	defer atomic.StoreInt32(&ls.stopped, 1)
 	opts := &scanner.FetcherOptions{
-		BatchSize:     ls.BatchSize,
-		ParallelFetch: ls.ParallelFetch,
+		BatchSize:     1024,
+		ParallelFetch: 1,
 		Continuous:    true,
 	}
 	fetcher := scanner.NewFetcher(ls.LogClient, opts)
