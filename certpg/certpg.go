@@ -142,6 +142,7 @@ func (cdb *CertPG) GetMinMaxIndexes(ctx context.Context, streamUrl string) (minI
 	row := cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT id FROM %sstream WHERE url='%s';", TablePrefix, streamUrl))
 	var streamId int32
 	if err = row.Scan(&streamId); err == nil {
+		row = cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT MIN(index), MAX(index) FROM %sentry WHERE stream=%v;", TablePrefix, streamId))
 		if err = row.Scan(&minIndex, &maxIndex); errors.Is(err, sql.ErrNoRows) {
 			err = nil
 		}
