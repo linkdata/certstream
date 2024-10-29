@@ -2,11 +2,13 @@ module github.com/linkdata/certstream
 
 go 1.23.2
 
-require github.com/google/certificate-transparency-go v1.2.1
+require (
+	github.com/google/certificate-transparency-go v1.2.1
+	github.com/google/trillian v1.6.0
+)
 
 require (
 	github.com/go-logr/logr v1.4.1 // indirect
-	github.com/google/trillian v1.6.0 // indirect
 	golang.org/x/crypto v0.27.0 // indirect
 	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.25.0 // indirect

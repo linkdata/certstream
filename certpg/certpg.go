@@ -69,14 +69,14 @@ func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
 			upsertIdent:    prepareUpsert(&err, db, "ident", true, []string{"organization", "province", "country"}, nil),
 			upsertCert: prepareUpsert(&err, db, "cert", true, []string{"sha256"},
 				[]string{
+					"notbefore",
+					"notafter",
 					"commonname",
 					"subject",
 					"issuer",
-					"notbefore",
-					"notafter",
 				},
 			),
-			upsertEntry:     prepareUpsert(&err, db, "entry", false, []string{"stream", "index"}, []string{"cert", "seen"}),
+			upsertEntry:     prepareUpsert(&err, db, "entry", false, []string{"stream", "index"}, []string{"cert"}),
 			upsertRDNSname:  prepareUpsert(&err, db, "rdnsname", false, []string{"cert", "rname"}, nil),
 			upsertIPAddress: prepareUpsert(&err, db, "ipaddress", false, []string{"cert", "addr"}, nil),
 			upsertEmail:     prepareUpsert(&err, db, "email", false, []string{"cert", "email"}, nil),
@@ -129,20 +129,22 @@ func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (er
 func (cdb *CertPG) Stream(ctx context.Context, ls *certstream.LogStream) (err error) {
 	var b []byte
 	if b, err = json.Marshal(ls.Log); err == nil {
-		row := cdb.upsertStream.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, ls.LastIndex, string(b))
+		row := cdb.upsertStream.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, string(b))
 		err = row.Scan(&ls.Id)
 	}
 	return
 }
 
 func (cdb *CertPG) GetMinMaxIndexes(ctx context.Context, streamUrl string) (minIndex, maxIndex int64, err error) {
+	minIndex = -1
+	maxIndex = -1
 	streamUrl = strings.ReplaceAll(streamUrl, "'", "''")
-	row := cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT MIN(index), MAX(index) FROM %sentry WHERE stream=(SELECT id FROM %sstream WHERE url='%s');",
-		TablePrefix, TablePrefix, streamUrl))
-	if err = row.Scan(&minIndex, &maxIndex); errors.Is(err, sql.ErrNoRows) {
-		minIndex = -1
-		maxIndex = -1
-		err = nil
+	row := cdb.db.QueryRowContext(ctx, fmt.Sprintf("SELECT id FROM %sstream WHERE url='%s';", TablePrefix, streamUrl))
+	var streamId int32
+	if err = row.Scan(&streamId); err == nil {
+		if err = row.Scan(&minIndex, &maxIndex); errors.Is(err, sql.ErrNoRows) {
+			err = nil
+		}
 	}
 	return
 }
@@ -194,11 +196,11 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 
 			row = tx.StmtContext(ctx, cdb.upsertCert).QueryRowContext(ctx,
 				sig,
+				cert.NotBefore,
+				cert.NotAfter,
 				cert.Subject.CommonName,
 				subjectId,
 				issuerId,
-				cert.NotBefore,
-				cert.NotAfter,
 			)
 			var certId int64
 			if err = row.Scan(&certId); err != nil {

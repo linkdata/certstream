@@ -14,11 +14,16 @@ import (
 
 type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, minIndex, maxIndex int64)
 
+type Logger interface {
+	Error(msg string, args ...any)
+}
+
 type CertStream struct {
 	LogStreamInit LogStreamInitFn
 	BatchSize     int
 	ParallelFetch int
 	Operators     map[string]*LogOperator // operators by operator domain
+	Logger
 }
 
 var DefaultHttpClient = &http.Client{
@@ -51,6 +56,12 @@ func New() *CertStream {
 		BatchSize:     512,
 		ParallelFetch: 2,
 		Operators:     make(map[string]*LogOperator),
+	}
+}
+
+func (cs *CertStream) LogError(err error, msg string, args ...any) {
+	if err != nil && cs.Logger != nil {
+		cs.Logger.Error(msg, append(args, "err", err)...)
 	}
 }
 
@@ -109,15 +120,8 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 				wg.Add(1)
 				go func(ls *LogStream) {
 					defer wg.Done()
-					ls.RunForward(ctx, sendEntryCh)
+					ls.Run(ctx, sendEntryCh)
 				}(logStream)
-				if logStream.minIndex > 0 {
-					wg.Add(1)
-					go func(ls *LogStream) {
-						defer wg.Done()
-						ls.RunBackward(ctx, sendEntryCh)
-					}(logStream)
-				}
 			}
 		}
 		wg.Wait()
