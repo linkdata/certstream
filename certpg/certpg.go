@@ -126,9 +126,10 @@ func (cdb *CertPG) GetMinMaxIndexes(ctx context.Context, streamUrl string) (minI
 	var streamId int32
 	if err = row.Scan(&streamId); err == nil {
 		row = cdb.DB.QueryRowContext(ctx, fmt.Sprintf("SELECT MIN(logindex), MAX(logindex) FROM %sentry WHERE stream=%v;", TablePrefix, streamId))
-		if err = row.Scan(&minIndex, &maxIndex); errors.Is(err, sql.ErrNoRows) {
-			err = nil
-		}
+		err = row.Scan(&minIndex, &maxIndex)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
 	}
 	return
 }
