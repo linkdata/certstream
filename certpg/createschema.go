@@ -8,7 +8,7 @@ import (
 
 func createStmt(templ string) (s string) {
 	replacer := strings.NewReplacer(
-		"{Prefix}", TablePrefix,
+		"CERTDB_", TablePrefix,
 	)
 	s = replacer.Replace(templ)
 	return
@@ -25,7 +25,9 @@ func CreateSchema(ctx context.Context, db *sql.DB) (err error) {
 								if _, err = db.ExecContext(ctx, createStmt(ViewDNSName)); err == nil {
 									if _, err = db.ExecContext(ctx, createStmt(TableIPAddress)); err == nil {
 										if _, err = db.ExecContext(ctx, createStmt(TableEmail)); err == nil {
-											_, err = db.ExecContext(ctx, createStmt(TableURI))
+											if _, err = db.ExecContext(ctx, createStmt(TableURI)); err == nil {
+												_, err = db.ExecContext(ctx, createStmt(ProcedureNewEntry))
+											}
 										}
 									}
 								}
