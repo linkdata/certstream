@@ -129,7 +129,11 @@ func (ls *LogStream) RunBackward(ctx context.Context, entryCh chan<- *LogEntry) 
 		entries := make([]ct.LeafEntry, minIndex-start)
 		ls.fetchRange(ctx, start, entries)
 		for i := len(entries) - 1; i >= 0; i-- {
+			now := time.Now()
 			ls.process(entryCh, start+int64(i), entries[i])
+			if elapsed := time.Since(now); elapsed > time.Millisecond {
+				time.Sleep(time.Second)
+			}
 		}
 		minIndex = start
 		atomic.StoreInt64(&ls.MinIndex, minIndex)
