@@ -205,3 +205,5 @@ FROM (
 )
 WHERE logindex + 1 <> next_nr;
 `
+
+var SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
