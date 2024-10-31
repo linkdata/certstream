@@ -18,6 +18,7 @@ import (
 // CertPG integrates with sql.DB to manage certificate stream data for a PostgreSQL database
 type CertPG struct {
 	*sql.DB
+	certstream.Logger
 	upsertOperator *sql.Stmt
 	upsertStream   *sql.Stmt
 	procNewEntry   *sql.Stmt
@@ -86,6 +87,15 @@ func closeAll(closers ...io.Closer) (err error) {
 		}
 	}
 	return
+}
+
+func (cdb *CertPG) LogError(err error, msg string, args ...any) error {
+	if err != nil && cdb.Logger != nil {
+		if !errors.Is(err, context.Canceled) {
+			cdb.Logger.Error(msg, append(args, "err", err)...)
+		}
+	}
+	return err
 }
 
 // Close frees resources used.

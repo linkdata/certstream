@@ -12,7 +12,7 @@ import (
 	"github.com/google/certificate-transparency-go/loglist3"
 )
 
-type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, minIndex, maxIndex int64)
+type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client)
 
 type Logger interface {
 	Error(msg string, args ...any)
@@ -37,12 +37,10 @@ var DefaultHttpClient = &http.Client{
 	},
 }
 
-// DefaultLogStreamInit returns (DefaultHttpClient, -1, -1) for all operators and logs where the log is usable.
-func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client, minIndex, maxIndex int64) {
+// DefaultLogStreamInit returns DefaultHttpClient for all operators and logs where the log is usable.
+func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client) {
 	if log.State.LogStatus() == loglist3.UsableLogStatus {
 		httpClient = DefaultHttpClient
-		minIndex = -1
-		maxIndex = -1
 	}
 	return
 }
@@ -57,7 +55,9 @@ func New() *CertStream {
 
 func (cs *CertStream) LogError(err error, msg string, args ...any) {
 	if err != nil && cs.Logger != nil {
-		cs.Logger.Error(msg, append(args, "err", err)...)
+		if !errors.Is(err, context.Canceled) {
+			cs.Logger.Error(msg, append(args, "err", err)...)
+		}
 	}
 }
 
@@ -90,7 +90,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 	if logList != nil {
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
-				if httpClient, minIndex, maxIndex := cs.LogStreamInit(op, log); httpClient != nil {
+				if httpClient := cs.LogStreamInit(op, log); httpClient != nil {
 					opDom := OperatorDomain(log.URL)
 					logop := cs.Operators[opDom]
 					if logop == nil {
@@ -101,7 +101,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 						}
 						sort.Strings(op.Email)
 					}
-					if ls, err2 := NewLogStream(logop, httpClient, minIndex, maxIndex, log); err2 == nil {
+					if ls, err2 := NewLogStream(logop, httpClient, log); err2 == nil {
 						cs.Operators[opDom] = logop
 						logop.Streams = append(logop.Streams, ls)
 					} else {
