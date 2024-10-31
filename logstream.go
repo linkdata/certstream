@@ -67,7 +67,7 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
 		Min:    1 * time.Second,
-		Max:    60 * time.Second,
+		Max:    5 * time.Minute,
 		Factor: 2,
 		Jitter: true,
 	}
