@@ -71,6 +71,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		Factor: 2,
 		Jitter: true,
 	}
+	now := time.Now()
 	lastIndex = atomic.LoadInt64(&ls.LastIndex)
 	err = bo.Retry(ctx, func() error {
 		var sth *ct.SignedTreeHead
@@ -78,11 +79,13 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1
 			if lastIndex < newIndex {
-				lastIndex = newIndex
-				atomic.StoreInt64(&ls.LastIndex, lastIndex)
-				return nil
+				if lastIndex+1024 < newIndex || time.Since(now) > time.Second*10 {
+					lastIndex = newIndex
+					atomic.StoreInt64(&ls.LastIndex, lastIndex)
+					return nil
+				}
 			}
-			return backoff.RetriableError("STH unchanged")
+			return backoff.RetriableError("STH diff too low")
 		}
 		return backoff.RetriableError(err.Error())
 	})
