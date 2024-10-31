@@ -121,9 +121,10 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 			Jitter: true,
 		}
 		var resp *ct.GetEntriesResponse
+		stop := start + min(1024, end-start)
 		if err := bo.Retry(ctx, func() error {
 			var err error
-			resp, err = ls.LogClient.GetRawEntries(ctx, start, start+min(1024, end-start))
+			resp, err = ls.LogClient.GetRawEntries(ctx, start, stop)
 			return err
 		}); err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -138,7 +139,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 					continue
 				}
 			}
-			ls.LogError(err, "GetRawEntries", "url", ls.URL, "start", start, "end", end, "last", ls.LastIndex)
+			ls.LogError(err, "GetRawEntries", "url", ls.URL, "start", start, "stop", stop, "end", end, "last", ls.LastIndex)
 		} else {
 			for i := range resp.Entries {
 				cb(start, resp.Entries[i])
