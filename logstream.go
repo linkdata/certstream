@@ -120,7 +120,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 		var resp *ct.GetEntriesResponse
 		if err := bo.Retry(ctx, func() error {
 			var err error
-			resp, err = ls.LogClient.GetRawEntries(ctx, start, end)
+			resp, err = ls.LogClient.GetRawEntries(ctx, start, start+min(1024, end-start))
 			return err
 		}); err != nil {
 			if errors.Is(err, context.Canceled) {
