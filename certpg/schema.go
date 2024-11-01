@@ -121,16 +121,22 @@ DECLARE
 	_txt TEXT;
 BEGIN
 
-	INSERT INTO CERTDB_ident (organization, province, country)
-		VALUES (iss_org, iss_prov, iss_country)
-		ON CONFLICT (organization, province, country) DO NOTHING RETURNING id INTO _iss_id;
+	SELECT id FROM CERTDB_ident INTO _iss_id WHERE organization=iss_org AND province=iss_prov AND country=iss_country;
+	IF NOT FOUND THEN
+		INSERT INTO CERTDB_ident (organization, province, country)
+			VALUES (iss_org, iss_prov, iss_country)
+			ON CONFLICT (organization, province, country) DO NOTHING RETURNING id INTO _iss_id;
+	END IF;
 	IF NOT FOUND THEN
 		SELECT id FROM CERTDB_ident INTO _iss_id WHERE organization=iss_org AND province=iss_prov AND country=iss_country;
 	END IF;
 
-	INSERT INTO CERTDB_ident (organization, province, country)
-		VALUES (sub_org, sub_prov, sub_country)
-		ON CONFLICT (organization, province, country) DO NOTHING RETURNING id INTO _sub_id;
+	SELECT id FROM CERTDB_ident INTO _sub_id WHERE organization=sub_org AND province=sub_prov AND country=sub_country;
+	IF NOT FOUND THEN
+		INSERT INTO CERTDB_ident (organization, province, country)
+			VALUES (sub_org, sub_prov, sub_country)
+			ON CONFLICT (organization, province, country) DO NOTHING RETURNING id INTO _sub_id;
+	END IF;
 	IF NOT FOUND THEN
 		SELECT id FROM CERTDB_ident INTO _sub_id WHERE organization=sub_org AND province=sub_prov AND country=sub_country;
 	END IF;
