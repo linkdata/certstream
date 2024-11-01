@@ -146,19 +146,19 @@ func (cdb *CertPG) GetMinMaxIndexes(ctx context.Context, streamUrl string) (minI
 
 func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err error) {
 	if cert := le.Cert(); cert != nil {
+		var seen time.Time
+		var sig []byte
+
 		logindex := le.Index()
 
-		seen := time.UnixMilli(int64(le.LogEntry.Leaf.TimestampedEntry.Timestamp)).UTC()
-
-		var sig []byte
-		if sig = cert.Signature; len(sig) != 16 {
-			if le.RawLogEntry != nil {
-				shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
-				sig = shasig[:]
-			} else {
-				shasig := sha256.Sum256(cert.RawTBSCertificate)
-				sig = shasig[:]
-			}
+		if le.RawLogEntry != nil {
+			seen = time.UnixMilli(int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp)).UTC()
+			shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
+			sig = shasig[:]
+		} else {
+			seen = time.Now().UTC()
+			shasig := sha256.Sum256(cert.RawTBSCertificate)
+			sig = shasig[:]
 		}
 
 		var dnsnames []string
