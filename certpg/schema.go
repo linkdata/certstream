@@ -48,6 +48,7 @@ CREATE INDEX IF NOT EXISTS CERTDB_cert_notafter_idx ON CERTDB_cert (notafter);
 `
 
 var TableEntry = `CREATE TABLE IF NOT EXISTS CERTDB_entry (
+seen TIMESTAMP NOT NULL DEFAULT NOW(),
 logindex BIGINT NOT NULL,
 cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
 stream INTEGER NOT NULL REFERENCES CERTDB_stream (id),
@@ -95,6 +96,7 @@ CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 
 var ProcedureNewEntry = `
 CREATE OR REPLACE PROCEDURE CERTDB_new_entry(
+    IN seen TIMESTAMP,
 	IN stream INTEGER, 
 	IN logindex BIGINT, 
 	IN hash BYTEA, 
@@ -165,8 +167,8 @@ BEGIN
 		INSERT INTO CERTDB_uri (cert, uri) VALUES (_cert_id, _txt) ON CONFLICT (cert, uri) DO NOTHING;
    	END LOOP;
 
-	INSERT INTO CERTDB_entry (logindex, cert, stream)
-		VALUES (logindex, _cert_id, stream)
+	INSERT INTO CERTDB_entry (seen, logindex, cert, stream)
+		VALUES (seen, logindex, _cert_id, stream)
 		ON CONFLICT DO NOTHING;
 
 	COMMIT;

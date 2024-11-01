@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/linkdata/certstream"
 )
@@ -55,7 +56,7 @@ func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, d
 
 func prepareNewEntry(perr *error, db *sql.DB) (stmt *sql.Stmt) {
 	var err error
-	txt := fmt.Sprintf(`CALL %snew_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16);`, TablePrefix)
+	txt := fmt.Sprintf(`CALL %snew_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`, TablePrefix)
 	if stmt, err = db.Prepare(txt); err != nil {
 		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
 	}
@@ -147,6 +148,8 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 	if cert := le.Cert(); cert != nil {
 		logindex := le.Index()
 
+		seen := time.UnixMilli(int64(le.LogEntry.Leaf.TimestampedEntry.Timestamp)).UTC()
+
 		var sig []byte
 		if sig = cert.Signature; len(sig) != 16 {
 			if le.RawLogEntry != nil {
@@ -179,6 +182,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		}
 
 		args := []any{
+			seen,
 			le.LogStream.Id,
 			logindex,
 			sig,
@@ -199,7 +203,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 
 		if _, err = cdb.procNewEntry.ExecContext(ctx, args...); err != nil {
 			if ctx.Err() == nil {
-				fmt.Printf("CALL CERTDB_new_entry(%v,%v,'%x', '%s','%s','%s', '%s','%s','%s', '%s','%s', '%s', '%s','%s','%s','%s')\n", args...)
+				fmt.Printf("CALL CERTDB_new_entry('%v', %v,%v,'%x', '%s','%s','%s', '%s','%s','%s', '%s','%s', '%s', '%s','%s','%s','%s')\n", args...)
 			}
 		}
 	}
