@@ -2,7 +2,6 @@ package certpg
 
 import (
 	"context"
-	"time"
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/linkdata/certstream"
@@ -32,9 +31,7 @@ func (cdb *CertPG) Backfill(ctx context.Context, ls *certstream.LogStream) {
 			start := max(0, minIndex-1024)
 			stop := minIndex - 1
 			ls.GetRawEntries(ctx, start, stop, func(logindex int64, entry ct.LeafEntry) {
-				now := time.Now()
 				cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
-				time.Sleep(time.Since(now))
 			})
 			minIndex = start
 		}

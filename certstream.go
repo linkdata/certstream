@@ -34,6 +34,7 @@ var DefaultHttpClient = &http.Client{
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
 	},
 }
 
