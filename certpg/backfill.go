@@ -31,11 +31,11 @@ func (cdb *CertPG) Backfill(ctx context.Context, ls *certstream.LogStream) {
 		for minIndex > 0 {
 			start := max(0, minIndex-1024)
 			stop := minIndex - 1
-			now := time.Now()
 			ls.GetRawEntries(ctx, start, stop, func(logindex int64, entry ct.LeafEntry) {
+				now := time.Now()
 				cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
+				time.Sleep(time.Since(now))
 			})
-			time.Sleep(time.Second + time.Since(now)*2)
 			minIndex = start
 		}
 	}

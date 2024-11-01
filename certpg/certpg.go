@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -159,15 +158,9 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 			}
 		}
 
-		var rdnsnames []string
+		var dnsnames []string
 		for _, dnsname := range cert.DNSNames {
-			if parts := strings.Split(strings.ToLower(dnsname), "."); len(parts) > 0 {
-				if parts[0] == "*" {
-					parts[0] = "STAR"
-				}
-				slices.Reverse(parts)
-				rdnsnames = append(rdnsnames, strings.Join(parts, "."))
-			}
+			dnsnames = append(dnsnames, strings.ToLower(dnsname))
 		}
 
 		var ipaddrs []string
@@ -198,7 +191,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 			cert.NotBefore,
 			cert.NotAfter,
 			cert.Subject.CommonName,
-			strings.Join(rdnsnames, " "),
+			strings.Join(dnsnames, " "),
 			strings.Join(ipaddrs, " "),
 			strings.Join(emails, " "),
 			strings.Join(uris, " "),

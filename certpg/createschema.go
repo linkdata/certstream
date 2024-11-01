@@ -21,7 +21,7 @@ func CreateSchema(ctx context.Context, db *sql.DB) (err error) {
 				if _, err = db.ExecContext(ctx, setPrefix(TableIdent)); err == nil {
 					if _, err = db.ExecContext(ctx, setPrefix(TableCert)); err == nil {
 						if _, err = db.ExecContext(ctx, setPrefix(TableEntry)); err == nil {
-							if _, err = db.ExecContext(ctx, setPrefix(TableRDNSName)); err == nil {
+							if _, err = db.ExecContext(ctx, setPrefix(TableDNSName)); err == nil {
 								if _, err = db.ExecContext(ctx, setPrefix(ViewDNSName)); err == nil {
 									if _, err = db.ExecContext(ctx, setPrefix(TableIPAddress)); err == nil {
 										if _, err = db.ExecContext(ctx, setPrefix(TableEmail)); err == nil {

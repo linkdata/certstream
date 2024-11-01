@@ -3,37 +3,7 @@ package certpg
 var TablePrefix = "certdb_"
 
 var Initialize = `
-CREATE EXTENSION IF NOT EXISTS LTREE;
-
-CREATE OR REPLACE FUNCTION array_reverse(anyarray) RETURNS anyarray AS $$
-SELECT
-	ARRAY(
-		SELECT $1[i]
-		FROM generate_subscripts($1,1) AS s(i)
-		ORDER BY i DESC
-	)
-;
-$$ LANGUAGE 'sql' STRICT IMMUTABLE;
-
-CREATE OR REPLACE FUNCTION ltree_reverse(ltree) RETURNS ltree AS $$
-SELECT
-	text2ltree(
-		reverse(
-			array_to_string(
-				array_reverse(
-					string_to_array(
-						reverse(ltree2text($1))
-					, '.')
-				)
-			, '.')
-		)
-	)
-;
-$$ LANGUAGE 'sql' STRICT IMMUTABLE;
-
-CREATE OR REPLACE FUNCTION rname_to_name(ltree) RETURNS text AS $$
-SELECT replace(ltree2text(ltree_reverse($1)), 'STAR', '*');
-$$ LANGUAGE 'sql' STRICT IMMUTABLE;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 `
 
 var TableOperator = `CREATE TABLE IF NOT EXISTS CERTDB_operator (
@@ -59,6 +29,8 @@ province TEXT,
 country TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_ident_full_idx ON CERTDB_ident (organization, province, country);
+INSERT INTO CERTDB_ident (organization, province, country) VALUES ('', '', '')
+	ON CONFLICT (organization, province, country) DO NOTHING;
 `
 
 var TableCert = `CREATE TABLE IF NOT EXISTS CERTDB_cert (
@@ -71,7 +43,6 @@ issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
 sha256 BYTEA NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
-CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_idx ON CERTDB_cert (commonname);
 CREATE INDEX IF NOT EXISTS CERTDB_cert_notbefore_idx ON CERTDB_cert (notbefore);
 CREATE INDEX IF NOT EXISTS CERTDB_cert_notafter_idx ON CERTDB_cert (notafter);
 `
@@ -84,19 +55,18 @@ PRIMARY KEY (stream, logindex)
 );
 `
 
-var TableRDNSName = `CREATE TABLE IF NOT EXISTS CERTDB_rdnsname (
+var TableDNSName = `CREATE TABLE IF NOT EXISTS CERTDB_dnsname (
 cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-rname LTREE NOT NULL,
-PRIMARY KEY (cert, rname)
+dnsname TEXT NOT NULL,
+PRIMARY KEY (cert, dnsname)
 );
-CREATE INDEX IF NOT EXISTS CERTDB_rdnsname_rname_idx ON CERTDB_rdnsname USING GIST (rname);
+CREATE INDEX IF NOT EXISTS CERTDB_dnsname_idx ON CERTDB_dnsname USING GIN (dnsname gin_trgm_ops);
 `
 
-var ViewDNSName = `CREATE OR REPLACE VIEW CERTDB_dnsname AS
-SELECT cert, rname,
-	rname_to_name(rname) AS name,
+var ViewDNSName = `CREATE OR REPLACE VIEW CERTDB_crtsh AS
+SELECT cert, dnsname,
 	(SELECT CONCAT('https://crt.sh/?q=',encode(sha256, 'hex')) FROM CERTDB_cert WHERE CERTDB_cert.id=cert) AS crtsh
-	FROM CERTDB_rdnsname;
+	FROM CERTDB_dnsname;
 `
 
 var TableIPAddress = `CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
@@ -137,7 +107,7 @@ CREATE OR REPLACE PROCEDURE CERTDB_new_entry(
 	IN notbefore TIMESTAMP,
 	IN notafter TIMESTAMP,
 	IN commonname TEXT,
-	IN rdnsnames TEXT,
+	IN dnsnames TEXT,
 	IN ipaddrs TEXT,
 	IN emails TEXT,
 	IN uris TEXT
@@ -172,9 +142,9 @@ BEGIN
 		SELECT id FROM CERTDB_cert INTO _cert_id WHERE sha256=hash;
 	END IF;
 
-	FOREACH _txt IN ARRAY STRING_TO_ARRAY(rdnsnames, ' ')
+	FOREACH _txt IN ARRAY STRING_TO_ARRAY(dnsnames, ' ')
    	LOOP
-		INSERT INTO CERTDB_rdnsname (cert, rname) VALUES (_cert_id, text2ltree(_txt)) ON CONFLICT (cert, rname) DO NOTHING;
+		INSERT INTO CERTDB_dnsname (cert, dnsname) VALUES (_cert_id, _txt) ON CONFLICT (cert, dnsname) DO NOTHING;
    	END LOOP;
    	FOREACH _txt IN ARRAY STRING_TO_ARRAY(ipaddrs, ' ')
    	LOOP
