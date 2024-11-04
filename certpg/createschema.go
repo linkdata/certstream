@@ -3,7 +3,9 @@ package certpg
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
+	"time"
 )
 
 func setPrefix(templ string) (s string) {
@@ -15,6 +17,8 @@ func setPrefix(templ string) (s string) {
 }
 
 func CreateSchema(ctx context.Context, db *sql.DB) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
+	defer cancel()
 	if _, err = db.ExecContext(ctx, Initialize); err == nil {
 		if _, err = db.ExecContext(ctx, setPrefix(TableOperator)); err == nil {
 			if _, err = db.ExecContext(ctx, setPrefix(TableStream)); err == nil {
@@ -37,6 +41,9 @@ func CreateSchema(ctx context.Context, db *sql.DB) (err error) {
 				}
 			}
 		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = nil
 	}
 	return
 }
