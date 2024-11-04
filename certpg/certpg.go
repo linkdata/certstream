@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/linkdata/certstream"
+	"golang.org/x/net/idna"
 )
 
 // CertPG integrates with sql.DB to manage certificate stream data for a PostgreSQL database
@@ -163,7 +164,12 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 
 		var dnsnames []string
 		for _, dnsname := range cert.DNSNames {
-			dnsnames = append(dnsnames, strings.ToLower(dnsname))
+			dnsname = strings.ToLower(dnsname)
+			if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
+				dnsnames = append(dnsnames, uniname)
+			} else {
+				dnsnames = append(dnsnames, dnsname)
+			}
 		}
 
 		var ipaddrs []string

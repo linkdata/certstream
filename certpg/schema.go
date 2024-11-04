@@ -64,12 +64,6 @@ PRIMARY KEY (cert, dnsname)
 CREATE INDEX IF NOT EXISTS CERTDB_dnsname_idx ON CERTDB_dnsname USING GIN (dnsname gin_trgm_ops);
 `
 
-var ViewDNSName = `CREATE OR REPLACE VIEW CERTDB_crtsh AS
-SELECT cert, dnsname,
-	(SELECT CONCAT('https://crt.sh/?q=',encode(sha256, 'hex')) FROM CERTDB_cert WHERE CERTDB_cert.id=cert) AS crtsh
-	FROM CERTDB_dnsname;
-`
-
 var TableIPAddress = `CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
 cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
 addr INET NOT NULL,
@@ -92,6 +86,13 @@ uri TEXT NOT NULL,
 PRIMARY KEY (cert, uri)
 );
 CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
+`
+
+var ViewDNSName = `CREATE OR REPLACE VIEW CERTDB_crtsh AS
+SELECT cert, dnsname, (dnsname !~ '^[[:ascii:]]+$') AS idna,
+	(SELECT CONCAT('https://crt.sh/?q=',encode(sha256, 'hex')) FROM CERTDB_cert cc WHERE cc.id=cd.cert) AS crtsh,
+	(SELECT organization FROM CERTDB_ident ci, CERTDB_cert cc WHERE cc.id=cd.cert AND cc.subject=ci.id) AS organization
+	FROM CERTDB_dnsname cd;
 `
 
 var ProcedureNewEntry = `
@@ -183,5 +184,7 @@ FROM (
 )
 WHERE logindex + 1 <> next_nr;
 `
+
+var SelectIdna = `SELECT cert, dnsname FROM CERTDB_dnsname WHERE dnsname LIKE '%xn--%';`
 
 var SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
