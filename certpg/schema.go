@@ -43,8 +43,6 @@ issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
 sha256 BYTEA NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
-CREATE INDEX IF NOT EXISTS CERTDB_cert_notbefore_idx ON CERTDB_cert (notbefore);
-CREATE INDEX IF NOT EXISTS CERTDB_cert_notafter_idx ON CERTDB_cert (notafter);
 `
 
 var TableEntry = `CREATE TABLE IF NOT EXISTS CERTDB_entry (
@@ -89,10 +87,17 @@ CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 `
 
 var ViewDNSName = `CREATE OR REPLACE VIEW CERTDB_crtsh AS
-SELECT cert, dnsname, (dnsname !~ '^[[:ascii:]]+$') AS idna,
-	(SELECT CONCAT('https://crt.sh/?q=',encode(sha256, 'hex')) FROM CERTDB_cert cc WHERE cc.id=cd.cert) AS crtsh,
-	(SELECT organization FROM CERTDB_ident ci, CERTDB_cert cc WHERE cc.id=cd.cert AND cc.subject=ci.id) AS organization
-	FROM CERTDB_dnsname cd;
+SELECT cert, dnsname, 
+	dnsname !~ '^[[:ascii:]]+$'::text AS idna, 
+	NOW() between cc.notbefore and cc.notafter as valid,
+	iss.organization as issuer,
+	subj.organization as subject,
+	concat('https://crt.sh/?q=', encode(cc.sha256, 'hex'::text)) AS crtsh
+	FROM CERTDB_dnsname cd
+	inner join CERTDB_cert cc on cc.id = cd.cert 
+	inner join CERTDB_ident subj on subj.id = cc.subject
+	inner join CERTDB_ident iss on iss.id = cc.issuer
+;
 `
 
 var ProcedureNewEntry = `
