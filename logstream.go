@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -136,9 +137,14 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 			}
 			if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 				switch rspErr.StatusCode {
-				case http.StatusTooManyRequests, http.StatusInternalServerError:
+				case http.StatusTooManyRequests,
+					http.StatusInternalServerError,
+					http.StatusGatewayTimeout:
 					continue
 				}
+			}
+			if strings.Contains(err.Error(), "deadline exceeded") {
+				continue
 			}
 			ls.LogError(err, "GetRawEntries", "url", ls.URL, "start", start, "stop", stop, "end", end, "last", ls.LastIndex)
 		} else {
