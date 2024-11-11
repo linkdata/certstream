@@ -143,7 +143,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 					continue
 				}
 			}
-			if strings.Contains(err.Error(), "deadline exceeded") {
+			if s := err.Error(); strings.Contains(s, "deadline exceeded") || strings.Contains(s, "context canceled") {
 				continue
 			}
 			ls.LogError(err, "GetRawEntries", "url", ls.URL, "start", start, "stop", stop, "end", end, "last", ls.LastIndex)
