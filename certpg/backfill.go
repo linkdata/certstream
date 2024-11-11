@@ -10,16 +10,24 @@ import (
 var BulkRange = int64(4096)
 
 func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
+	type gap struct {
+		start int64
+		end   int64
+	}
+	var gaps []gap
 	if rows, err := cdb.QueryContext(ctx, setPrefix(SelectGaps), ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
-		defer rows.Close()
 		for rows.Next() {
 			var gap_start, gap_end int64
 			if err = rows.Scan(&gap_start, &gap_end); cdb.LogError(err, "backfillGaps/Scan", "url", ls.URL) == nil {
-				ls.GetRawEntries(ctx, gap_start, gap_end, func(logindex int64, entry ct.LeafEntry) {
-					cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
-				})
+				gaps = append(gaps, gap{start: gap_start, end: gap_end})
 			}
 		}
+		rows.Close()
+	}
+	for _, gap := range gaps {
+		ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
+			cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
+		})
 	}
 }
 
