@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,45 +19,14 @@ import (
 type CertPG struct {
 	*sql.DB
 	certstream.Logger
-	upsertOperator *sql.Stmt
-	upsertStream   *sql.Stmt
-	procNewEntry   *sql.Stmt
+	getOperatorID *sql.Stmt
+	getStreamID   *sql.Stmt
+	procNewEntry  *sql.Stmt
 }
 
-func UpsertSQL(table string, hasid bool, keycols, datacols []string) (stmt string) {
-	var dollarargs []string
-	var assignments []string
-	var columns []string
-	columns = append(columns, keycols...)
-	columns = append(columns, datacols...)
-	for i := 0; i < len(columns); i++ {
-		dollararg := "$" + strconv.Itoa(i+1)
-		dollarargs = append(dollarargs, dollararg)
-		assignments = append(assignments, columns[i]+"="+dollararg)
-	}
-	stmt = fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s)`, TablePrefix+table, strings.Join(columns, ","), strings.Join(dollarargs, ","))
-	if len(keycols) > 0 {
-		stmt += fmt.Sprintf(` ON CONFLICT (%s) DO UPDATE SET %s`, strings.Join(keycols, ","), strings.Join(assignments, ","))
-	}
-	if hasid {
-		stmt += ` RETURNING id`
-	}
-	return
-}
-
-func prepareUpsert(perr *error, db *sql.DB, table string, hasid bool, keycols, datacols []string) (stmt *sql.Stmt) {
+func prepare(perr *error, db *sql.DB, txt string) (stmt *sql.Stmt) {
 	var err error
-	txt := UpsertSQL(table, hasid, keycols, datacols)
-	if stmt, err = db.Prepare(txt); err != nil {
-		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
-	}
-	return
-}
-
-func prepareNewEntry(perr *error, db *sql.DB) (stmt *sql.Stmt) {
-	var err error
-	txt := fmt.Sprintf(`CALL %snew_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`, TablePrefix)
-	if stmt, err = db.Prepare(txt); err != nil {
+	if stmt, err = db.Prepare(setPrefix(txt)); err != nil {
 		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
 	}
 	return
@@ -68,10 +36,10 @@ func prepareNewEntry(perr *error, db *sql.DB) (stmt *sql.Stmt) {
 func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
 	if err = CreateSchema(ctx, db); err == nil {
 		cdb = &CertPG{
-			DB:             db,
-			upsertOperator: prepareUpsert(&err, db, "operator", true, []string{"name", "email"}, nil),
-			upsertStream:   prepareUpsert(&err, db, "stream", true, []string{"url"}, []string{"operator", "json"}),
-			procNewEntry:   prepareNewEntry(&err, db),
+			DB:            db,
+			getOperatorID: prepare(&err, db, `SELECT CERTDB_operator_id($1,$2);`),
+			getStreamID:   prepare(&err, db, `SELECT CERTDB_stream_id($1,$2,$3);`),
+			procNewEntry:  prepare(&err, db, `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`),
 		}
 		if err != nil {
 			cdb.Close()
@@ -102,8 +70,8 @@ func (cdb *CertPG) LogError(err error, msg string, args ...any) error {
 // Close frees resources used.
 func (cdb *CertPG) Close() error {
 	return closeAll(
-		cdb.upsertOperator,
-		cdb.upsertStream,
+		cdb.getOperatorID,
+		cdb.getStreamID,
 		cdb.procNewEntry,
 	)
 }
@@ -115,7 +83,7 @@ func dbRes(res sql.Result) string {
 }
 
 func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (err error) {
-	row := cdb.upsertOperator.QueryRowContext(ctx, lo.Name, strings.Join(lo.Email, ","))
+	row := cdb.getOperatorID.QueryRowContext(ctx, lo.Name, strings.Join(lo.Email, ","))
 	err = row.Scan(&lo.Id)
 	return
 }
@@ -123,7 +91,7 @@ func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (er
 func (cdb *CertPG) Stream(ctx context.Context, ls *certstream.LogStream) (err error) {
 	var b []byte
 	if b, err = json.Marshal(ls.Log); err == nil {
-		row := cdb.upsertStream.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, string(b))
+		row := cdb.getStreamID.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, string(b))
 		err = row.Scan(&ls.Id)
 	}
 	return

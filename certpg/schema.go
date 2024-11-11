@@ -100,6 +100,57 @@ SELECT cert, dnsname,
 ;
 `
 
+var FunctionOperatorID = `
+CREATE OR REPLACE FUNCTION CERTDB_operator_id(
+IN s_name TEXT,
+IN s_email TEXT
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+	_id INTEGER;
+BEGIN
+	SELECT id FROM CERTDB_operator INTO _id WHERE name=s_name AND email=s_email;
+	IF NOT FOUND THEN
+		INSERT INTO CERTDB_operator (name, email) VALUES (s_name, s_email)
+			ON CONFLICT DO NOTHING RETURNING id INTO _id;
+	END IF;
+	IF NOT FOUND THEN
+		SELECT id FROM CERTDB_operator INTO _id WHERE name=s_name AND email=s_email;
+	END IF;
+	RETURN _id;
+END;
+$$
+;
+`
+
+var FunctionStreamID = `
+CREATE OR REPLACE FUNCTION CERTDB_stream_id(
+IN s_url TEXT,
+IN s_operator BIGINT,
+IN s_json TEXT
+)
+RETURNS BIGINT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+	_id INTEGER;
+BEGIN
+	SELECT id FROM CERTDB_stream INTO _id WHERE url=s_url;
+	IF NOT FOUND THEN
+		INSERT INTO CERTDB_stream (url, operator, json) VALUES (s_url, s_operator, s_json)
+			ON CONFLICT DO NOTHING RETURNING id INTO _id;
+	END IF;
+	IF NOT FOUND THEN
+		SELECT id FROM CERTDB_stream INTO _id WHERE url=s_url;
+	END IF;
+	RETURN _id;
+END;
+$$
+;
+`
+
 var ProcedureNewEntry = `
 CREATE OR REPLACE PROCEDURE CERTDB_new_entry(
     IN seen TIMESTAMP,
@@ -120,7 +171,7 @@ CREATE OR REPLACE PROCEDURE CERTDB_new_entry(
 	IN emails TEXT,
 	IN uris TEXT
 )
- LANGUAGE plpgsql
+LANGUAGE plpgsql
 AS $procedure$
 DECLARE
 	_iss_id INTEGER;
@@ -189,7 +240,5 @@ FROM (
 )
 WHERE logindex + 1 <> next_nr;
 `
-
-var SelectIdna = `SELECT cert, dnsname FROM CERTDB_dnsname WHERE dnsname LIKE '%xn--%';`
 
 var SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`

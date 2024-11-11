@@ -30,7 +30,11 @@ func CreateSchema(ctx context.Context, db *sql.DB) (err error) {
 									if _, err = db.ExecContext(ctx, setPrefix(TableIPAddress)); err == nil {
 										if _, err = db.ExecContext(ctx, setPrefix(TableEmail)); err == nil {
 											if _, err = db.ExecContext(ctx, setPrefix(TableURI)); err == nil {
-												_, err = db.ExecContext(ctx, setPrefix(ProcedureNewEntry))
+												if _, err = db.ExecContext(ctx, setPrefix(ProcedureNewEntry)); err == nil {
+													if _, err = db.ExecContext(ctx, setPrefix(FunctionOperatorID)); err == nil {
+														_, err = db.ExecContext(ctx, setPrefix(FunctionStreamID))
+													}
+												}
 											}
 										}
 									}
