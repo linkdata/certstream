@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/linkdata/certstream"
@@ -24,6 +25,7 @@ type CertPG struct {
 	procNewEntry     *sql.Stmt
 	stmtSelectGaps   *sql.Stmt
 	stmtSelectMinIdx *sql.Stmt
+	stmtSelectMaxIdx *sql.Stmt
 }
 
 // New creates a CertPG and creates the needed tables and indices if they don't exist.
@@ -49,13 +51,17 @@ func New(ctx context.Context, db *sql.DB, prefix string) (cdb *CertPG, err error
 									if stmtSelectGaps, err = db.PrepareContext(ctx, pfx(SelectGaps)); err == nil {
 										var stmtSelectMinIdx *sql.Stmt
 										if stmtSelectMinIdx, err = db.PrepareContext(ctx, pfx(SelectMinIndex)); err == nil {
-											cdb = &CertPG{
-												DB:               db,
-												funcOperatorID:   getOperatorID,
-												funcStreamID:     getStreamID,
-												procNewEntry:     procNewEntry,
-												stmtSelectGaps:   stmtSelectGaps,
-												stmtSelectMinIdx: stmtSelectMinIdx,
+											var stmtSelectMaxIdx *sql.Stmt
+											if stmtSelectMaxIdx, err = db.PrepareContext(ctx, pfx(SelectMaxIndex)); err == nil {
+												cdb = &CertPG{
+													DB:               db,
+													funcOperatorID:   getOperatorID,
+													funcStreamID:     getStreamID,
+													procNewEntry:     procNewEntry,
+													stmtSelectGaps:   stmtSelectGaps,
+													stmtSelectMinIdx: stmtSelectMinIdx,
+													stmtSelectMaxIdx: stmtSelectMaxIdx,
+												}
 											}
 										}
 									}
@@ -96,6 +102,7 @@ func (cdb *CertPG) Close() error {
 		cdb.procNewEntry,
 		cdb.stmtSelectGaps,
 		cdb.stmtSelectMinIdx,
+		cdb.stmtSelectMaxIdx,
 	)
 }
 
@@ -124,6 +131,10 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 	if cert := le.Cert(); cert != nil {
 		var seen time.Time
 		var sig []byte
+
+		if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
+			go cdb.Backfill(ctx, le.LogStream)
+		}
 
 		logindex := le.Index()
 

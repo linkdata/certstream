@@ -2,6 +2,7 @@ package certpg
 
 import (
 	"context"
+	"sync/atomic"
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/linkdata/certstream"
@@ -23,6 +24,15 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 			}
 		}
 		rows.Close()
+	}
+	if lastindex := atomic.LoadInt64(&ls.LastIndex); lastindex != -1 {
+		row := cdb.stmtSelectMaxIdx.QueryRowContext(ctx, ls.Id)
+		var maxindex int64
+		if err := row.Scan(&maxindex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL) == nil {
+			if maxindex < lastindex {
+				gaps = append(gaps, gap{start: maxindex + 1, end: lastindex})
+			}
+		}
 	}
 	for _, gap := range gaps {
 		if l := cdb.Logger; l != nil {

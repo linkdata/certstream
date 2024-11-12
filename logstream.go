@@ -20,13 +20,14 @@ type LogStream struct {
 	*LogOperator
 	*loglist3.Log
 	*client.LogClient
-	Err       error // set if Stopped() returns true
-	Count     int64 // atomic: number of certificates sent to the channel
-	MinIndex  int64 // atomic: lowest index seen so far, -1 if none seen yet
-	MaxIndex  int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex int64 // atomic: highest index that is available from stream source
-	Id        int32 // database ID, if available
-	stopped   int32 // atomic
+	Err        error // set if Stopped() returns true
+	Count      int64 // atomic: number of certificates sent to the channel
+	MinIndex   int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex   int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex  int64 // atomic: highest index that is available from stream source
+	Id         int32 // database ID, if available
+	Backfilled int32 // atomic: nonzero if database backfill called for this stream
+	stopped    int32 // atomic
 }
 
 func (ls *LogStream) String() string {
