@@ -139,6 +139,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 				switch rspErr.StatusCode {
 				case http.StatusTooManyRequests,
 					http.StatusInternalServerError,
+					http.StatusBadGateway,
 					http.StatusGatewayTimeout:
 					continue
 				}
