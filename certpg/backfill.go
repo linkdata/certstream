@@ -26,7 +26,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 	}
 	for _, gap := range gaps {
 		if l := cdb.Logger; l != nil {
-			l.Info("certstream gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
+			l.Info("certstream: gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
 		}
 		ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
 			cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
@@ -35,17 +35,22 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 }
 
 func (cdb *CertPG) Backfill(ctx context.Context, ls *certstream.LogStream) {
-	go cdb.backfillGaps(ctx, ls)
+	cdb.backfillGaps(ctx, ls)
 	row := cdb.stmtSelectMinIdx.QueryRowContext(ctx, ls.Id)
 	var minIndex int64
 	if err := row.Scan(&minIndex); cdb.LogError(err, "Backfill/MinIndex", "url", ls.URL) == nil {
-		for minIndex > 0 {
-			start := max(0, minIndex-BulkRange)
-			stop := minIndex - 1
-			ls.GetRawEntries(ctx, start, stop, func(logindex int64, entry ct.LeafEntry) {
-				cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
-			})
-			minIndex = start
+		if minIndex > 0 {
+			if l := cdb.Logger; l != nil {
+				l.Info("certstream: old", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
+			}
+			for minIndex > 0 {
+				start := max(0, minIndex-BulkRange)
+				stop := minIndex - 1
+				ls.GetRawEntries(ctx, start, stop, func(logindex int64, entry ct.LeafEntry) {
+					cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
+				})
+				minIndex = start
+			}
 		}
 	}
 }
