@@ -15,6 +15,7 @@ import (
 type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client)
 
 type Logger interface {
+	Info(msg string, args ...any)
 	Error(msg string, args ...any)
 }
 

@@ -19,40 +19,52 @@ import (
 type CertPG struct {
 	*sql.DB
 	certstream.Logger
-	getOperatorID *sql.Stmt
-	getStreamID   *sql.Stmt
-	procNewEntry  *sql.Stmt
+	funcOperatorID   *sql.Stmt
+	funcStreamID     *sql.Stmt
+	procNewEntry     *sql.Stmt
+	stmtSelectGaps   *sql.Stmt
+	stmtSelectMinIdx *sql.Stmt
 }
 
-func prepare(perr *error, db *sql.DB, txt string) (stmt *sql.Stmt) {
-	var err error
-	if stmt, err = db.Prepare(setPrefix(txt)); err != nil {
-		*perr = errors.Join(*perr, fmt.Errorf("%q: %v", txt, err))
-	}
-	return
-}
+// New creates a CertPG and creates the needed tables and indices if they don't exist.
+func New(ctx context.Context, db *sql.DB, prefix string) (cdb *CertPG, err error) {
+	const callCreateSchema = `CALL CERTDB_create_schema();`
+	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
+	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
+	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`
+	pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", prefix) }
 
-// New creates a Certdb and creates the needed tables and indices if they don't exist.
-func New(ctx context.Context, db *sql.DB) (cdb *CertPG, err error) {
-	if err = CreateSchema(ctx, db); err == nil {
-		cdb = &CertPG{
-			DB:            db,
-			getOperatorID: prepare(&err, db, `SELECT CERTDB_operator_id($1,$2);`),
-			getStreamID:   prepare(&err, db, `SELECT CERTDB_stream_id($1,$2,$3);`),
-			procNewEntry:  prepare(&err, db, `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`),
-		}
-		if err != nil {
-			cdb.Close()
-			cdb = nil
-		}
-	}
-	return
-}
-
-func closeAll(closers ...io.Closer) (err error) {
-	for _, c := range closers {
-		if c != nil {
-			err = errors.Join(err, c.Close())
+	if _, err = db.ExecContext(ctx, pfx(ProcedureCreateSchema)); err == nil {
+		if _, err = db.ExecContext(ctx, pfx(callCreateSchema)); err == nil {
+			if _, err = db.ExecContext(ctx, pfx(FunctionOperatorID)); err == nil {
+				if _, err = db.ExecContext(ctx, pfx(FunctionStreamID)); err == nil {
+					if _, err = db.ExecContext(ctx, pfx(ProcedureNewEntry)); err == nil {
+						var getOperatorID *sql.Stmt
+						if getOperatorID, err = db.PrepareContext(ctx, pfx(callOperatorID)); err == nil {
+							var getStreamID *sql.Stmt
+							if getStreamID, err = db.PrepareContext(ctx, pfx(callStreamID)); err == nil {
+								var procNewEntry *sql.Stmt
+								if procNewEntry, err = db.PrepareContext(ctx, pfx(callNewEntry)); err == nil {
+									var stmtSelectGaps *sql.Stmt
+									if stmtSelectGaps, err = db.PrepareContext(ctx, pfx(SelectGaps)); err == nil {
+										var stmtSelectMinIdx *sql.Stmt
+										if stmtSelectMinIdx, err = db.PrepareContext(ctx, pfx(SelectMinIndex)); err == nil {
+											cdb = &CertPG{
+												DB:               db,
+												funcOperatorID:   getOperatorID,
+												funcStreamID:     getStreamID,
+												procNewEntry:     procNewEntry,
+												stmtSelectGaps:   stmtSelectGaps,
+												stmtSelectMinIdx: stmtSelectMinIdx,
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 	return
@@ -67,12 +79,23 @@ func (cdb *CertPG) LogError(err error, msg string, args ...any) error {
 	return err
 }
 
+func closeAll(closers ...io.Closer) (err error) {
+	for _, c := range closers {
+		if c != nil {
+			err = errors.Join(err, c.Close())
+		}
+	}
+	return
+}
+
 // Close frees resources used.
 func (cdb *CertPG) Close() error {
 	return closeAll(
-		cdb.getOperatorID,
-		cdb.getStreamID,
+		cdb.funcOperatorID,
+		cdb.funcStreamID,
 		cdb.procNewEntry,
+		cdb.stmtSelectGaps,
+		cdb.stmtSelectMinIdx,
 	)
 }
 
@@ -83,7 +106,7 @@ func dbRes(res sql.Result) string {
 }
 
 func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (err error) {
-	row := cdb.getOperatorID.QueryRowContext(ctx, lo.Name, strings.Join(lo.Email, ","))
+	row := cdb.funcOperatorID.QueryRowContext(ctx, lo.Name, strings.Join(lo.Email, ","))
 	err = row.Scan(&lo.Id)
 	return
 }
@@ -91,24 +114,8 @@ func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (er
 func (cdb *CertPG) Stream(ctx context.Context, ls *certstream.LogStream) (err error) {
 	var b []byte
 	if b, err = json.Marshal(ls.Log); err == nil {
-		row := cdb.getStreamID.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, string(b))
+		row := cdb.funcStreamID.QueryRowContext(ctx, ls.URL, ls.LogOperator.Id, string(b))
 		err = row.Scan(&ls.Id)
-	}
-	return
-}
-
-func (cdb *CertPG) GetMinMaxIndexes(ctx context.Context, streamUrl string) (minIndex, maxIndex int64, err error) {
-	minIndex = -1
-	maxIndex = -1
-	streamUrl = strings.ReplaceAll(streamUrl, "'", "''")
-	row := cdb.DB.QueryRowContext(ctx, fmt.Sprintf("SELECT id FROM %sstream WHERE url='%s';", TablePrefix, streamUrl))
-	var streamId int32
-	if err = row.Scan(&streamId); err == nil {
-		row = cdb.DB.QueryRowContext(ctx, fmt.Sprintf("SELECT MIN(logindex), MAX(logindex) FROM %sentry WHERE stream=%v;", TablePrefix, streamId))
-		err = row.Scan(&minIndex, &maxIndex)
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		err = nil
 	}
 	return
 }
