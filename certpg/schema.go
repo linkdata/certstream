@@ -96,8 +96,8 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
 	CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
-IF to_regclass('CERTDB_crtsh') IS NULL THEN
-	CREATE OR REPLACE VIEW CERTDB_crtsh AS
+IF to_regclass('CERTDB_dnsnames') IS NULL THEN
+	CREATE OR REPLACE VIEW CERTDB_dnsnames AS
 	SELECT cert, dnsname, 
 		dnsname !~ '^[[:ascii:]]+$'::text AS idna, 
 		NOW() between cc.notbefore and cc.notafter as valid,
