@@ -113,7 +113,7 @@ END IF;
 
 IF to_regclass('CERTDB_entries') IS NULL THEN
 	CREATE OR REPLACE VIEW CERTDB_entries AS
-	SELECT seen, strm.url AS stream, logindex,  
+	SELECT seen, strm.url AS stream, logindex, cert,
 		concat('https://crt.sh/?q=', encode(cc.sha256, 'hex'::text)) AS crtsh
 		FROM CERTDB_entry ce
 		inner join CERTDB_cert cc on cc.id = ce.cert 
