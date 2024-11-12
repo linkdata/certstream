@@ -41,7 +41,7 @@ func (cdb *CertPG) Backfill(ctx context.Context, ls *certstream.LogStream) {
 	if err := row.Scan(&minIndex); cdb.LogError(err, "Backfill/MinIndex", "url", ls.URL) == nil {
 		if minIndex > 0 {
 			if l := cdb.Logger; l != nil {
-				l.Info("certstream: old", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
+				l.Info("certstream: backlog", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
 			}
 			for minIndex > 0 {
 				start := max(0, minIndex-BulkRange)

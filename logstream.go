@@ -20,12 +20,13 @@ type LogStream struct {
 	*LogOperator
 	*loglist3.Log
 	*client.LogClient
-	Err        error // set if Stopped() returns true
-	Count      int64 // atomic: number of certificates sent to the channel
-	LastIndex  int64 // atomic: highest index that is available from stream source
-	Id         int32 // database ID, if available
-	Backfilled int32 // atomic: nonzero if backfilled
-	stopped    int32 // atomic
+	Err       error // set if Stopped() returns true
+	Count     int64 // atomic: number of certificates sent to the channel
+	MinIndex  int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex  int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex int64 // atomic: highest index that is available from stream source
+	Id        int32 // database ID, if available
+	stopped   int32 // atomic
 }
 
 func (ls *LogStream) String() string {
@@ -39,6 +40,8 @@ func NewLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log
 			LogOperator: logop,
 			Log:         log,
 			LogClient:   logClient,
+			MinIndex:    -1,
+			MaxIndex:    -1,
 			LastIndex:   -1,
 		}
 	}
@@ -99,6 +102,14 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry) *LogEntry 
 	ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &entry)
 	if leaferr == nil {
 		ctle, leaferr = ctrle.ToLogEntry()
+	}
+	if logindex >= 0 {
+		if x := atomic.LoadInt64(&ls.MinIndex); x > logindex || x == -1 {
+			atomic.StoreInt64(&ls.MinIndex, logindex)
+		}
+		if x := atomic.LoadInt64(&ls.MaxIndex); x < logindex || x == -1 {
+			atomic.StoreInt64(&ls.MaxIndex, logindex)
+		}
 	}
 	return &LogEntry{
 		LogStream:   ls,
