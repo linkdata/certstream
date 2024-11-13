@@ -113,7 +113,8 @@ IF to_regclass('CERTDB_entries') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_entries AS
   SELECT
     ce.seen,
-    strm.url AS stream,
+    strm.url AS url,
+    ce.stream,
     ce.logindex,
     ce.cert,
     CONCAT('https://crt.sh/?q=', ENCODE((SELECT sha256 FROM CERTDB_cert WHERE id = ce.cert), 'hex'::text)) AS crtsh
