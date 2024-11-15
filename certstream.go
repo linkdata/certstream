@@ -30,10 +30,9 @@ var DefaultHttpClient = &http.Client{
 	Transport: &http.Transport{
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
-		MaxIdleConnsPerHost:   10,
+		MaxConnsPerHost:       4,
+		MaxIdleConnsPerHost:   4,
 		DisableKeepAlives:     false,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	},
@@ -82,7 +81,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 		logList, err = GetLogList(ctx, DefaultHttpClient, loglist3.AllLogListURL)
 	}
 
-	chanSize := 1024
+	chanSize := BatchSize
 	if logList != nil {
 		chanSize *= len(logList.Operators)
 	}

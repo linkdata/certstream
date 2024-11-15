@@ -16,6 +16,8 @@ import (
 	"github.com/google/trillian/client/backoff"
 )
 
+var BatchSize = 1024
+
 type LogStream struct {
 	*LogOperator
 	*loglist3.Log
@@ -53,6 +55,15 @@ func (ls *LogStream) Stopped() bool {
 	return atomic.LoadInt32(&ls.stopped) != 0
 }
 
+func sleep(ctx context.Context, d time.Duration) {
+	tmr := time.NewTimer(d)
+	defer tmr.Stop()
+	select {
+	case <-tmr.C:
+	case <-ctx.Done():
+	}
+}
+
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 	defer atomic.StoreInt32(&ls.stopped, 1)
 
@@ -63,6 +74,9 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 			ls.GetRawEntries(ctx, start, end, func(logindex int64, entry ct.LeafEntry) {
 				ls.SendEntry(entryCh, logindex, entry)
 			})
+			if end-start <= int64(BatchSize/2) {
+				sleep(ctx, time.Second*15)
+			}
 			start = end
 		}
 		end, err = ls.NewLastIndex(ctx)
@@ -85,7 +99,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1
 			if lastIndex < newIndex {
-				if lastIndex+1024 < newIndex || time.Since(now) > time.Second*10 {
+				if lastIndex+int64(BatchSize) < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
 					atomic.StoreInt64(&ls.LastIndex, lastIndex)
 					return nil
@@ -135,7 +149,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 			Jitter: true,
 		}
 		var resp *ct.GetEntriesResponse
-		stop := start + min(1024, end-start)
+		stop := start + min(int64(BatchSize), end-start)
 		if err := bo.Retry(ctx, func() error {
 			var err error
 			resp, err = ls.LogClient.GetRawEntries(ctx, start, stop)
