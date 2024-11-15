@@ -44,7 +44,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 	}
 }
 
-func (cdb *CertPG) Backfill(ctx context.Context, ls *certstream.LogStream) {
+func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream) {
 	cdb.backfillGaps(ctx, ls)
 	row := cdb.stmtSelectMinIdx.QueryRowContext(ctx, ls.Id)
 	var minIndex int64

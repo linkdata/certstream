@@ -21,6 +21,7 @@ import (
 type CertPG struct {
 	*sql.DB
 	certstream.Logger
+	Backfill         bool
 	funcOperatorID   *sql.Stmt
 	funcStreamID     *sql.Stmt
 	procNewEntry     *sql.Stmt
@@ -133,8 +134,10 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		var seen time.Time
 		var sig []byte
 
-		if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
-			go cdb.Backfill(ctx, le.LogStream)
+		if cdb.Backfill {
+			if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
+				go cdb.BackfillStream(ctx, le.LogStream)
+			}
 		}
 
 		logindex := le.Index()
