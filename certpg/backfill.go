@@ -2,6 +2,7 @@ package certpg
 
 import (
 	"context"
+	"net/http"
 	"sync/atomic"
 
 	ct "github.com/google/certificate-transparency-go"
@@ -44,7 +45,13 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 	}
 }
 
-func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream) {
+func (cdb *CertPG) BackfillStream(ctx context.Context, httpClient *http.Client, ls *certstream.LogStream) {
+	if httpClient != nil && httpClient != ls.HttpClient {
+		if ls2, err := certstream.NewLogStream(ls.LogOperator, httpClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+			ls2.Id = ls.Id
+			ls = ls2
+		}
+	}
 	cdb.backfillGaps(ctx, ls)
 	row := cdb.stmtSelectMinIdx.QueryRowContext(ctx, ls.Id)
 	var minIndex int64

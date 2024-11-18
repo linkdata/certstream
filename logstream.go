@@ -22,6 +22,7 @@ type LogStream struct {
 	*LogOperator
 	*loglist3.Log
 	*client.LogClient
+	HttpClient *http.Client
 	Err        error // set if Stopped() returns true
 	Count      int64 // atomic: number of certificates sent to the channel
 	MinIndex   int64 // atomic: lowest index seen so far, -1 if none seen yet
@@ -43,6 +44,7 @@ func NewLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log
 			LogOperator: logop,
 			Log:         log,
 			LogClient:   logClient,
+			HttpClient:  httpClient,
 			MinIndex:    -1,
 			MaxIndex:    -1,
 			LastIndex:   -1,

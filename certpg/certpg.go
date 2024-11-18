@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ type CertPG struct {
 	*sql.DB
 	certstream.Logger
 	Backfill         bool
+	BackfillClient   *http.Client
 	funcOperatorID   *sql.Stmt
 	funcStreamID     *sql.Stmt
 	procNewEntry     *sql.Stmt
@@ -136,7 +138,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 
 		if cdb.Backfill {
 			if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
-				go cdb.BackfillStream(ctx, le.LogStream)
+				go cdb.BackfillStream(ctx, cdb.BackfillClient, le.LogStream)
 			}
 		}
 
