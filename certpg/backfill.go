@@ -45,10 +45,21 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 	}
 }
 
-func (cdb *CertPG) BackfillStream(ctx context.Context, httpClient *http.Client, ls *certstream.LogStream) {
-	if httpClient != nil && httpClient != ls.HttpClient {
-		if ls2, err := certstream.NewLogStream(ls.LogOperator, httpClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream) {
+	httpClient := ls.HttpClient
+	if cdb.Limiter != nil {
+		if tp, ok := httpClient.Transport.(*http.Transport); ok {
+			client := *httpClient
+			tp = tp.Clone()
+			tp.DialContext = cdb.Limiter.Wrap(ls.DialContextFn)
+			client.Transport = tp
+			httpClient = &client
+		}
+	}
+	if httpClient != ls.HttpClient {
+		if ls2, err := certstream.NewLogStream(ls.LogOperator, httpClient, ls.DialContextFn, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
 			ls2.Id = ls.Id
+			ls2.Backfilled = atomic.LoadInt32(&ls.Backfilled)
 			ls = ls2
 		}
 	}

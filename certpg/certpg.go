@@ -9,11 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/linkdata/bwlimit"
 	"github.com/linkdata/certstream"
 	"golang.org/x/net/idna"
 )
@@ -22,8 +22,8 @@ import (
 type CertPG struct {
 	*sql.DB
 	certstream.Logger
-	Backfill         bool
-	BackfillClient   *http.Client
+	Backfill         bool // if true, fill in missing entries in database
+	*bwlimit.Limiter      // if not nil, use this limiter when backfilling
 	funcOperatorID   *sql.Stmt
 	funcStreamID     *sql.Stmt
 	procNewEntry     *sql.Stmt
@@ -138,7 +138,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 
 		if cdb.Backfill {
 			if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
-				go cdb.BackfillStream(ctx, cdb.BackfillClient, le.LogStream)
+				go cdb.BackfillStream(ctx, le.LogStream)
 			}
 		}
 

@@ -14,6 +14,7 @@ import (
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
 	"github.com/google/trillian/client/backoff"
+	"github.com/linkdata/bwlimit"
 )
 
 var BatchSize = 1024
@@ -22,32 +23,34 @@ type LogStream struct {
 	*LogOperator
 	*loglist3.Log
 	*client.LogClient
-	HttpClient *http.Client
-	Err        error // set if Stopped() returns true
-	Count      int64 // atomic: number of certificates sent to the channel
-	MinIndex   int64 // atomic: lowest index seen so far, -1 if none seen yet
-	MaxIndex   int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex  int64 // atomic: highest index that is available from stream source
-	Id         int32 // database ID, if available
-	Backfilled int32 // atomic: nonzero if database backfill called for this stream
-	stopped    int32 // atomic
+	HttpClient    *http.Client
+	DialContextFn bwlimit.DialContextFn
+	Err           error // set if Stopped() returns true
+	Count         int64 // atomic: number of certificates sent to the channel
+	MinIndex      int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex      int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex     int64 // atomic: highest index that is available from stream source
+	Id            int32 // database ID, if available
+	Backfilled    int32 // atomic: nonzero if database backfill called for this stream
+	stopped       int32 // atomic
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
 }
 
-func NewLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log) (ls *LogStream, err error) {
+func NewLogStream(logop *LogOperator, httpClient *http.Client, dc bwlimit.DialContextFn, log *loglist3.Log) (ls *LogStream, err error) {
 	var logClient *client.LogClient
 	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{}); err == nil {
 		ls = &LogStream{
-			LogOperator: logop,
-			Log:         log,
-			LogClient:   logClient,
-			HttpClient:  httpClient,
-			MinIndex:    -1,
-			MaxIndex:    -1,
-			LastIndex:   -1,
+			LogOperator:   logop,
+			Log:           log,
+			LogClient:     logClient,
+			HttpClient:    httpClient,
+			DialContextFn: dc,
+			MinIndex:      -1,
+			MaxIndex:      -1,
+			LastIndex:     -1,
 		}
 	}
 	return

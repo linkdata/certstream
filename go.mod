@@ -5,8 +5,11 @@ go 1.23.2
 require (
 	github.com/google/certificate-transparency-go v1.2.1
 	github.com/google/trillian v1.6.0
+	github.com/linkdata/bwlimit v0.9.0
 	golang.org/x/net v0.25.0
 )
+
+// replace github.com/linkdata/bwlimit => ../bwlimit
 
 require (
 	github.com/go-logr/logr v1.4.1 // indirect

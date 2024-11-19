@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/linkdata/bwlimit"
 )
 
 type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client)
@@ -20,8 +21,9 @@ type Logger interface {
 }
 
 type CertStream struct {
-	LogStreamInit LogStreamInitFn
-	Operators     map[string]*LogOperator // operators by operator domain
+	LogStreamInit    LogStreamInitFn
+	Operators        map[string]*LogOperator // operators by operator domain
+	*bwlimit.Limiter                         // bandwidth limiter used for following CT log heads
 	Logger
 }
 
@@ -30,8 +32,8 @@ var DefaultHttpClient = &http.Client{
 	Transport: &http.Transport{
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
-		MaxConnsPerHost:       4,
-		MaxIdleConnsPerHost:   4,
+		MaxConnsPerHost:       2,
+		MaxIdleConnsPerHost:   2,
 		DisableKeepAlives:     false,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
@@ -89,6 +91,7 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 	entryCh = sendEntryCh
 
 	if logList != nil {
+		httpClients := map[*http.Client]bwlimit.DialContextFn{}
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
 				if httpClient := cs.LogStreamInit(op, log); httpClient != nil {
@@ -102,7 +105,17 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 						}
 						sort.Strings(op.Email)
 					}
-					if ls, err2 := NewLogStream(logop, httpClient, log); err2 == nil {
+					var dc bwlimit.DialContextFn
+					if dc, ok := httpClients[httpClient]; !ok {
+						if tp, ok := httpClient.Transport.(*http.Transport); ok {
+							dc = tp.DialContext
+							httpClients[httpClient] = dc
+							if cs.Limiter != nil {
+								tp.DialContext = cs.Limiter.Wrap(dc)
+							}
+						}
+					}
+					if ls, err2 := NewLogStream(logop, httpClient, dc, log); err2 == nil {
 						cs.Operators[opDom] = logop
 						logop.Streams = append(logop.Streams, ls)
 					} else {
