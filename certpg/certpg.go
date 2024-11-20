@@ -23,7 +23,7 @@ type CertPG struct {
 	*sql.DB
 	certstream.Logger
 	Backfill         bool // if true, fill in missing entries in database
-	*bwlimit.Limiter      // if not nil, use this limiter when backfilling
+	*bwlimit.Limiter      // limiter used when backfilling
 	funcOperatorID   *sql.Stmt
 	funcStreamID     *sql.Stmt
 	procNewEntry     *sql.Stmt
@@ -59,6 +59,7 @@ func New(ctx context.Context, db *sql.DB, prefix string) (cdb *CertPG, err error
 											if stmtSelectMaxIdx, err = db.PrepareContext(ctx, pfx(SelectMaxIndex)); err == nil {
 												cdb = &CertPG{
 													DB:               db,
+													Limiter:          bwlimit.NewLimiter(),
 													funcOperatorID:   getOperatorID,
 													funcStreamID:     getStreamID,
 													procNewEntry:     procNewEntry,

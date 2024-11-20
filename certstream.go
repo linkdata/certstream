@@ -23,7 +23,7 @@ type Logger interface {
 type CertStream struct {
 	LogStreamInit    LogStreamInitFn
 	Operators        map[string]*LogOperator // operators by operator domain
-	*bwlimit.Limiter                         // bandwidth limiter used for following CT log heads
+	*bwlimit.Limiter                         // overall bandwidth limiter
 	Logger
 }
 
@@ -53,6 +53,7 @@ func New() *CertStream {
 	return &CertStream{
 		LogStreamInit: DefaultLogStreamInit,
 		Operators:     make(map[string]*LogOperator),
+		Limiter:       bwlimit.NewLimiter(),
 	}
 }
 
