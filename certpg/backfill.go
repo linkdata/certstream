@@ -51,13 +51,13 @@ func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream)
 		if tp, ok := httpClient.Transport.(*http.Transport); ok {
 			client := *httpClient
 			tp = tp.Clone()
-			tp.DialContext = cdb.Limiter.Wrap(ls.DialContextFn)
+			tp.DialContext = cdb.Limiter.Wrap(tp.DialContext)
 			client.Transport = tp
 			httpClient = &client
 		}
 	}
 	if httpClient != ls.HttpClient {
-		if ls2, err := certstream.NewLogStream(ls.LogOperator, httpClient, ls.DialContextFn, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+		if ls2, err := certstream.NewLogStream(ls.LogOperator, httpClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
 			ls2.Id = ls.Id
 			ls2.Backfilled = atomic.LoadInt32(&ls.Backfilled)
 			ls = ls2

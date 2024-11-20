@@ -105,17 +105,16 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 						}
 						sort.Strings(op.Email)
 					}
-					var dc bwlimit.DialContextFn
-					if dc, ok := httpClients[httpClient]; !ok {
-						if tp, ok := httpClient.Transport.(*http.Transport); ok {
-							dc = tp.DialContext
-							httpClients[httpClient] = dc
-							if cs.Limiter != nil {
+					if cs.Limiter != nil {
+						if dc, ok := httpClients[httpClient]; !ok {
+							if tp, ok := httpClient.Transport.(*http.Transport); ok {
+								dc = tp.DialContext
+								httpClients[httpClient] = dc
 								tp.DialContext = cs.Limiter.Wrap(dc)
 							}
 						}
 					}
-					if ls, err2 := NewLogStream(logop, httpClient, dc, log); err2 == nil {
+					if ls, err2 := NewLogStream(logop, httpClient, log); err2 == nil {
 						cs.Operators[opDom] = logop
 						logop.Streams = append(logop.Streams, ls)
 					} else {
