@@ -111,12 +111,6 @@ func (cdb *CertPG) Close() error {
 	)
 }
 
-func dbRes(res sql.Result) string {
-	rowId, _ := res.LastInsertId()
-	numRows, _ := res.RowsAffected()
-	return fmt.Sprintf("rowId=%v numRows=%v", rowId, numRows)
-}
-
 func (cdb *CertPG) Operator(ctx context.Context, lo *certstream.LogOperator) (err error) {
 	row := cdb.funcOperatorID.QueryRowContext(ctx, lo.Name, strings.Join(lo.Email, ","))
 	err = row.Scan(&lo.Id)

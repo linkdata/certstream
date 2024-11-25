@@ -107,9 +107,9 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 						sort.Strings(op.Email)
 					}
 					if cs.Limiter != nil {
-						if dc, ok := httpClients[httpClient]; !ok {
+						if _, ok := httpClients[httpClient]; !ok {
 							if tp, ok := httpClient.Transport.(*http.Transport); ok {
-								dc = tp.DialContext
+								dc := tp.DialContext
 								httpClients[httpClient] = dc
 								tp.DialContext = cs.Limiter.Wrap(dc)
 							}

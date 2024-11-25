@@ -30,6 +30,7 @@ type LogStream struct {
 	LastIndex  int64 // atomic: highest index that is available from stream source
 	Id         int32 // database ID, if available
 	Backfilled int32 // atomic: nonzero if database backfill called for this stream
+	InsideGaps int64 // atomic: number of remaining entries inside gaps
 	stopped    int32 // atomic
 }
 

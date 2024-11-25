@@ -11,7 +11,7 @@ import (
 
 var BulkRange = int64(4096)
 
-func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
+func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream, gapcounter *int64) {
 	type gap struct {
 		start int64
 		end   int64
@@ -23,6 +23,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 			if err = rows.Scan(&gap_start, &gap_end); cdb.LogError(err, "backfillGaps/Scan", "url", ls.URL) == nil {
 				gaps = append(gaps, gap{start: gap_start, end: gap_end})
 			}
+			atomic.AddInt64(gapcounter, (gap_end-gap_start)+1)
 		}
 		rows.Close()
 	}
@@ -40,6 +41,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 			l.Info("certstream: gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
 		}
 		ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
+			atomic.AddInt64(gapcounter, -1)
 			cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
 		})
 	}
@@ -47,6 +49,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream) {
 
 func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream) {
 	httpClient := ls.HttpClient
+	gapcounter := &ls.InsideGaps
 	if cdb.Limiter != nil {
 		if tp, ok := httpClient.Transport.(*http.Transport); ok {
 			client := *httpClient
@@ -63,7 +66,7 @@ func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream)
 			ls = ls2
 		}
 	}
-	cdb.backfillGaps(ctx, ls)
+	cdb.backfillGaps(ctx, ls, gapcounter)
 	row := cdb.stmtSelectMinIdx.QueryRowContext(ctx, ls.Id)
 	var minIndex int64
 	if err := row.Scan(&minIndex); cdb.LogError(err, "Backfill/MinIndex", "url", ls.URL) == nil {
