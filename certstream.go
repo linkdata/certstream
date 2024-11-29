@@ -79,11 +79,10 @@ func (cs *CertStream) CountStreams() (running, stopped int) {
 }
 
 // Start returns a channel to read results from. If logList is nil, we fetch the list from loglist3.AllLogListURL using DefaultHttpClient.
-func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
+func (cs *CertStream) Start(ctx context.Context, cd bwlimit.ContextDialer, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
 	if logList == nil {
 		logList, err = GetLogList(ctx, DefaultHttpClient, loglist3.AllLogListURL)
 	}
-
 	chanSize := BatchSize
 	if logList != nil {
 		chanSize *= len(logList.Operators)
@@ -92,7 +91,6 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 	entryCh = sendEntryCh
 
 	if logList != nil {
-		httpClients := map[*http.Client]bwlimit.DialContextFn{}
 		for _, op := range logList.Operators {
 			for _, log := range op.Logs {
 				if httpClient := cs.LogStreamInit(op, log); httpClient != nil {
@@ -106,13 +104,9 @@ func (cs *CertStream) Start(ctx context.Context, logList *loglist3.LogList) (ent
 						}
 						sort.Strings(op.Email)
 					}
-					if cs.Limiter != nil {
-						if _, ok := httpClients[httpClient]; !ok {
-							if tp, ok := httpClient.Transport.(*http.Transport); ok {
-								dc := tp.DialContext
-								httpClients[httpClient] = dc
-								tp.DialContext = cs.Limiter.Wrap(dc)
-							}
+					if cd != nil {
+						if tp, ok := httpClient.Transport.(*http.Transport); ok {
+							tp.DialContext = cd.DialContext
 						}
 					}
 					if ls, err2 := NewLogStream(logop, httpClient, log); err2 == nil {

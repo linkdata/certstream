@@ -22,18 +22,18 @@ import (
 type CertPG struct {
 	*sql.DB
 	certstream.Logger
-	Backfill         bool // if true, fill in missing entries in database
-	*bwlimit.Limiter      // limiter used when backfilling
-	funcOperatorID   *sql.Stmt
-	funcStreamID     *sql.Stmt
-	procNewEntry     *sql.Stmt
-	stmtSelectGaps   *sql.Stmt
-	stmtSelectMinIdx *sql.Stmt
-	stmtSelectMaxIdx *sql.Stmt
+	Backfill              bool // if true, fill in missing entries in database
+	bwlimit.ContextDialer      // if not nil, ContextDialer used for backfilling
+	funcOperatorID        *sql.Stmt
+	funcStreamID          *sql.Stmt
+	procNewEntry          *sql.Stmt
+	stmtSelectGaps        *sql.Stmt
+	stmtSelectMinIdx      *sql.Stmt
+	stmtSelectMaxIdx      *sql.Stmt
 }
 
 // New creates a CertPG and creates the needed tables and indices if they don't exist.
-func New(ctx context.Context, db *sql.DB, prefix string) (cdb *CertPG, err error) {
+func New(ctx context.Context, cd bwlimit.ContextDialer, db *sql.DB, prefix string) (cdb *CertPG, err error) {
 	const callCreateSchema = `CALL CERTDB_create_schema();`
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
@@ -59,7 +59,7 @@ func New(ctx context.Context, db *sql.DB, prefix string) (cdb *CertPG, err error
 											if stmtSelectMaxIdx, err = db.PrepareContext(ctx, pfx(SelectMaxIndex)); err == nil {
 												cdb = &CertPG{
 													DB:               db,
-													Limiter:          bwlimit.NewLimiter(),
+													ContextDialer:    cd,
 													funcOperatorID:   getOperatorID,
 													funcStreamID:     getStreamID,
 													procNewEntry:     procNewEntry,

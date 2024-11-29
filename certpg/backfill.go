@@ -50,11 +50,11 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream, g
 func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream) {
 	httpClient := ls.HttpClient
 	gapcounter := &ls.InsideGaps
-	if cdb.Limiter != nil {
+	if cdb.ContextDialer != nil {
 		if tp, ok := httpClient.Transport.(*http.Transport); ok {
 			client := *httpClient
 			tp = tp.Clone()
-			tp.DialContext = cdb.Limiter.Wrap(tp.DialContext)
+			tp.DialContext = cdb.ContextDialer.DialContext
 			client.Transport = tp
 			httpClient = &client
 		}

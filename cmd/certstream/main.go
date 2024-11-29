@@ -15,7 +15,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	ch, err := certstream.New().Start(ctx, nil)
+	ch, err := certstream.New().Start(ctx, nil, nil)
 	if err != nil {
 		fmt.Println(err)
 	} else {
