@@ -22,8 +22,9 @@ import (
 type CertPG struct {
 	*sql.DB
 	certstream.Logger
-	Backfill              bool // if true, fill in missing entries in database
-	bwlimit.ContextDialer      // if not nil, ContextDialer used for backfilling
+	Backfill              bool                // if true, fill in missing entries in database
+	bwlimit.ContextDialer                     // if not nil, ContextDialer used for backfilling
+	Pfx                   func(string) string // prefix replacer
 	funcOperatorID        *sql.Stmt
 	funcStreamID          *sql.Stmt
 	procNewEntry          *sql.Stmt
@@ -60,6 +61,7 @@ func New(ctx context.Context, cd bwlimit.ContextDialer, db *sql.DB, prefix strin
 												cdb = &CertPG{
 													DB:               db,
 													ContextDialer:    cd,
+													Pfx:              pfx,
 													funcOperatorID:   getOperatorID,
 													funcStreamID:     getStreamID,
 													procNewEntry:     procNewEntry,
