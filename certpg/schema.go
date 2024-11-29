@@ -20,3 +20,5 @@ var SelectGaps string
 const SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
 
 const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
+
+const SelectDnsnameLike = `SELECT * FROM CERTDB_dnsnames WHERE dnsname LIKE $1;`

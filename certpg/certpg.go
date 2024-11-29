@@ -31,6 +31,7 @@ type CertPG struct {
 	stmtSelectGaps        *sql.Stmt
 	stmtSelectMinIdx      *sql.Stmt
 	stmtSelectMaxIdx      *sql.Stmt
+	stmtSelectDnsnameLike *sql.Stmt
 }
 
 // New creates a CertPG and creates the needed tables and indices if they don't exist.
@@ -58,16 +59,20 @@ func New(ctx context.Context, cd bwlimit.ContextDialer, db *sql.DB, prefix strin
 										if stmtSelectMinIdx, err = db.PrepareContext(ctx, pfx(SelectMinIndex)); err == nil {
 											var stmtSelectMaxIdx *sql.Stmt
 											if stmtSelectMaxIdx, err = db.PrepareContext(ctx, pfx(SelectMaxIndex)); err == nil {
-												cdb = &CertPG{
-													DB:               db,
-													ContextDialer:    cd,
-													Pfx:              pfx,
-													funcOperatorID:   getOperatorID,
-													funcStreamID:     getStreamID,
-													procNewEntry:     procNewEntry,
-													stmtSelectGaps:   stmtSelectGaps,
-													stmtSelectMinIdx: stmtSelectMinIdx,
-													stmtSelectMaxIdx: stmtSelectMaxIdx,
+												var stmtSelectDnsnameLike *sql.Stmt
+												if stmtSelectDnsnameLike, err = db.PrepareContext(ctx, pfx(SelectDnsnameLike)); err == nil {
+													cdb = &CertPG{
+														DB:                    db,
+														ContextDialer:         cd,
+														Pfx:                   pfx,
+														funcOperatorID:        getOperatorID,
+														funcStreamID:          getStreamID,
+														procNewEntry:          procNewEntry,
+														stmtSelectGaps:        stmtSelectGaps,
+														stmtSelectMinIdx:      stmtSelectMinIdx,
+														stmtSelectMaxIdx:      stmtSelectMaxIdx,
+														stmtSelectDnsnameLike: stmtSelectDnsnameLike,
+													}
 												}
 											}
 										}
@@ -203,4 +208,16 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		}
 	}
 	return
+}
+
+func (cdb *CertPG) ScanDnsname(rows *sql.Rows, dnsname *Dnsname) (err error) {
+	return rows.Scan(
+		&dnsname.CertID,
+		&dnsname.DNSName,
+		&dnsname.Idna,
+		&dnsname.Valid,
+		&dnsname.Issuer,
+		&dnsname.Subject,
+		&dnsname.Crtsh,
+	)
 }
