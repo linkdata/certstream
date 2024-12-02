@@ -221,3 +221,12 @@ func (cdb *CertPG) ScanDnsname(rows *sql.Rows, dnsname *Dnsname) (err error) {
 		&dnsname.Crtsh,
 	)
 }
+
+func (cdb *CertPG) Estimate(table string) (estimate float64, err error) {
+	if !strings.HasPrefix(table, "CERTDB_") {
+		table = "CERTDB_" + table
+	}
+	row := cdb.QueryRow(SelectEstimate, cdb.Pfx(table))
+	err = row.Scan(&estimate)
+	return
+}
