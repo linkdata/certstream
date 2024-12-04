@@ -96,8 +96,9 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
   SELECT
     cert,
-    dnsname, 
-    dnsname !~ '^[[:ascii:]]+$'::text AS idna, 
+    dnsname,
+    cc.notbefore AS notbefore,
+    dnsname !~ '^[[:ascii:]]+$'::text AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
     iss.organization as issuer,
     subj.organization as subject,
