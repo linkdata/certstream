@@ -143,6 +143,33 @@ func (ls *LogStream) SendEntry(entryCh chan<- *LogEntry, logindex int64, entry c
 	atomic.AddInt64(&ls.LogOperator.Count, 1)
 }
 
+func (ls *LogStream) handleError(err error) (fatal bool) {
+	errTxt := err.Error()
+	if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
+		return false
+	}
+	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
+		switch rspErr.StatusCode {
+		case http.StatusTooManyRequests,
+			http.StatusInternalServerError,
+			http.StatusBadGateway,
+			http.StatusGatewayTimeout:
+			return false
+		}
+		body := string(rspErr.Body)
+		if len(body) > 64 {
+			body = body[:64]
+		}
+		ls.LogError(rspErr, "GetRawEntries", "url", ls.URL, "code", rspErr.StatusCode, "body", body)
+		return false
+	}
+	ls.LogError(err, "GetRawEntries", "url", ls.URL)
+	return false
+}
+
 func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb func(logindex int64, entry ct.LeafEntry)) {
 	for start <= end {
 		bo := &backoff.Backoff{
@@ -158,25 +185,9 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 			resp, err = ls.LogClient.GetRawEntries(ctx, start, stop)
 			return err
 		}); err != nil {
-			if errors.Is(err, context.Canceled) {
+			if ls.handleError(err) {
 				return
 			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				continue
-			}
-			if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
-				switch rspErr.StatusCode {
-				case http.StatusTooManyRequests,
-					http.StatusInternalServerError,
-					http.StatusBadGateway,
-					http.StatusGatewayTimeout:
-					continue
-				}
-			}
-			if s := err.Error(); strings.Contains(s, "deadline exceeded") || strings.Contains(s, "context canceled") {
-				continue
-			}
-			ls.LogError(err, "GetRawEntries", "url", ls.URL, "start", start, "stop", stop, "end", end, "last", ls.LastIndex)
 		} else {
 			for i := range resp.Entries {
 				cb(start, resp.Entries[i])
