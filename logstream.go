@@ -164,7 +164,7 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 			body = body[:64]
 		}
 		ls.LogError(rspErr, "GetRawEntries", "url", ls.URL, "code", rspErr.StatusCode, "body", body)
-		return false
+		return true
 	}
 	ls.LogError(err, "GetRawEntries", "url", ls.URL)
 	return false
