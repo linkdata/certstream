@@ -100,7 +100,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		var sth *ct.SignedTreeHead
 		sth, err = ls.LogClient.GetSTH(ctx)
 		if err == nil {
-			newIndex := int64(sth.TreeSize) - 1
+			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
 				if lastIndex+int64(BatchSize) < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex

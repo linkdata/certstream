@@ -42,36 +42,38 @@ func New(ctx context.Context, cd bwlimit.ContextDialer, db *sql.DB, prefix strin
 	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`
 	pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", prefix) }
 
-	if _, err = db.ExecContext(ctx, pfx(ProcedureCreateSchema)); err == nil {
-		if _, err = db.ExecContext(ctx, pfx(callCreateSchema)); err == nil {
-			if _, err = db.ExecContext(ctx, pfx(FunctionOperatorID)); err == nil {
-				if _, err = db.ExecContext(ctx, pfx(FunctionStreamID)); err == nil {
-					if _, err = db.ExecContext(ctx, pfx(ProcedureNewEntry)); err == nil {
-						var getOperatorID *sql.Stmt
-						if getOperatorID, err = db.PrepareContext(ctx, pfx(callOperatorID)); err == nil {
-							var getStreamID *sql.Stmt
-							if getStreamID, err = db.PrepareContext(ctx, pfx(callStreamID)); err == nil {
-								var procNewEntry *sql.Stmt
-								if procNewEntry, err = db.PrepareContext(ctx, pfx(callNewEntry)); err == nil {
-									var stmtSelectGaps *sql.Stmt
-									if stmtSelectGaps, err = db.PrepareContext(ctx, pfx(SelectGaps)); err == nil {
-										var stmtSelectMinIdx *sql.Stmt
-										if stmtSelectMinIdx, err = db.PrepareContext(ctx, pfx(SelectMinIndex)); err == nil {
-											var stmtSelectMaxIdx *sql.Stmt
-											if stmtSelectMaxIdx, err = db.PrepareContext(ctx, pfx(SelectMaxIndex)); err == nil {
-												var stmtSelectDnsnameLike *sql.Stmt
-												if stmtSelectDnsnameLike, err = db.PrepareContext(ctx, pfx(SelectDnsnameLike)); err == nil {
-													cdb = &CertPG{
-														DB:                    db,
-														ContextDialer:         cd,
-														Pfx:                   pfx,
-														funcOperatorID:        getOperatorID,
-														funcStreamID:          getStreamID,
-														procNewEntry:          procNewEntry,
-														stmtSelectGaps:        stmtSelectGaps,
-														stmtSelectMinIdx:      stmtSelectMinIdx,
-														stmtSelectMaxIdx:      stmtSelectMaxIdx,
-														stmtSelectDnsnameLike: stmtSelectDnsnameLike,
+	if _, err = db.ExecContext(ctx, pfx(FunctionName)); err == nil {
+		if _, err = db.ExecContext(ctx, pfx(ProcedureCreateSchema)); err == nil {
+			if _, err = db.ExecContext(ctx, pfx(callCreateSchema)); err == nil {
+				if _, err = db.ExecContext(ctx, pfx(FunctionOperatorID)); err == nil {
+					if _, err = db.ExecContext(ctx, pfx(FunctionStreamID)); err == nil {
+						if _, err = db.ExecContext(ctx, pfx(ProcedureNewEntry)); err == nil {
+							var getOperatorID *sql.Stmt
+							if getOperatorID, err = db.PrepareContext(ctx, pfx(callOperatorID)); err == nil {
+								var getStreamID *sql.Stmt
+								if getStreamID, err = db.PrepareContext(ctx, pfx(callStreamID)); err == nil {
+									var procNewEntry *sql.Stmt
+									if procNewEntry, err = db.PrepareContext(ctx, pfx(callNewEntry)); err == nil {
+										var stmtSelectGaps *sql.Stmt
+										if stmtSelectGaps, err = db.PrepareContext(ctx, pfx(SelectGaps)); err == nil {
+											var stmtSelectMinIdx *sql.Stmt
+											if stmtSelectMinIdx, err = db.PrepareContext(ctx, pfx(SelectMinIndex)); err == nil {
+												var stmtSelectMaxIdx *sql.Stmt
+												if stmtSelectMaxIdx, err = db.PrepareContext(ctx, pfx(SelectMaxIndex)); err == nil {
+													var stmtSelectDnsnameLike *sql.Stmt
+													if stmtSelectDnsnameLike, err = db.PrepareContext(ctx, pfx(SelectDnsnameLike)); err == nil {
+														cdb = &CertPG{
+															DB:                    db,
+															ContextDialer:         cd,
+															Pfx:                   pfx,
+															funcOperatorID:        getOperatorID,
+															funcStreamID:          getStreamID,
+															procNewEntry:          procNewEntry,
+															stmtSelectGaps:        stmtSelectGaps,
+															stmtSelectMinIdx:      stmtSelectMinIdx,
+															stmtSelectMaxIdx:      stmtSelectMaxIdx,
+															stmtSelectDnsnameLike: stmtSelectDnsnameLike,
+														}
 													}
 												}
 											}
@@ -147,7 +149,8 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		logindex := le.Index()
 
 		if le.RawLogEntry != nil {
-			seen = time.UnixMilli(int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp)).UTC()
+			tse := int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp) //#nosec G115
+			seen = time.UnixMilli(tse).UTC()
 			shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
 			sig = shasig[:]
 		} else {

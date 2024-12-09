@@ -11,6 +11,9 @@ var FunctionOperatorID string
 //go:embed funcstreamid.sql
 var FunctionStreamID string
 
+//go:embed funcname.sql
+var FunctionName string
+
 //go:embed procnewentry.sql
 var ProcedureNewEntry string
 
