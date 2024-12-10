@@ -4,33 +4,17 @@ CREATE OR REPLACE FUNCTION CERTDB_name(
 RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE
     _result TEXT := LOWER(_dnsname);
+	_tld TEXT;
+	_len INT;
 BEGIN
-    _result := REPLACE(_result, '.com', 'A');
-    _result := REPLACE(_result, '.net', 'B');
-    _result := REPLACE(_result, '.org', 'C');
-    _result := REPLACE(_result, '.dev', 'D');
-    _result := REPLACE(_result, '.at', 'E');
-    _result := REPLACE(_result, '.au', 'F');
-    _result := REPLACE(_result, '.be', 'G');
-    _result := REPLACE(_result, '.br', 'H');
-    _result := REPLACE(_result, '.ca', 'I');
-    _result := REPLACE(_result, '.ch', 'J');
-    _result := REPLACE(_result, '.cn', 'K');
-    _result := REPLACE(_result, '.de', 'L');
-    _result := REPLACE(_result, '.dk', 'M');
-    _result := REPLACE(_result, '.es', 'N');
-    _result := REPLACE(_result, '.eu', 'O');
-    _result := REPLACE(_result, '.fr', 'P');
-    _result := REPLACE(_result, '.in', 'Q');
-    _result := REPLACE(_result, '.it', 'R');
-    _result := REPLACE(_result, '.jp', 'S');
-    _result := REPLACE(_result, '.no', 'T');
-    _result := REPLACE(_result, '.ru', 'U');
-    _result := REPLACE(_result, '.se', 'V');
-    _result := REPLACE(_result, '.su', 'W');
-    _result := REPLACE(_result, '.uk', 'X');
-    _result := REPLACE(_result, 'web', 'Y');
-    _result := REPLACE(_result, 'www', 'Z');
+	_len := length(_result);
+	IF _len > 3 AND substring(_result from _len-3 for 1) = '.' THEN
+		_tld := substring(_result from _len-3);
+		IF array_position(ARRAY['.com', '.net', '.org', '.dev'], _tld) IS NOT NULL THEN
+			_result := substring(_result for _len-4);
+		END IF;
+	END IF;
+	_result := LTRIM(_result, 'w.');
     RETURN _result;
 END;
 $$
