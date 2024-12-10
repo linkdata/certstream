@@ -35,12 +35,31 @@ func (le *LogEntry) String() (s string) {
 	return string(b)
 }
 
-// Cert returns the cert from LogEntry.X509Cert or LogEntry.Precert.TBSCertificate, or nil.
-func (le *LogEntry) Cert() (cert *x509.Certificate) {
+// Cert returns the Certificate given a LogEntry or nil.
+func (le *LogEntry) Cert() (crt *Certificate) {
 	if le.LogEntry != nil {
+		var cert *x509.Certificate
+		var precert bool
 		if cert = le.LogEntry.X509Cert; cert == nil {
 			if le.LogEntry.Precert != nil {
+				precert = true
 				cert = le.LogEntry.Precert.TBSCertificate
+			}
+		}
+		if cert != nil {
+			crt = &Certificate{
+				PreCert:     precert,
+				Certificate: cert,
+			}
+			if le.RawLogEntry != nil {
+				shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
+				crt.Signature = shasig[:]
+				tse := int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp) //#nosec G115
+				crt.Seen = time.UnixMilli(tse).UTC()
+			} else {
+				shasig := sha256.Sum256(cert.RawTBSCertificate)
+				crt.Signature = shasig[:]
+				crt.Seen = time.Now().UTC()
 			}
 		}
 	}
@@ -52,34 +71,6 @@ func (le *LogEntry) Index() (index int64) {
 	index = -1
 	if le.RawLogEntry != nil {
 		index = le.RawLogEntry.Index
-	}
-	return
-}
-
-func (le *LogEntry) IsPreCert() (yes bool) {
-	if le.LogEntry != nil {
-		yes = le.LogEntry.Precert != nil
-	}
-	return
-}
-
-func (le *LogEntry) Seen() (seen time.Time) {
-	if le.RawLogEntry != nil {
-		tse := int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp) //#nosec G115
-		seen = time.UnixMilli(tse).UTC()
-	} else {
-		seen = time.Now().UTC()
-	}
-	return
-}
-
-func (le *LogEntry) Signature() (sig []byte) {
-	if le.RawLogEntry != nil {
-		shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
-		sig = shasig[:]
-	} else if cert := le.Cert(); cert != nil {
-		shasig := sha256.Sum256(cert.RawTBSCertificate)
-		sig = shasig[:]
 	}
 	return
 }

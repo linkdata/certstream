@@ -142,8 +142,6 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		}
 
 		logindex := le.Index()
-		seen := le.Seen()
-		sig := le.Signature()
 
 		var dnsnames []string
 		for _, dnsname := range cert.DNSNames {
@@ -171,10 +169,10 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		}
 
 		args := []any{
-			seen,
+			cert.Seen,
 			le.LogStream.Id,
 			logindex,
-			sig,
+			cert.Signature,
 			strings.Join(cert.Issuer.Organization, ","),
 			strings.Join(cert.Issuer.Province, ","),
 			strings.Join(cert.Issuer.Country, ","),
