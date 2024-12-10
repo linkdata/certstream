@@ -1,6 +1,8 @@
 package certpg
 
-import "time"
+import (
+	"time"
+)
 
 type Dnsname struct {
 	CertID    int64

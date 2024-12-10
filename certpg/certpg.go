@@ -2,7 +2,6 @@ package certpg
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"io"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/linkdata/bwlimit"
 	"github.com/linkdata/certstream"
@@ -137,9 +135,6 @@ func (cdb *CertPG) Stream(ctx context.Context, ls *certstream.LogStream) (err er
 
 func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err error) {
 	if cert := le.Cert(); cert != nil {
-		var seen time.Time
-		var sig []byte
-
 		if cdb.Backfill {
 			if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
 				go cdb.BackfillStream(ctx, le.LogStream)
@@ -147,17 +142,8 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 		}
 
 		logindex := le.Index()
-
-		if le.RawLogEntry != nil {
-			tse := int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp) //#nosec G115
-			seen = time.UnixMilli(tse).UTC()
-			shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
-			sig = shasig[:]
-		} else {
-			seen = time.Now().UTC()
-			shasig := sha256.Sum256(cert.RawTBSCertificate)
-			sig = shasig[:]
-		}
+		seen := le.Seen()
+		sig := le.Signature()
 
 		var dnsnames []string
 		for _, dnsname := range cert.DNSNames {

@@ -1,7 +1,9 @@
 package certstream
 
 import (
+	"crypto/sha256"
 	"strconv"
+	"time"
 
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/x509"
@@ -50,6 +52,34 @@ func (le *LogEntry) Index() (index int64) {
 	index = -1
 	if le.RawLogEntry != nil {
 		index = le.RawLogEntry.Index
+	}
+	return
+}
+
+func (le *LogEntry) IsPreCert() (yes bool) {
+	if le.LogEntry != nil {
+		yes = le.LogEntry.Precert != nil
+	}
+	return
+}
+
+func (le *LogEntry) Seen() (seen time.Time) {
+	if le.RawLogEntry != nil {
+		tse := int64(le.RawLogEntry.Leaf.TimestampedEntry.Timestamp) //#nosec G115
+		seen = time.UnixMilli(tse).UTC()
+	} else {
+		seen = time.Now().UTC()
+	}
+	return
+}
+
+func (le *LogEntry) Signature() (sig []byte) {
+	if le.RawLogEntry != nil {
+		shasig := sha256.Sum256(le.RawLogEntry.Cert.Data)
+		sig = shasig[:]
+	} else if cert := le.Cert(); cert != nil {
+		shasig := sha256.Sum256(cert.RawTBSCertificate)
+		sig = shasig[:]
 	}
 	return
 }
