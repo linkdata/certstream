@@ -24,9 +24,9 @@ END IF;
 IF to_regclass('CERTDB_ident') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ident (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    organization TEXT,
-    province TEXT,
-    country TEXT
+    organization TEXT NOT NULL,
+    province TEXT NOT NULL,
+    country TEXT NOT NULL
   );
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_ident_full_idx ON CERTDB_ident (organization, province, country);
   INSERT INTO CERTDB_ident (organization, province, country) VALUES ('', '', '') ON CONFLICT DO NOTHING;
@@ -41,6 +41,7 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     sha256 BYTEA NOT NULL
+    precert BOOLEAN NOT NULL,
   );
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
 END IF;
@@ -100,6 +101,7 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
     cc.notbefore AS notbefore,
     dnsname !~ '^[[:ascii:]]+$'::text AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
+    cc.precert AS precert,
     iss.organization as issuer,
     subj.organization as subject,
     CONCAT('https://crt.sh/?q=', ENCODE(cc.sha256, 'hex'::text)) AS crtsh

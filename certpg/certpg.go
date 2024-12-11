@@ -172,6 +172,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 			cert.Seen,
 			le.LogStream.Id,
 			logindex,
+			cert.PreCert,
 			cert.Signature,
 			strings.Join(cert.Issuer.Organization, ","),
 			strings.Join(cert.Issuer.Province, ","),
@@ -190,7 +191,7 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 
 		if _, err = cdb.procNewEntry.ExecContext(ctx, args...); err != nil {
 			if ctx.Err() == nil {
-				fmt.Printf("CALL CERTDB_new_entry('%v', %v,%v,'%x', '%s','%s','%s', '%s','%s','%s', '%s','%s', '%s', '%s','%s','%s','%s')\n", args...)
+				fmt.Printf("CALL CERTDB_new_entry('%v', %v,%v,%v,'%x', '%s','%s','%s', '%s','%s','%s', '%s','%s', '%s', '%s','%s','%s','%s')\n", args...)
 			}
 		}
 	}

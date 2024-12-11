@@ -2,6 +2,7 @@ CREATE OR REPLACE PROCEDURE CERTDB_new_entry(
   IN seen TIMESTAMP,
   IN stream INTEGER, 
   IN logindex BIGINT, 
+  IN precert BOOLEAN,
   IN hash BYTEA, 
   IN iss_org TEXT, 
   IN iss_prov TEXT, 
@@ -48,8 +49,8 @@ BEGIN
 
   SELECT id FROM CERTDB_cert INTO _cert_id WHERE sha256=hash;
   IF NOT FOUND THEN
-    INSERT INTO CERTDB_cert (notbefore, notafter, commonname, subject, issuer, sha256)
-      VALUES (notbefore, notafter, commonname, _sub_id, _iss_id, hash)
+    INSERT INTO CERTDB_cert (notbefore, notafter, commonname, subject, issuer, sha256, precert)
+      VALUES (notbefore, notafter, commonname, _sub_id, _iss_id, hash, precert)
       ON CONFLICT (sha256) DO NOTHING RETURNING id INTO _cert_id;
   END IF;
   IF NOT FOUND THEN
