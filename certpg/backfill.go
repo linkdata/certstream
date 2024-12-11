@@ -2,6 +2,7 @@ package certpg
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"sync/atomic"
 
@@ -68,8 +69,12 @@ func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream)
 	}
 	cdb.backfillGaps(ctx, ls, gapcounter)
 	row := cdb.stmtSelectMinIdx.QueryRowContext(ctx, ls.Id)
-	var minIndex int64
-	if err := row.Scan(&minIndex); cdb.LogError(err, "Backfill/MinIndex", "url", ls.URL) == nil {
+	var nullableMinIndex sql.NullInt64
+	if err := cdb.LogError(row.Scan(&nullableMinIndex), "Backfill/MinIndex", "url", ls.URL); err == nil {
+		if !nullableMinIndex.Valid {
+			nullableMinIndex.Int64 = atomic.LoadInt64(&ls.LastIndex)
+		}
+		minIndex := nullableMinIndex.Int64
 		if minIndex > 0 {
 			if l := cdb.Logger; l != nil {
 				l.Info("certstream: backlog", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)

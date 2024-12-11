@@ -37,7 +37,7 @@ func New(ctx context.Context, cd bwlimit.ContextDialer, db *sql.DB, prefix strin
 	const callCreateSchema = `CALL CERTDB_create_schema();`
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
-	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17);`
+	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
 	pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", prefix) }
 
 	if _, err = db.ExecContext(ctx, pfx(FunctionName)); err == nil {
