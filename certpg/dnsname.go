@@ -10,6 +10,7 @@ type Dnsname struct {
 	NotBefore time.Time
 	Idna      bool
 	Valid     bool
+	PreCert   bool
 	Issuer    string
 	Subject   string
 	Crtsh     string

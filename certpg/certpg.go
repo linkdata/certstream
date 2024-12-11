@@ -205,6 +205,7 @@ func (cdb *CertPG) ScanDnsname(rows *sql.Rows, dnsname *Dnsname) (err error) {
 		&dnsname.NotBefore,
 		&dnsname.Idna,
 		&dnsname.Valid,
+		&dnsname.PreCert,
 		&dnsname.Issuer,
 		&dnsname.Subject,
 		&dnsname.Crtsh,
