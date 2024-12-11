@@ -37,7 +37,7 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     notbefore TIMESTAMP NOT NULL,
     notafter TIMESTAMP NOT NULL,
-    commonname TEXT,
+    commonname TEXT NOT NULL,
     subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     sha256 BYTEA NOT NULL
@@ -58,37 +58,36 @@ END IF;
 IF to_regclass('CERTDB_dnsname') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE TABLE IF NOT EXISTS CERTDB_dnsname (
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     dnsname TEXT NOT NULL,
-    PRIMARY KEY (cert, dnsname)
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    PRIMARY KEY (dnsname, cert)
   );
-  CREATE INDEX IF NOT EXISTS CERTDB_dnsname_idx ON CERTDB_dnsname USING GIN (dnsname gin_trgm_ops);
   CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
 END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     addr INET NOT NULL,
-    PRIMARY KEY (cert, addr)
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    PRIMARY KEY (addr, cert)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_ipaddress_addr_idx ON CERTDB_ipaddress (addr);
 END IF;
 
 IF to_regclass('CERTDB_email') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_email (
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     email TEXT NOT NULL,
-    PRIMARY KEY (cert, email)
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    PRIMARY KEY (email, cert)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_email_email_idx ON CERTDB_email (email);
 END IF;
 
 IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_uri (
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     uri TEXT NOT NULL,
-    PRIMARY KEY (cert, uri)
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    PRIMARY KEY (uri, cert)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
