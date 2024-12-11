@@ -40,8 +40,8 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     commonname TEXT NOT NULL,
     subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
-    sha256 BYTEA NOT NULL
-    precert BOOLEAN NOT NULL,
+    sha256 BYTEA NOT NULL,
+    precert BOOLEAN NOT NULL
   );
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
 END IF;
