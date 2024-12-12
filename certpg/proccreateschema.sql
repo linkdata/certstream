@@ -54,6 +54,7 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
     stream INTEGER NOT NULL REFERENCES CERTDB_stream (id),
     PRIMARY KEY (stream, logindex)
   );
+  CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
 END IF;
 
 IF to_regclass('CERTDB_dnsname') IS NULL THEN
