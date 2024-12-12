@@ -75,7 +75,7 @@ func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
 	for err == nil {
 		if start < end {
 			ls.GetRawEntries(ctx, start, end, func(logindex int64, entry ct.LeafEntry) {
-				ls.SendEntry(entryCh, logindex, entry)
+				ls.sendEntry(entryCh, logindex, entry)
 			})
 			if end-start <= int64(BatchSize/2) {
 				sleep(ctx, time.Second*15)
@@ -115,7 +115,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 	return
 }
 
-func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry) *LogEntry {
+func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry {
 	var ctle *ct.LogEntry
 	ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &entry)
 	if leaferr == nil {
@@ -134,11 +134,12 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry) *LogEntry 
 		Err:         leaferr,
 		RawLogEntry: ctrle,
 		LogEntry:    ctle,
+		Historical:  historical,
 	}
 }
 
-func (ls *LogStream) SendEntry(entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
-	entryCh <- ls.MakeLogEntry(logindex, entry)
+func (ls *LogStream) sendEntry(entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
+	entryCh <- ls.MakeLogEntry(logindex, entry, false)
 	atomic.AddInt64(&ls.Count, 1)
 	atomic.AddInt64(&ls.LogOperator.Count, 1)
 }

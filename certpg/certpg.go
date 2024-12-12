@@ -13,8 +13,13 @@ import (
 
 	"github.com/linkdata/bwlimit"
 	"github.com/linkdata/certstream"
+	"github.com/linkdata/certstream/certjson"
 	"golang.org/x/net/idna"
 )
+
+type Scanner interface {
+	Scan(dest ...any) error
+}
 
 // CertPG integrates with sql.DB to manage certificate stream data for a PostgreSQL database
 type CertPG struct {
@@ -198,25 +203,81 @@ func (cdb *CertPG) Entry(ctx context.Context, le *certstream.LogEntry) (err erro
 	return
 }
 
-func (cdb *CertPG) ScanDnsname(rows *sql.Rows, dnsname *Dnsname) (err error) {
-	return rows.Scan(
-		&dnsname.CertID,
-		&dnsname.DNSName,
-		&dnsname.NotBefore,
-		&dnsname.Idna,
-		&dnsname.Valid,
-		&dnsname.PreCert,
-		&dnsname.Issuer,
-		&dnsname.Subject,
-		&dnsname.Crtsh,
-	)
-}
-
 func (cdb *CertPG) Estimate(table string) (estimate float64, err error) {
 	if !strings.HasPrefix(table, "CERTDB_") {
 		table = "CERTDB_" + table
 	}
 	row := cdb.QueryRow(SelectEstimate, cdb.Pfx(table))
 	err = row.Scan(&estimate)
+	return
+}
+
+func (cdb *CertPG) fillIdentity(ctx context.Context, id int, ident *certjson.Identity) {
+	row := cdb.QueryRowContext(ctx, cdb.Pfx(`SELECT * FROM CERTDB_ident WHERE id=$1`), id)
+	var dbident Ident
+	if err := cdb.LogError(ScanIdent(row, &dbident), "fillIdentity", "id", id); err == nil {
+		ident.Country = dbident.Country
+		ident.Organization = dbident.Organization
+		ident.Province = dbident.Province
+	}
+}
+
+func (cdb *CertPG) getCertStrings(ctx context.Context, id int64, tablename, colname string) (sl []string) {
+	rows, err := cdb.QueryContext(ctx, cdb.Pfx(fmt.Sprintf("SELECT %s FROM CERTDB_%s WHERE cert=$1", colname, tablename)), id)
+	if cdb.LogError(err, "getCertStrings/"+tablename, "id", id) == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var s string
+			if err := cdb.LogError(rows.Scan(&s), "getCertStrings/scan/"+tablename); err == nil {
+				sl = append(sl, s)
+			}
+		}
+	}
+	return
+}
+
+func (cdb *CertPG) getCertificate(ctx context.Context, dbcert *Certificate) (cert *certjson.Certificate, err error) {
+	cert = &certjson.Certificate{
+		PreCert:        dbcert.PreCert,
+		Signature:      dbcert.Sha256,
+		DNSNames:       []string{},
+		EmailAddresses: []string{},
+		IPAddresses:    []string{},
+		URIs:           []string{},
+		NotBefore:      dbcert.NotBefore,
+		NotAfter:       dbcert.NotAfter,
+	}
+	cdb.fillIdentity(ctx, dbcert.IssuerID, &cert.Issuer)
+	cdb.fillIdentity(ctx, dbcert.SubjectID, &cert.Subject)
+	cert.Subject.CommonName = dbcert.CommonName
+	cert.DNSNames = cdb.getCertStrings(ctx, dbcert.Id, "dnsname", "dnsname")
+	cert.EmailAddresses = cdb.getCertStrings(ctx, dbcert.Id, "email", "email")
+	cert.IPAddresses = cdb.getCertStrings(ctx, dbcert.Id, "ipaddress", "addr")
+	cert.URIs = cdb.getCertStrings(ctx, dbcert.Id, "uri", "uri")
+	return
+}
+
+func (cdb *CertPG) GetCertificateByLogEntry(ctx context.Context, entry *LogEntry) (cert *certjson.Certificate, err error) {
+	if cert, err = cdb.GetCertificateByID(ctx, entry.CertID); cert != nil {
+		cert.Seen = entry.Seen
+	}
+	return
+}
+
+func (cdb *CertPG) GetCertificateByHash(ctx context.Context, hash []byte) (cert *certjson.Certificate, err error) {
+	row := cdb.QueryRowContext(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE sha256=$1`), hash)
+	var dbcert Certificate
+	if err = ScanCertificate(row, &dbcert); err == nil {
+		cert, err = cdb.getCertificate(ctx, &dbcert)
+	}
+	return
+}
+
+func (cdb *CertPG) GetCertificateByID(ctx context.Context, id int64) (cert *certjson.Certificate, err error) {
+	row := cdb.QueryRowContext(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE id=$1`), id)
+	var dbcert Certificate
+	if err = ScanCertificate(row, &dbcert); err == nil {
+		cert, err = cdb.getCertificate(ctx, &dbcert)
+	}
 	return
 }

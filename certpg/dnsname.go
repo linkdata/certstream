@@ -1,17 +1,13 @@
 package certpg
 
-import (
-	"time"
-)
-
 type Dnsname struct {
-	CertID    int64
-	DNSName   string
-	NotBefore time.Time
-	Idna      bool
-	Valid     bool
-	PreCert   bool
-	Issuer    string
-	Subject   string
-	Crtsh     string
+	Dnsname string
+	CertID  int64
+}
+
+func ScanDnsname(row Scanner, p *Dnsname) error {
+	return row.Scan(
+		&p.Dnsname,
+		&p.CertID,
+	)
 }

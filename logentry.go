@@ -15,6 +15,7 @@ type LogEntry struct {
 	RawLogEntry  *ct.RawLogEntry // may be nil in case of error
 	*ct.LogEntry                 // may be nil in case of error
 	Id           int64           // database id, if available
+	Historical   bool            // true if the entry is from gap or backfilling
 }
 
 func (le *LogEntry) String() (s string) {

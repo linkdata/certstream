@@ -7,15 +7,10 @@ import (
 )
 
 type Identity struct {
-	Country            string `json:",omitempty"`
-	Organization       string `json:",omitempty"`
-	OrganizationalUnit string `json:",omitempty"`
-	Locality           string `json:",omitempty"`
-	Province           string `json:",omitempty"`
-	StreetAddress      string `json:",omitempty"`
-	PostalCode         string `json:",omitempty"`
-	SerialNumber       string `json:",omitempty"`
-	CommonName         string `json:",omitempty"`
+	Country      string `json:",omitempty"`
+	Organization string `json:",omitempty"`
+	Province     string `json:",omitempty"`
+	CommonName   string `json:",omitempty"`
 }
 
 func join(l []string) string {
@@ -35,12 +30,7 @@ func (id *Identity) Fill(name *pkix.Name) {
 	if name != nil {
 		id.Country = join(name.Country)
 		id.Organization = join(name.Organization)
-		id.OrganizationalUnit = join(name.OrganizationalUnit)
-		id.Locality = join(name.Locality)
 		id.Province = join(name.Province)
-		id.StreetAddress = join(name.StreetAddress)
-		id.PostalCode = join(name.PostalCode)
-		id.SerialNumber = strings.TrimSpace(name.SerialNumber)
 		id.CommonName = strings.TrimSpace(name.CommonName)
 	}
 }

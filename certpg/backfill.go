@@ -43,7 +43,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream, g
 		}
 		ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
 			atomic.AddInt64(gapcounter, -1)
-			_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
+			_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry, true))
 		})
 	}
 }
@@ -83,7 +83,7 @@ func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream)
 				start := max(0, minIndex-BulkRange)
 				stop := minIndex - 1
 				ls.GetRawEntries(ctx, start, stop, func(logindex int64, entry ct.LeafEntry) {
-					_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry))
+					_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry, true))
 				})
 				minIndex = start
 			}
