@@ -61,7 +61,7 @@ IF to_regclass('CERTDB_dnsname') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_dnsname (
     dnsname TEXT NOT NULL,
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (dnsname, cert)
+    PRIMARY KEY (cert, dnsname)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
 END IF;
@@ -70,7 +70,7 @@ IF to_regclass('CERTDB_ipaddress') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
     addr INET NOT NULL,
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (addr, cert)
+    PRIMARY KEY (cert, addr)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_ipaddress_addr_idx ON CERTDB_ipaddress (addr);
 END IF;
@@ -79,7 +79,7 @@ IF to_regclass('CERTDB_email') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_email (
     email TEXT NOT NULL,
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (email, cert)
+    PRIMARY KEY (cert, email)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_email_email_idx ON CERTDB_email (email);
 END IF;
@@ -88,7 +88,7 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_uri (
     uri TEXT NOT NULL,
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (uri, cert)
+    PRIMARY KEY (cert, uri)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
