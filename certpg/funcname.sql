@@ -7,13 +7,14 @@ DECLARE
 BEGIN
 	_dnsname := lower(_dnsname);
 	IF substring(_dnsname for 4) = 'www.' THEN
-		_dnsname := substring(_dnsname from 5);
+		_dnsname := substring(_dnsname from 4);
 	END IF;
 	_a := string_to_array(_dnsname, '.');
 	IF array_length(_a, 1) > 0 THEN
 		_a := trim_array(_a, 1);
+		_dnsname := array_to_string(_a, '.') || '.';
 	END IF;
-	RETURN array_to_string(_a, '.');
+	RETURN _dnsname;
 END;
 $$
 ;
