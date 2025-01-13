@@ -1,4 +1,4 @@
-package certjson
+package certstream
 
 import (
 	"net/mail"
@@ -6,26 +6,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linkdata/certstream"
 	"golang.org/x/net/idna"
 )
 
-type Certificate struct {
-	PreCert        bool      `json:",omitempty"`
-	Seen           time.Time `json:",omitempty"`
-	Signature      []byte    `json:",omitempty"` // SHA256 signature, searchable on crt.sh
-	Issuer         Identity  `json:",omitempty"`
-	Subject        Identity  `json:",omitempty"`
-	DNSNames       []string  `json:",omitempty"`
-	EmailAddresses []string  `json:",omitempty"`
-	IPAddresses    []string  `json:",omitempty"`
-	URIs           []string  `json:",omitempty"`
-	NotBefore      time.Time `json:",omitempty"`
-	NotAfter       time.Time `json:",omitempty"`
+type JsonCertificate struct {
+	PreCert        bool         `json:",omitempty"`
+	Seen           time.Time    `json:",omitempty"`
+	Signature      []byte       `json:",omitempty"` // SHA256 signature, searchable on crt.sh
+	Issuer         JsonIdentity `json:",omitempty"`
+	Subject        JsonIdentity `json:",omitempty"`
+	DNSNames       []string     `json:",omitempty"`
+	EmailAddresses []string     `json:",omitempty"`
+	IPAddresses    []string     `json:",omitempty"`
+	URIs           []string     `json:",omitempty"`
+	NotBefore      time.Time    `json:",omitempty"`
+	NotAfter       time.Time    `json:",omitempty"`
 }
 
-func New(cert *certstream.Certificate) (jsoncert *Certificate) {
-	jsoncert = &Certificate{
+func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
+	jsoncert = &JsonCertificate{
 		PreCert:   cert.PreCert,
 		Seen:      cert.Seen,
 		Signature: cert.Signature,

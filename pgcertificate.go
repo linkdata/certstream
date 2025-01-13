@@ -1,10 +1,10 @@
-package certpg
+package certstream
 
 import (
 	"time"
 )
 
-type Certificate struct {
+type PgCertificate struct {
 	Id         int64
 	NotBefore  time.Time
 	NotAfter   time.Time
@@ -15,7 +15,7 @@ type Certificate struct {
 	PreCert    bool
 }
 
-func ScanCertificate(row Scanner, cert *Certificate) (err error) {
+func ScanCertificate(row Scanner, cert *PgCertificate) (err error) {
 	return row.Scan(
 		&cert.Id,
 		&cert.NotBefore,

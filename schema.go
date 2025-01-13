@@ -1,4 +1,4 @@
-package certpg
+package certstream
 
 import _ "embed"
 

@@ -1,4 +1,4 @@
-package certpg
+package certstream
 
 import (
 	"context"
@@ -7,18 +7,17 @@ import (
 	"sync/atomic"
 
 	ct "github.com/google/certificate-transparency-go"
-	"github.com/linkdata/certstream"
 )
 
 var BulkRange = int64(4096)
 
-func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream, gapcounter *int64) {
+func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream, gapcounter *int64) {
 	type gap struct {
 		start int64
 		end   int64
 	}
 	var gaps []gap
-	if rows, err := cdb.stmtSelectGaps.QueryContext(ctx, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
+	if rows, err := cdb.Query(ctx, cdb.stmtSelectGaps, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
 		for rows.Next() {
 			var gap_start, gap_end int64
 			if err = rows.Scan(&gap_start, &gap_end); cdb.LogError(err, "backfillGaps/Scan", "url", ls.URL) == nil {
@@ -26,10 +25,10 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream, g
 			}
 			atomic.AddInt64(gapcounter, (gap_end-gap_start)+1)
 		}
-		_ = rows.Close()
+		rows.Close()
 	}
 	if lastindex := atomic.LoadInt64(&ls.LastIndex); lastindex != -1 {
-		row := cdb.stmtSelectMaxIdx.QueryRowContext(ctx, ls.Id)
+		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
 		var maxindex int64
 		if err := row.Scan(&maxindex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL) == nil {
 			if maxindex < lastindex {
@@ -48,7 +47,7 @@ func (cdb *CertPG) backfillGaps(ctx context.Context, ls *certstream.LogStream, g
 	}
 }
 
-func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream) {
+func (cdb *PgDB) BackfillStream(ctx context.Context, ls *LogStream) {
 	httpClient := ls.HttpClient
 	gapcounter := &ls.InsideGaps
 	if cdb.ContextDialer != nil {
@@ -61,14 +60,14 @@ func (cdb *CertPG) BackfillStream(ctx context.Context, ls *certstream.LogStream)
 		}
 	}
 	if httpClient != ls.HttpClient {
-		if ls2, err := certstream.NewLogStream(ls.LogOperator, httpClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+		if ls2, err := NewLogStream(ls.LogOperator, httpClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
 			ls2.Id = ls.Id
 			ls2.Backfilled = atomic.LoadInt32(&ls.Backfilled)
 			ls = ls2
 		}
 	}
 	cdb.backfillGaps(ctx, ls, gapcounter)
-	row := cdb.stmtSelectMinIdx.QueryRowContext(ctx, ls.Id)
+	row := cdb.QueryRow(ctx, cdb.stmtSelectMinIdx, ls.Id)
 	var nullableMinIndex sql.NullInt64
 	if err := cdb.LogError(row.Scan(&nullableMinIndex), "Backfill/MinIndex", "url", ls.URL); err == nil {
 		if !nullableMinIndex.Valid {

@@ -15,11 +15,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	ch, err := certstream.New().Start(ctx, nil, nil)
+	cs, err := certstream.Start(ctx, certstream.NewConfig())
 	if err != nil {
 		fmt.Println(err)
 	} else {
-		for le := range ch {
+		for le := range cs.C {
 			fmt.Printf("%q %v\n", le.Domain, le.Cert().DNSNames)
 		}
 	}

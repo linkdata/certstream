@@ -1,13 +1,13 @@
-package certpg
+package certstream
 
-type Ident struct {
+type PgIdent struct {
 	Id           int
 	Organization string
 	Province     string
 	Country      string
 }
 
-func ScanIdent(row Scanner, ident *Ident) error {
+func ScanIdent(row Scanner, ident *PgIdent) error {
 	return row.Scan(
 		&ident.Id,
 		&ident.Organization,
