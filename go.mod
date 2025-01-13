@@ -6,7 +6,6 @@ require (
 	github.com/google/certificate-transparency-go v1.2.2
 	github.com/google/trillian v1.6.1
 	github.com/jackc/pgx/v5 v5.7.2
-	github.com/linkdata/bwlimit v0.12.0
 	golang.org/x/net v0.31.0
 )
 

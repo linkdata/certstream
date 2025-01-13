@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/linkdata/bwlimit"
 	"golang.org/x/net/idna"
 )
 
@@ -21,7 +20,6 @@ type Scanner interface {
 type PgDB struct {
 	*CertStream
 	*pgxpool.Pool
-	bwlimit.ContextDialer                     // if not nil, ContextDialer used for backfilling
 	Pfx                   func(string) string // prefix replacer
 	funcOperatorID        string
 	funcStreamID          string

@@ -3,7 +3,6 @@ package certstream
 import (
 	"context"
 	"database/sql"
-	"net/http"
 	"sync/atomic"
 
 	ct "github.com/google/certificate-transparency-go"
@@ -48,23 +47,11 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream, gapcounter *in
 }
 
 func (cdb *PgDB) BackfillStream(ctx context.Context, ls *LogStream) {
-	httpClient := ls.HttpClient
 	gapcounter := &ls.InsideGaps
-	if cdb.ContextDialer != nil {
-		if tp, ok := httpClient.Transport.(*http.Transport); ok {
-			client := *httpClient
-			tp = tp.Clone()
-			tp.DialContext = cdb.ContextDialer.DialContext
-			client.Transport = tp
-			httpClient = &client
-		}
-	}
-	if httpClient != ls.HttpClient {
-		if ls2, err := NewLogStream(ls.LogOperator, httpClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
-			ls2.Id = ls.Id
-			ls2.Backfilled = atomic.LoadInt32(&ls.Backfilled)
-			ls = ls2
-		}
+	if ls2, err := NewLogStream(ls.LogOperator, cdb.cdb.TailClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+		ls2.Id = ls.Id
+		ls2.Backfilled = atomic.LoadInt32(&ls.Backfilled)
+		ls = ls2
 	}
 	cdb.backfillGaps(ctx, ls, gapcounter)
 	row := cdb.QueryRow(ctx, cdb.stmtSelectMinIdx, ls.Id)
