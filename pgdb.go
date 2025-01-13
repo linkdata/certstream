@@ -4,9 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"sync/atomic"
 
@@ -18,25 +16,6 @@ import (
 type Scanner interface {
 	Scan(dest ...any) error
 }
-
-func env(key, dflt string) string {
-	val, ok := os.LookupEnv(key)
-	if !ok {
-		val = dflt
-	}
-	return os.ExpandEnv(val)
-}
-
-var (
-	flagPgUser         = flag.String("pguser", env("PGUSER", "certstream"), "database user")
-	flagPgPass         = flag.String("pgpass", env("PGPASS", "certstream"), "database password")
-	flagPgName         = flag.String("pgname", env("PGNAME", "certstream"), "database name")
-	flagPgAddr         = flag.String("pgaddr", env("PGADDR", ""), "database address")
-	flagPgPrefix       = flag.String("pgprefix", env("PGPREFIX", "certdb_"), "database naming prefix")
-	flagPgConns        = flag.Int("pgconns", 100, "max number of database connections")
-	flagPgBackfill     = flag.Bool("pgbackfill", false, "backfill missing database log entries")
-	flagPgBackfillRate = flag.Int("pgbackfillrate", 10*1000000, "backfill rate limit in bytes/sec")
-)
 
 // PgDB integrates with sql.DB to manage certificate stream data for a PostgreSQL database
 type PgDB struct {
@@ -74,16 +53,16 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
 	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
-	if *flagPgAddr != "" {
+	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
-			*flagPgUser, *flagPgPass, *flagPgAddr, *flagPgName, *flagPgConns)
+			cs.Config.PgUser, cs.Config.PgPass, cs.Config.PgAddr, cs.Config.PgName, cs.Config.PgConns)
 		var poolcfg *pgxpool.Config
 		if poolcfg, err = pgxpool.ParseConfig(dsn); err == nil {
 			var pool *pgxpool.Pool
 			if pool, err = pgxpool.NewWithConfig(ctx, poolcfg); err == nil {
 				if err = pool.Ping(ctx); err == nil {
-					cs.LogInfo("database connected", "addr", *flagPgAddr)
-					pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", *flagPgPrefix) }
+					cs.LogInfo("database connected", "addr", cs.Config.PgAddr)
+					pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", cs.Config.PgPrefix) }
 					if err = ensureSchema(ctx, pool, pfx); err == nil {
 						cdb = &PgDB{
 							CertStream:            cs,
@@ -122,7 +101,7 @@ func (cdb *PgDB) Stream(ctx context.Context, ls *LogStream) (err error) {
 
 func (cdb *PgDB) Entry(ctx context.Context, le *LogEntry) (err error) {
 	if cert := le.Cert(); cert != nil {
-		if *flagPgBackfill {
+		if cdb.CertStream.Config.TailDialer != nil {
 			if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
 				go cdb.BackfillStream(ctx, le.LogStream)
 			}
