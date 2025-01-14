@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -67,7 +68,8 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
+func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup, entryCh chan<- *LogEntry) {
+	defer wg.Done()
 	defer ls.stopped.Store(true)
 
 	end, err := ls.NewLastIndex(ctx)
@@ -141,7 +143,7 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical
 func (ls *LogStream) sendEntry(ctx context.Context, entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
 	le := ls.MakeLogEntry(logindex, entry, false)
 	if ls.cdb != nil {
-		_ = ls.LogError(ls.cdb.Entry(ctx, le), "url", le.URL, "stream", le.LogStream.Id, "entry", le.Index())
+		_ = ls.LogError(ls.cdb.Entry(ctx, le), "cdb.Entry", "url", le.URL, "stream", le.LogStream.Id, "entry", le.Index())
 	}
 	select {
 	case <-ctx.Done():
@@ -152,12 +154,12 @@ func (ls *LogStream) sendEntry(ctx context.Context, entryCh chan<- *LogEntry, lo
 }
 
 func (ls *LogStream) handleError(err error) (fatal bool) {
-	errTxt := err.Error()
-	if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
-		return false
+	errTxt := err.Error()
+	if strings.Contains(errTxt, "context canceled") || strings.Contains(errTxt, "deadline exceeded") {
+		return true
 	}
 	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 		switch rspErr.StatusCode {

@@ -34,14 +34,14 @@ var DefaultTransport = &http.Transport{
 
 func (cs *CertStream) LogInfo(msg string, args ...any) {
 	if cs.Config.Logger != nil {
-		cs.Config.Logger.Info(msg, args...)
+		cs.Config.Logger.Info("certstream: "+msg, args...)
 	}
 }
 
 func (cs *CertStream) LogError(err error, msg string, args ...any) error {
 	if err != nil && cs.Config.Logger != nil {
-		if !errors.Is(err, context.Canceled) {
-			cs.Config.Logger.Error(msg, append(args, "err", err)...)
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			cs.Config.Logger.Error("certstream: "+msg, append(args, "err", err)...)
 		}
 	}
 	return err
@@ -131,7 +131,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 				operators = append(operators, fmt.Sprintf("%s*%d", opdom, len(lo.Streams)))
 			}
 			slices.Sort(operators)
-			cs.LogInfo("certstream", "streams", operators)
+			cs.LogInfo("starting", "streams", operators)
 
 			go func() {
 				var wg sync.WaitGroup
@@ -139,10 +139,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 				for _, logOp := range cs.Operators {
 					for _, logStream := range logOp.Streams {
 						wg.Add(1)
-						go func(ls *LogStream) {
-							defer wg.Done()
-							ls.Run(ctx, sendEntryCh)
-						}(logStream)
+						go logStream.run(ctx, &wg, sendEntryCh)
 					}
 				}
 				wg.Wait()

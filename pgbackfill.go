@@ -36,9 +36,7 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream, gapcounter *at
 		}
 	}
 	for _, gap := range gaps {
-		if l := cdb.Logger; l != nil {
-			l.Info("certstream: gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
-		}
+		cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
 		ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
 			gapcounter.Add(-1)
 			_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry, true))
@@ -62,9 +60,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream) {
 			}
 			minIndex := nullableMinIndex.Int64
 			if minIndex > 0 {
-				if l := cdb.Logger; l != nil {
-					l.Info("certstream: backlog", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
-				}
+				cdb.LogInfo("backlog", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
 				for minIndex > 0 {
 					start := max(0, minIndex-BulkRange)
 					stop := minIndex - 1

@@ -58,12 +58,12 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 			var pool *pgxpool.Pool
 			if pool, err = pgxpool.NewWithConfig(ctx, poolcfg); err == nil {
 				if err = pool.Ping(ctx); err == nil {
-					cs.LogInfo("certstream", "pgaddr", cs.Config.PgAddr, "pgname", cs.Config.PgName, "pgprefix", cs.Config.PgPrefix)
+					cs.LogInfo("database", "addr", cs.Config.PgAddr, "name", cs.Config.PgName, "prefix", cs.Config.PgPrefix)
 					pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", cs.Config.PgPrefix) }
 					if err = ensureSchema(ctx, pool, pfx); err == nil {
 						var pgversion string
-						if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&pgversion), "certstream") == nil {
-							cs.LogInfo("certstream", "postgres", pgversion)
+						if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&pgversion), "postgres version") == nil {
+							cs.LogInfo("postgres", "version", pgversion)
 						}
 						cdb = &PgDB{
 							CertStream:            cs,
