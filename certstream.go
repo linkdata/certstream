@@ -70,13 +70,13 @@ func (cs *CertStream) batcher(ctx context.Context, ch <-chan *LogEntry, wg *sync
 			case <-ctx.Done():
 				return
 			case le := <-ch:
-				args := cdb.queueEntry(le)
-				batch.Queue(cdb.procNewEntry, args...)
+				batch.Queue(cdb.procNewEntry, cdb.queueEntry(le)...)
 			default:
 				if len(batch.QueuedQueries) > 0 {
-					fmt.Printf("batch out: %d  \n", len(batch.QueuedQueries))
+					wg.Add(1)
 					go func(batch *pgx.Batch) {
-						defer cs.LogError(cdb.SendBatch(ctx, batch).Close(), "SendBatch")
+						defer wg.Done()
+						cs.LogError(cdb.SendBatch(ctx, batch).Close(), "SendBatch")
 					}(batch)
 					batch = &pgx.Batch{}
 				} else {
