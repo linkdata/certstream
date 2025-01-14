@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/net/idna"
@@ -59,9 +58,13 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 			var pool *pgxpool.Pool
 			if pool, err = pgxpool.NewWithConfig(ctx, poolcfg); err == nil {
 				if err = pool.Ping(ctx); err == nil {
-					cs.LogInfo("database connected", "addr", cs.Config.PgAddr)
+					cs.LogInfo("certstream", "pgaddr", cs.Config.PgAddr, "pgname", cs.Config.PgName, "pgprefix", cs.Config.PgPrefix)
 					pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", cs.Config.PgPrefix) }
 					if err = ensureSchema(ctx, pool, pfx); err == nil {
+						var pgversion string
+						if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&pgversion), "certstream") == nil {
+							cs.LogInfo("certstream", "postgres", pgversion)
+						}
 						cdb = &PgDB{
 							CertStream:            cs,
 							Pool:                  pool,
@@ -99,12 +102,6 @@ func (cdb *PgDB) Stream(ctx context.Context, ls *LogStream) (err error) {
 
 func (cdb *PgDB) Entry(ctx context.Context, le *LogEntry) (err error) {
 	if cert := le.Cert(); cert != nil {
-		if cdb.CertStream.Config.TailDialer != nil {
-			if atomic.CompareAndSwapInt32(&le.Backfilled, 0, 1) {
-				go cdb.BackfillStream(ctx, le.LogStream)
-			}
-		}
-
 		logindex := le.Index()
 
 		var dnsnames []string
@@ -157,16 +154,22 @@ func (cdb *PgDB) Entry(ctx context.Context, le *LogEntry) (err error) {
 			if ctx.Err() == nil {
 				fmt.Printf("CALL CERTDB_new_entry('%v', %v,%v,%v,'%x', '%s','%s','%s', '%s','%s','%s', '%s','%s', '%s', '%s','%s','%s','%s')\n", args...)
 			}
+		} else {
+			if le.backfilled.CompareAndSwap(false, true) {
+				if cdb.CertStream.Config.TailDialer != nil {
+					go cdb.backfillStream(ctx, le.LogStream)
+				}
+			}
 		}
 	}
 	return
 }
 
-func (cdb *PgDB) Estimate(table string) (estimate float64, err error) {
+func (cdb *PgDB) Estimate(ctx context.Context, table string) (estimate float64, err error) {
 	if !strings.HasPrefix(table, "CERTDB_") {
 		table = "CERTDB_" + table
 	}
-	row := cdb.Pool.QueryRow(context.Background(), SelectEstimate, cdb.Pfx(table))
+	row := cdb.Pool.QueryRow(ctx, SelectEstimate, cdb.Pfx(table))
 	err = row.Scan(&estimate)
 	return
 }

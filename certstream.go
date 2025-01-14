@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -70,8 +71,9 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 		},
 		Operators: map[string]*LogOperator{},
 	}
+
 	if cs.Config.TailDialer != nil {
-		tp = tp.Clone()
+		tp = DefaultTransport.Clone()
 		tp.DialContext = cfg.TailDialer.DialContext
 		cs.TailClient = &http.Client{
 			Timeout:   10 * time.Second,
@@ -99,16 +101,37 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 								Domain:     opDom,
 							}
 							sort.Strings(op.Email)
-						}
-						if ls, err2 := NewLogStream(logop, cs.HeadClient, log); err2 == nil {
+							if cs.cdb != nil {
+								if err2 := cs.cdb.Operator(ctx, logop); err2 != nil {
+									err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+									logop = nil
+								}
+							}
 							cs.Operators[opDom] = logop
-							logop.Streams = append(logop.Streams, ls)
-						} else {
-							err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+						}
+						if logop != nil {
+							if ls, err2 := NewLogStream(logop, cs.HeadClient, log); err2 == nil {
+								if cs.cdb != nil {
+									if err2 := cs.cdb.Stream(ctx, ls); err2 != nil {
+										err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+										ls = nil
+									}
+								}
+								if ls != nil {
+									logop.Streams = append(logop.Streams, ls)
+								}
+							}
 						}
 					}
 				}
 			}
+
+			var operators []string
+			for opdom, lo := range cs.Operators {
+				operators = append(operators, fmt.Sprintf("%s*%d", opdom, len(lo.Streams)))
+			}
+			slices.Sort(operators)
+			cs.LogInfo("certstream", "streams", operators)
 
 			go func() {
 				var wg sync.WaitGroup

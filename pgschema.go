@@ -2,22 +2,22 @@ package certstream
 
 import _ "embed"
 
-//go:embed proccreateschema.sql
+//go:embed assets/proccreateschema.sql
 var ProcedureCreateSchema string
 
-//go:embed funcoperatorid.sql
+//go:embed assets/funcoperatorid.sql
 var FunctionOperatorID string
 
-//go:embed funcstreamid.sql
+//go:embed assets/funcstreamid.sql
 var FunctionStreamID string
 
-//go:embed funcname.sql
+//go:embed assets/funcname.sql
 var FunctionName string
 
-//go:embed procnewentry.sql
+//go:embed assets/procnewentry.sql
 var ProcedureNewEntry string
 
-//go:embed selectgaps.sql
+//go:embed assets/selectgaps.sql
 var SelectGaps string
 
 const SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`

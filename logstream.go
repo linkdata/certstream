@@ -23,15 +23,15 @@ type LogStream struct {
 	*loglist3.Log
 	*client.LogClient
 	HttpClient *http.Client
-	Err        error // set if Stopped() returns true
-	Count      int64 // atomic: number of certificates sent to the channel
-	MinIndex   int64 // atomic: lowest index seen so far, -1 if none seen yet
-	MaxIndex   int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex  int64 // atomic: highest index that is available from stream source
-	Id         int32 // database ID, if available
-	Backfilled int32 // atomic: nonzero if database backfill called for this stream
-	InsideGaps int64 // atomic: number of remaining entries inside gaps
-	stopped    int32 // atomic
+	Err        error        // set if Stopped() returns true
+	Count      atomic.Int64 // number of certificates sent to the channel
+	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
+	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
+	backfilled atomic.Bool  // atomic: nonzero if database backfill called for this stream
+	stopped    atomic.Bool  // atomic
+	Id         int32        // database ID, if available
 }
 
 func (ls *LogStream) String() string {
@@ -46,16 +46,16 @@ func NewLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log
 			Log:         log,
 			LogClient:   logClient,
 			HttpClient:  httpClient,
-			MinIndex:    -1,
-			MaxIndex:    -1,
-			LastIndex:   -1,
 		}
+		ls.MinIndex.Store(-1)
+		ls.MaxIndex.Store(-1)
+		ls.LastIndex.Store(-1)
 	}
 	return
 }
 
 func (ls *LogStream) Stopped() bool {
-	return atomic.LoadInt32(&ls.stopped) != 0
+	return ls.stopped.Load()
 }
 
 func sleep(ctx context.Context, d time.Duration) {
@@ -68,14 +68,14 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 func (ls *LogStream) Run(ctx context.Context, entryCh chan<- *LogEntry) {
-	defer atomic.StoreInt32(&ls.stopped, 1)
+	defer ls.stopped.Store(true)
 
 	end, err := ls.NewLastIndex(ctx)
 	start := end
 	for err == nil {
 		if start < end {
 			ls.GetRawEntries(ctx, start, end, func(logindex int64, entry ct.LeafEntry) {
-				ls.sendEntry(entryCh, logindex, entry)
+				ls.sendEntry(ctx, entryCh, logindex, entry)
 			})
 			if end-start <= int64(BatchSize/2) {
 				sleep(ctx, time.Second*15)
@@ -95,7 +95,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		Jitter: true,
 	}
 	now := time.Now()
-	lastIndex = atomic.LoadInt64(&ls.LastIndex)
+	lastIndex = ls.LastIndex.Load()
 	err = bo.Retry(ctx, func() error {
 		var sth *ct.SignedTreeHead
 		sth, err = ls.LogClient.GetSTH(ctx)
@@ -104,7 +104,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 			if lastIndex < newIndex {
 				if lastIndex+int64(BatchSize) < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
-					atomic.StoreInt64(&ls.LastIndex, lastIndex)
+					ls.LastIndex.Store(lastIndex)
 					return nil
 				}
 			}
@@ -122,11 +122,11 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical
 		ctle, leaferr = ctrle.ToLogEntry()
 	}
 	if logindex >= 0 {
-		if x := atomic.LoadInt64(&ls.MinIndex); x > logindex || x == -1 {
-			atomic.StoreInt64(&ls.MinIndex, logindex)
+		if x := ls.MinIndex.Load(); x > logindex || x == -1 {
+			ls.MinIndex.CompareAndSwap(x, logindex)
 		}
-		if x := atomic.LoadInt64(&ls.MaxIndex); x < logindex || x == -1 {
-			atomic.StoreInt64(&ls.MaxIndex, logindex)
+		if x := ls.MaxIndex.Load(); x < logindex || x == -1 {
+			ls.MaxIndex.CompareAndSwap(x, logindex)
 		}
 	}
 	return &LogEntry{
@@ -138,10 +138,17 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical
 	}
 }
 
-func (ls *LogStream) sendEntry(entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
-	entryCh <- ls.MakeLogEntry(logindex, entry, false)
-	atomic.AddInt64(&ls.Count, 1)
-	atomic.AddInt64(&ls.LogOperator.Count, 1)
+func (ls *LogStream) sendEntry(ctx context.Context, entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
+	le := ls.MakeLogEntry(logindex, entry, false)
+	if ls.cdb != nil {
+		_ = ls.LogError(ls.cdb.Entry(ctx, le), "url", le.URL, "stream", le.LogStream.Id, "entry", le.Index())
+	}
+	select {
+	case <-ctx.Done():
+	case entryCh <- le:
+		ls.Count.Add(1)
+		ls.LogOperator.Count.Add(1)
+	}
 }
 
 func (ls *LogStream) handleError(err error) (fatal bool) {
