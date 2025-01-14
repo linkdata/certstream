@@ -5,64 +5,46 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
-	"github.com/linkdata/bwlimit"
 )
 
-type LogStreamInitFn func(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client)
-
-type Logger interface {
-	Info(msg string, args ...any)
-	Error(msg string, args ...any)
-}
-
 type CertStream struct {
-	LogStreamInit    LogStreamInitFn
-	Operators        map[string]*LogOperator // operators by operator domain
-	*bwlimit.Limiter                         // overall bandwidth limiter
-	Logger
+	Config                             // copy of config
+	C          <-chan *LogEntry        // log entry channel
+	HeadClient *http.Client            // main HTTP client, uses Config.HeadDialer
+	TailClient *http.Client            // may be nil if not backfilling
+	Operators  map[string]*LogOperator // operators by operator domain, valid after Start()
+	DB         *PgDB
 }
 
-var DefaultHttpClient = &http.Client{
-	Timeout: 10 * time.Second,
-	Transport: &http.Transport{
-		TLSHandshakeTimeout:   30 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		MaxConnsPerHost:       2,
-		MaxIdleConnsPerHost:   2,
-		DisableKeepAlives:     false,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-	},
+var DefaultTransport = &http.Transport{
+	TLSHandshakeTimeout:   30 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+	MaxConnsPerHost:       2,
+	MaxIdleConnsPerHost:   2,
+	DisableKeepAlives:     false,
+	ExpectContinueTimeout: 1 * time.Second,
+	ForceAttemptHTTP2:     true,
 }
 
-// DefaultLogStreamInit returns DefaultHttpClient for all operators and logs where the log is usable.
-func DefaultLogStreamInit(op *loglist3.Operator, log *loglist3.Log) (httpClient *http.Client) {
-	if log.State.LogStatus() == loglist3.UsableLogStatus {
-		httpClient = DefaultHttpClient
-	}
-	return
-}
-
-// New returns a CertStream with reasonable defaults.
-func New() *CertStream {
-	return &CertStream{
-		LogStreamInit: DefaultLogStreamInit,
-		Operators:     make(map[string]*LogOperator),
-		Limiter:       bwlimit.NewLimiter(),
+func (cs *CertStream) LogInfo(msg string, args ...any) {
+	if cs.Config.Logger != nil {
+		cs.Config.Logger.Info("certstream: "+msg, args...)
 	}
 }
 
-func (cs *CertStream) LogError(err error, msg string, args ...any) {
-	if err != nil && cs.Logger != nil {
-		if !errors.Is(err, context.Canceled) {
-			cs.Logger.Error(msg, append(args, "err", err)...)
+func (cs *CertStream) LogError(err error, msg string, args ...any) error {
+	if err != nil && cs.Config.Logger != nil {
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			cs.Config.Logger.Error("certstream: "+msg, append(args, "err", err)...)
 		}
 	}
+	return err
 }
 
 func (cs *CertStream) CountStreams() (running, stopped int) {
@@ -78,62 +60,92 @@ func (cs *CertStream) CountStreams() (running, stopped int) {
 	return
 }
 
-// Start returns a channel to read results from. If logList is nil, we fetch the list from loglist3.AllLogListURL using DefaultHttpClient.
-func (cs *CertStream) Start(ctx context.Context, cd bwlimit.ContextDialer, logList *loglist3.LogList) (entryCh <-chan *LogEntry, err error) {
-	if logList == nil {
-		logList, err = GetLogList(ctx, DefaultHttpClient, loglist3.AllLogListURL)
+func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
+	tp := DefaultTransport.Clone()
+	tp.DialContext = cfg.HeadDialer.DialContext
+	cs = &CertStream{
+		Config: *cfg,
+		HeadClient: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: tp,
+		},
+		Operators: map[string]*LogOperator{},
 	}
-	chanSize := BatchSize
-	if logList != nil {
-		chanSize *= len(logList.Operators)
-	}
-	sendEntryCh := make(chan *LogEntry, chanSize)
-	entryCh = sendEntryCh
 
-	if logList != nil {
-		for _, op := range logList.Operators {
-			for _, log := range op.Logs {
-				if httpClient := cs.LogStreamInit(op, log); httpClient != nil {
-					opDom := OperatorDomain(log.URL)
-					logop := cs.Operators[opDom]
-					if logop == nil {
-						logop = &LogOperator{
-							CertStream: cs,
-							Operator:   op,
-							Domain:     opDom,
+	if cs.Config.TailDialer != nil {
+		tp = DefaultTransport.Clone()
+		tp.DialContext = cfg.TailDialer.DialContext
+		cs.TailClient = &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: tp,
+		}
+	}
+
+	if cs.DB, err = NewPgDB(ctx, cs); err == nil {
+		var logList *loglist3.LogList
+		if logList, err = GetLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
+			chanSize := BatchSize
+			chanSize *= len(logList.Operators)
+			sendEntryCh := make(chan *LogEntry, chanSize)
+			cs.C = sendEntryCh
+
+			for _, op := range logList.Operators {
+				for _, log := range op.Logs {
+					if log.State.LogStatus() == loglist3.UsableLogStatus {
+						opDom := OperatorDomain(log.URL)
+						logop := cs.Operators[opDom]
+						if logop == nil {
+							logop = &LogOperator{
+								CertStream: cs,
+								Operator:   op,
+								Domain:     opDom,
+							}
+							sort.Strings(op.Email)
+							if cs.DB != nil {
+								if err2 := cs.DB.Operator(ctx, logop); err2 != nil {
+									err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+									logop = nil
+								}
+							}
+							cs.Operators[opDom] = logop
 						}
-						sort.Strings(op.Email)
-					}
-					if cd != nil {
-						if tp, ok := httpClient.Transport.(*http.Transport); ok {
-							tp.DialContext = cd.DialContext
+						if logop != nil {
+							if ls, err2 := NewLogStream(logop, cs.HeadClient, log); err2 == nil {
+								if cs.DB != nil {
+									if err2 := cs.DB.Stream(ctx, ls); err2 != nil {
+										err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
+										ls = nil
+									}
+								}
+								if ls != nil {
+									logop.Streams = append(logop.Streams, ls)
+								}
+							}
 						}
-					}
-					if ls, err2 := NewLogStream(logop, httpClient, log); err2 == nil {
-						cs.Operators[opDom] = logop
-						logop.Streams = append(logop.Streams, ls)
-					} else {
-						err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 					}
 				}
 			}
+
+			var operators []string
+			for opdom, lo := range cs.Operators {
+				operators = append(operators, fmt.Sprintf("%s*%d", opdom, len(lo.Streams)))
+			}
+			slices.Sort(operators)
+			cs.LogInfo("starting", "streams", operators)
+
+			go func() {
+				var wg sync.WaitGroup
+				defer close(sendEntryCh)
+				for _, logOp := range cs.Operators {
+					for _, logStream := range logOp.Streams {
+						wg.Add(1)
+						go logStream.run(ctx, &wg, sendEntryCh)
+					}
+				}
+				wg.Wait()
+			}()
 		}
 	}
-
-	go func() {
-		var wg sync.WaitGroup
-		defer close(sendEntryCh)
-		for _, logOp := range cs.Operators {
-			for _, logStream := range logOp.Streams {
-				wg.Add(1)
-				go func(ls *LogStream) {
-					defer wg.Done()
-					ls.Run(ctx, sendEntryCh)
-				}(logStream)
-			}
-		}
-		wg.Wait()
-	}()
 
 	return
 }

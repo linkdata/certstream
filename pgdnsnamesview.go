@@ -1,10 +1,10 @@
-package certpg
+package certstream
 
 import (
 	"time"
 )
 
-type DnsnamesView struct {
+type PgDnsnamesView struct {
 	CertID    int64
 	DNSName   string
 	NotBefore time.Time
@@ -16,7 +16,7 @@ type DnsnamesView struct {
 	Crtsh     string
 }
 
-func ScanDnsnamesView(row Scanner, dnsname *DnsnamesView) (err error) {
+func ScanDnsnamesView(row Scanner, dnsname *PgDnsnamesView) (err error) {
 	return row.Scan(
 		&dnsname.CertID,
 		&dnsname.DNSName,

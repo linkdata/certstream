@@ -1,4 +1,4 @@
-package certjson
+package certstream
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 	"github.com/google/certificate-transparency-go/x509/pkix"
 )
 
-type Identity struct {
+type JsonIdentity struct {
 	Country      string `json:",omitempty"`
 	Organization string `json:",omitempty"`
 	Province     string `json:",omitempty"`
@@ -26,7 +26,7 @@ func join(l []string) string {
 	return string(b)
 }
 
-func (id *Identity) Fill(name *pkix.Name) {
+func (id *JsonIdentity) Fill(name *pkix.Name) {
 	if name != nil {
 		id.Country = join(name.Country)
 		id.Organization = join(name.Organization)
