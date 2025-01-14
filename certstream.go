@@ -19,7 +19,7 @@ type CertStream struct {
 	HeadClient *http.Client            // main HTTP client, uses Config.HeadDialer
 	TailClient *http.Client            // may be nil if not backfilling
 	Operators  map[string]*LogOperator // operators by operator domain, valid after Start()
-	cdb        *PgDB
+	DB         *PgDB
 }
 
 var DefaultTransport = &http.Transport{
@@ -81,7 +81,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 		}
 	}
 
-	if cs.cdb, err = NewPgDB(ctx, cs); err == nil {
+	if cs.DB, err = NewPgDB(ctx, cs); err == nil {
 		var logList *loglist3.LogList
 		if logList, err = GetLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
 			chanSize := BatchSize
@@ -101,8 +101,8 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 								Domain:     opDom,
 							}
 							sort.Strings(op.Email)
-							if cs.cdb != nil {
-								if err2 := cs.cdb.Operator(ctx, logop); err2 != nil {
+							if cs.DB != nil {
+								if err2 := cs.DB.Operator(ctx, logop); err2 != nil {
 									err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 									logop = nil
 								}
@@ -111,8 +111,8 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 						}
 						if logop != nil {
 							if ls, err2 := NewLogStream(logop, cs.HeadClient, log); err2 == nil {
-								if cs.cdb != nil {
-									if err2 := cs.cdb.Stream(ctx, ls); err2 != nil {
+								if cs.DB != nil {
+									if err2 := cs.DB.Stream(ctx, ls); err2 != nil {
 										err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 										ls = nil
 									}

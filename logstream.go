@@ -142,8 +142,8 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical
 
 func (ls *LogStream) sendEntry(ctx context.Context, entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
 	le := ls.MakeLogEntry(logindex, entry, false)
-	if ls.cdb != nil {
-		_ = ls.LogError(ls.cdb.Entry(ctx, le), "cdb.Entry", "url", le.URL, "stream", le.LogStream.Id, "entry", le.Index())
+	if ls.DB != nil {
+		_ = ls.LogError(ls.DB.Entry(ctx, le), "cdb.Entry", "url", le.URL, "stream", le.LogStream.Id, "entry", le.Index())
 	}
 	select {
 	case <-ctx.Done():

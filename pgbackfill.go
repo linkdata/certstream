@@ -46,7 +46,7 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream, gapcounter *at
 
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream) {
 	gapcounter := &ls.InsideGaps
-	if ls2, err := NewLogStream(ls.LogOperator, cdb.cdb.TailClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+	if ls2, err := NewLogStream(ls.LogOperator, cdb.DB.TailClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
 		ls2.Id = ls.Id
 		ls2.LastIndex.Store(ls.LastIndex.Load())
 		ls2.backfilled.Store(true)
