@@ -163,8 +163,13 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 
 			go func() {
 				var wg sync.WaitGroup
-				defer close(sendEntryCh)
-				defer close(batchCh)
+				defer func() {
+					close(sendEntryCh)
+					close(batchCh)
+					if cs.DB != nil {
+						cs.DB.Close()
+					}
+				}()
 				wg.Add(1)
 				go cs.batcher(ctx, batchCh, &wg)
 				for _, logOp := range cs.Operators {
