@@ -157,10 +157,6 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	errTxt := err.Error()
-	if strings.Contains(errTxt, "context canceled") || strings.Contains(errTxt, "deadline exceeded") {
-		return true
-	}
 	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 		switch rspErr.StatusCode {
 		case http.StatusTooManyRequests,
@@ -174,6 +170,10 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 			body = body[:64]
 		}
 		ls.LogError(rspErr, "GetRawEntries", "url", ls.URL, "code", rspErr.StatusCode, "body", body)
+		return true
+	}
+	errTxt := err.Error()
+	if strings.Contains(errTxt, "context canceled") || strings.Contains(errTxt, "deadline exceeded") {
 		return true
 	}
 	ls.LogError(err, "GetRawEntries", "url", ls.URL)
