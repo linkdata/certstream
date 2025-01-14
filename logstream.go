@@ -165,11 +165,11 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 			http.StatusGatewayTimeout:
 			return false
 		}
-		body := string(rspErr.Body)
-		if len(body) > 64 {
-			body = body[:64]
+		b := rspErr.Body
+		if len(b) > 64 {
+			b = b[:64]
 		}
-		ls.LogError(rspErr, "GetRawEntries", "url", ls.URL, "code", rspErr.StatusCode, "body", body)
+		ls.LogError(rspErr, "GetRawEntries", "url", ls.URL, "code", rspErr.StatusCode, "body", string(b))
 		return true
 	}
 	errTxt := err.Error()
