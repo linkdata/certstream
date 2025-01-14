@@ -3,6 +3,7 @@ package certstream
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"sync/atomic"
 
 	ct "github.com/google/certificate-transparency-go"
@@ -36,17 +37,20 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream, gapcounter *at
 		}
 	}
 	for _, gap := range gaps {
-		cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
-		ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
-			gapcounter.Add(-1)
-			_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry, true))
-		})
+		if ctx.Err() == nil {
+			cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
+			ls.GetRawEntries(ctx, gap.start, gap.end, func(logindex int64, entry ct.LeafEntry) {
+				gapcounter.Add(-1)
+				ls.sendEntry(ctx, logindex, entry, true)
+			})
+		}
 	}
 }
 
-func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream) {
+func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {
+	defer wg.Done()
 	gapcounter := &ls.InsideGaps
-	if ls2, err := NewLogStream(ls.LogOperator, cdb.DB.TailClient, ls.Log); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
+	if ls2, err := newLogStream(ls.LogOperator, cdb.DB.TailClient, ls.Log, ls.entryCh, ls.batchCh); cdb.LogError(err, "BackfillStream", "url", ls.URL) == nil {
 		ls2.Id = ls.Id
 		ls2.LastIndex.Store(ls.LastIndex.Load())
 		ls2.backfilled.Store(true)
@@ -61,11 +65,11 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream) {
 			minIndex := nullableMinIndex.Int64
 			if minIndex > 0 {
 				cdb.LogInfo("backlog", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
-				for minIndex > 0 {
+				for minIndex > 0 && ctx.Err() == nil {
 					start := max(0, minIndex-BulkRange)
 					stop := minIndex - 1
 					ls.GetRawEntries(ctx, start, stop, func(logindex int64, entry ct.LeafEntry) {
-						_ = cdb.Entry(ctx, ls.MakeLogEntry(logindex, entry, true))
+						ls.sendEntry(ctx, logindex, entry, true)
 					})
 					minIndex = start
 				}

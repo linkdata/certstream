@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/jackc/pgx/v5"
 )
 
 type CertStream struct {
@@ -60,6 +61,32 @@ func (cs *CertStream) CountStreams() (running, stopped int) {
 	return
 }
 
+func (cs *CertStream) batcher(ctx context.Context, ch <-chan *LogEntry, wg *sync.WaitGroup) {
+	defer wg.Done()
+	if cdb := cs.DB; cdb != nil {
+		batch := &pgx.Batch{}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case le := <-ch:
+				args := cdb.queueEntry(le)
+				batch.Queue(cdb.procNewEntry, args...)
+			default:
+				if len(batch.QueuedQueries) > 0 {
+					fmt.Printf("batch out: %d  \n", len(batch.QueuedQueries))
+					go func(batch *pgx.Batch) {
+						defer cs.LogError(cdb.SendBatch(ctx, batch).Close(), "SendBatch")
+					}(batch)
+					batch = &pgx.Batch{}
+				} else {
+					time.Sleep(time.Millisecond * 100)
+				}
+			}
+		}
+	}
+}
+
 func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 	tp := DefaultTransport.Clone()
 	tp.DialContext = cfg.HeadDialer.DialContext
@@ -87,6 +114,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 			chanSize := BatchSize
 			chanSize *= len(logList.Operators)
 			sendEntryCh := make(chan *LogEntry, chanSize)
+			batchCh := make(chan *LogEntry, chanSize)
 			cs.C = sendEntryCh
 
 			for _, op := range logList.Operators {
@@ -110,7 +138,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 							cs.Operators[opDom] = logop
 						}
 						if logop != nil {
-							if ls, err2 := NewLogStream(logop, cs.HeadClient, log); err2 == nil {
+							if ls, err2 := newLogStream(logop, cs.HeadClient, log, sendEntryCh, batchCh); err2 == nil {
 								if cs.DB != nil {
 									if err2 := cs.DB.Stream(ctx, ls); err2 != nil {
 										err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
@@ -136,10 +164,13 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 			go func() {
 				var wg sync.WaitGroup
 				defer close(sendEntryCh)
+				defer close(batchCh)
+				wg.Add(1)
+				go cs.batcher(ctx, batchCh, &wg)
 				for _, logOp := range cs.Operators {
 					for _, logStream := range logOp.Streams {
 						wg.Add(1)
-						go logStream.run(ctx, &wg, sendEntryCh)
+						go logStream.run(ctx, &wg)
 					}
 				}
 				wg.Wait()

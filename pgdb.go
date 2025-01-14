@@ -100,7 +100,7 @@ func (cdb *PgDB) Stream(ctx context.Context, ls *LogStream) (err error) {
 	return
 }
 
-func (cdb *PgDB) Entry(ctx context.Context, le *LogEntry) (err error) {
+func (cdb *PgDB) queueEntry(le *LogEntry) (args []any) {
 	if cert := le.Cert(); cert != nil {
 		logindex := le.Index()
 
@@ -129,7 +129,7 @@ func (cdb *PgDB) Entry(ctx context.Context, le *LogEntry) (err error) {
 			uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
 		}
 
-		args := []any{
+		args = []any{
 			cert.Seen,
 			le.LogStream.Id,
 			logindex,
@@ -148,18 +148,6 @@ func (cdb *PgDB) Entry(ctx context.Context, le *LogEntry) (err error) {
 			strings.Join(ipaddrs, " "),
 			strings.Join(emails, " "),
 			strings.Join(uris, " "),
-		}
-
-		if _, err = cdb.Pool.Exec(ctx, cdb.procNewEntry, args...); err != nil {
-			if ctx.Err() == nil {
-				fmt.Printf("CALL CERTDB_new_entry('%v', %v,%v,%v,'%x', '%s','%s','%s', '%s','%s','%s', '%s','%s', '%s', '%s','%s','%s','%s')\n", args...)
-			}
-		} else {
-			if le.backfilled.CompareAndSwap(false, true) {
-				if cdb.CertStream.Config.TailDialer != nil {
-					go cdb.backfillStream(ctx, le.LogStream)
-				}
-			}
 		}
 	}
 	return

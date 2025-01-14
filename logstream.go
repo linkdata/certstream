@@ -23,23 +23,24 @@ type LogStream struct {
 	*LogOperator
 	*loglist3.Log
 	*client.LogClient
-	HttpClient *http.Client
-	Err        error        // set if Stopped() returns true
-	Count      atomic.Int64 // number of certificates sent to the channel
-	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
-	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
-	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
-	backfilled atomic.Bool  // atomic: nonzero if database backfill called for this stream
-	stopped    atomic.Bool  // atomic
-	Id         int32        // database ID, if available
+	HttpClient       *http.Client
+	Err              error        // set if Stopped() returns true
+	Count            atomic.Int64 // number of certificates sent to the channel
+	MinIndex         atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex         atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex        atomic.Int64 // atomic: highest index that is available from stream source
+	InsideGaps       atomic.Int64 // atomic: number of remaining entries inside gaps
+	backfilled       atomic.Bool  // atomic: nonzero if database backfill called for this stream
+	stopped          atomic.Bool  // atomic
+	Id               int32        // database ID, if available
+	entryCh, batchCh chan<- *LogEntry
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
 }
 
-func NewLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log) (ls *LogStream, err error) {
+func newLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log, entryCh, batchCh chan<- *LogEntry) (ls *LogStream, err error) {
 	var logClient *client.LogClient
 	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{}); err == nil {
 		ls = &LogStream{
@@ -47,6 +48,8 @@ func NewLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log
 			Log:         log,
 			LogClient:   logClient,
 			HttpClient:  httpClient,
+			entryCh:     entryCh,
+			batchCh:     batchCh,
 		}
 		ls.MinIndex.Store(-1)
 		ls.MaxIndex.Store(-1)
@@ -68,7 +71,7 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
-func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup, entryCh chan<- *LogEntry) {
+func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer ls.stopped.Store(true)
 
@@ -77,8 +80,16 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup, entryCh chan<-
 	for err == nil {
 		if start < end {
 			ls.GetRawEntries(ctx, start, end, func(logindex int64, entry ct.LeafEntry) {
-				ls.sendEntry(ctx, entryCh, logindex, entry)
+				ls.sendEntry(ctx, logindex, entry, false)
 			})
+			if ls.backfilled.CompareAndSwap(false, true) {
+				if ls.CertStream.Config.TailDialer != nil {
+					if cdb := ls.DB; cdb != nil {
+						wg.Add(1)
+						go cdb.backfillStream(ctx, ls, wg)
+					}
+				}
+			}
 			if end-start <= int64(BatchSize/2) {
 				sleep(ctx, time.Second*15)
 			}
@@ -117,7 +128,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 	return
 }
 
-func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry {
+func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry {
 	var ctle *ct.LogEntry
 	ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &entry)
 	if leaferr == nil {
@@ -140,14 +151,15 @@ func (ls *LogStream) MakeLogEntry(logindex int64, entry ct.LeafEntry, historical
 	}
 }
 
-func (ls *LogStream) sendEntry(ctx context.Context, entryCh chan<- *LogEntry, logindex int64, entry ct.LeafEntry) {
-	le := ls.MakeLogEntry(logindex, entry, false)
-	if ls.DB != nil {
-		_ = ls.LogError(ls.DB.Entry(ctx, le), "cdb.Entry", "url", le.URL, "stream", le.LogStream.Id, "entry", le.Index())
+func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.LeafEntry, historical bool) {
+	le := ls.makeLogEntry(logindex, entry, historical)
+	select {
+	case <-ctx.Done():
+	case ls.batchCh <- le:
 	}
 	select {
 	case <-ctx.Done():
-	case entryCh <- le:
+	case ls.entryCh <- le:
 		ls.Count.Add(1)
 		ls.LogOperator.Count.Add(1)
 	}
