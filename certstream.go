@@ -21,6 +21,8 @@ type CertStream struct {
 	TailClient *http.Client            // may be nil if not backfilling
 	Operators  map[string]*LogOperator // operators by operator domain, valid after Start()
 	DB         *PgDB
+	mu         sync.Mutex         // protects following
+	estimates  map[string]float64 // row count estimates
 }
 
 var DefaultTransport = &http.Transport{
@@ -61,6 +63,50 @@ func (cs *CertStream) CountStreams() (running, stopped int) {
 	return
 }
 
+func (cs *CertStream) refreshEstimatesBatch() (batch *pgx.Batch) {
+	if cs.DB != nil {
+		batch = &pgx.Batch{}
+		cs.mu.Lock()
+		defer cs.mu.Unlock()
+		for k := range cs.estimates {
+			table := cs.DB.Pfx("CERTDB_" + k)
+			batch.Queue(SelectEstimate, table).QueryRow(func(row pgx.Row) error {
+				var estimate float64
+				if cs.LogError(row.Scan(&estimate), "refreshEstimates", "table", table) == nil {
+					cs.mu.Lock()
+					cs.estimates[k] = estimate
+					cs.mu.Unlock()
+				}
+				return nil
+			})
+		}
+	}
+	return
+}
+
+func (cs *CertStream) refreshEstimates(ctx context.Context) {
+	if cs.DB != nil {
+		batch := cs.refreshEstimatesBatch()
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		cs.LogError(cs.DB.SendBatch(ctx, batch).Close(), "refreshEstimates")
+	}
+}
+
+func (cs *CertStream) estimator(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cs.refreshEstimates(ctx)
+		}
+	}
+}
+
 func (cs *CertStream) batcher(ctx context.Context, ch <-chan *LogEntry, wg *sync.WaitGroup) {
 	defer wg.Done()
 	if cdb := cs.DB; cdb != nil {
@@ -97,6 +143,11 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 			Transport: tp,
 		},
 		Operators: map[string]*LogOperator{},
+		estimates: map[string]float64{
+			"cert":    0,
+			"dnsname": 0,
+			"entry":   0,
+		},
 	}
 
 	if cs.Config.TailDialer != nil {
@@ -171,6 +222,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 					}
 				}()
 				wg.Add(1)
+				go cs.estimator(ctx, &wg)
 				go cs.batcher(ctx, batchCh, &wg)
 				for _, logOp := range cs.Operators {
 					for _, logStream := range logOp.Streams {
