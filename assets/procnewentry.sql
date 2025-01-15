@@ -78,8 +78,6 @@ BEGIN
     VALUES (seen, logindex, _cert_id, stream)
     ON CONFLICT DO NOTHING;
 
-  COMMIT;
-
 END;
 $procedure$
 ;
