@@ -22,40 +22,50 @@ var BatchSize = 1024
 type LogStream struct {
 	*LogOperator
 	*loglist3.Log
-	*client.LogClient
-	HttpClient       *http.Client
-	Err              error        // set if Stopped() returns true
-	Count            atomic.Int64 // number of certificates sent to the channel
-	MinIndex         atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
-	MaxIndex         atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex        atomic.Int64 // atomic: highest index that is available from stream source
-	InsideGaps       atomic.Int64 // atomic: number of remaining entries inside gaps
-	backfilled       atomic.Bool  // atomic: nonzero if database backfill called for this stream
-	stopped          atomic.Bool  // atomic
-	Id               int32        // database ID, if available
-	entryCh, batchCh chan<- *LogEntry
+	HeadClient *client.LogClient
+	TailClient *client.LogClient
+	Err        error        // set if Stopped() returns true
+	Count      atomic.Int64 // number of certificates sent to the channel
+	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
+	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
+	stopped    atomic.Bool  // atomic
+	Id         int32        // database ID, if available
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
 }
 
-func newLogStream(logop *LogOperator, httpClient *http.Client, log *loglist3.Log, entryCh, batchCh chan<- *LogEntry) (ls *LogStream, err error) {
-	var logClient *client.LogClient
-	if logClient, err = client.New(log.URL, httpClient, jsonclient.Options{}); err == nil {
-		ls = &LogStream{
-			LogOperator: logop,
-			Log:         log,
-			LogClient:   logClient,
-			HttpClient:  httpClient,
-			entryCh:     entryCh,
-			batchCh:     batchCh,
+func newLogStream(ctx context.Context, logop *LogOperator, headClient, tailClient *http.Client, log *loglist3.Log) {
+	if logop != nil {
+		var ls *LogStream
+		headLogClient, err := client.New(log.URL, headClient, jsonclient.Options{})
+		if err == nil {
+			var tailLogClient *client.LogClient
+			if tailClient != nil {
+				tailLogClient, err = client.New(log.URL, tailClient, jsonclient.Options{})
+			}
+			if err == nil {
+				ls = &LogStream{
+					LogOperator: logop,
+					Log:         log,
+					HeadClient:  headLogClient,
+					TailClient:  tailLogClient,
+				}
+				ls.MinIndex.Store(-1)
+				ls.MaxIndex.Store(-1)
+				ls.LastIndex.Store(-1)
+				if logop.DB != nil {
+					err = logop.DB.Stream(ctx, ls)
+				}
+			}
 		}
-		ls.MinIndex.Store(-1)
-		ls.MaxIndex.Store(-1)
-		ls.LastIndex.Store(-1)
+		if logop.LogError(err, "newLogStream", "url", log.URL) == nil {
+			logop.Streams = append(logop.Streams, ls)
+		}
 	}
-	return
 }
 
 func (ls *LogStream) Stopped() bool {
@@ -73,26 +83,22 @@ func sleep(ctx context.Context, d time.Duration) {
 
 func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	defer func() {
-		_ = ls.LogError(ls.Err, "stream failed", "url", ls.URL, "stream", ls.Id)
+		_ = ls.LogError(ls.Err, "stream stopped", "url", ls.URL, "stream", ls.Id)
 		ls.stopped.Store(true)
 		wg.Done()
 	}()
 
 	end, err := ls.NewLastIndex(ctx)
 	start := end
+	if cdb := ls.DB; cdb != nil {
+		if ls.CertStream.Config.TailDialer != nil {
+			wg.Add(1)
+			go cdb.backfillStream(ctx, ls, wg)
+		}
+	}
 	for err == nil {
 		if start < end {
-			ls.GetRawEntries(ctx, start, end, func(logindex int64, entry ct.LeafEntry) {
-				ls.sendEntry(ctx, logindex, entry, false)
-			})
-			if ls.backfilled.CompareAndSwap(false, true) {
-				if ls.CertStream.Config.TailDialer != nil {
-					if cdb := ls.DB; cdb != nil {
-						wg.Add(1)
-						go cdb.backfillStream(ctx, ls, wg)
-					}
-				}
-			}
+			ls.GetRawEntries(ctx, start, end, false, nil)
 			if end-start <= int64(BatchSize/2) {
 				sleep(ctx, time.Second*15)
 			}
@@ -114,7 +120,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 	lastIndex = ls.LastIndex.Load()
 	err = bo.Retry(ctx, func() error {
 		var sth *ct.SignedTreeHead
-		sth, err = ls.LogClient.GetSTH(ctx)
+		sth, err = ls.HeadClient.GetSTH(ctx)
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
@@ -156,13 +162,12 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 
 func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.LeafEntry, historical bool) {
 	le := ls.makeLogEntry(logindex, entry, historical)
-	select {
-	case <-ctx.Done():
-	case ls.batchCh <- le:
+	if ls.DB != nil {
+		ls.DB.Send(ctx, le)
 	}
 	select {
 	case <-ctx.Done():
-	case ls.entryCh <- le:
+	case ls.sendEntryCh <- le:
 		ls.Count.Add(1)
 		ls.LogOperator.Count.Add(1)
 	}
@@ -170,6 +175,10 @@ func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.Lea
 
 func (ls *LogStream) handleError(err error) (fatal bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	errTxt := err.Error()
+	if strings.Contains(errTxt, "context canceled") {
 		return true
 	}
 	args := []any{"url", ls.URL, "stream", ls.Id}
@@ -181,7 +190,7 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 			http.StatusGatewayTimeout:
 			return false
 		}
-		if strings.Contains(err.Error(), "deadline exceeded") {
+		if strings.Contains(errTxt, "deadline exceeded") {
 			return false
 		}
 		b := rspErr.Body
@@ -196,7 +205,11 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 	return
 }
 
-func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb func(logindex int64, entry ct.LeafEntry)) {
+func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, gapcounter *atomic.Int64) {
+	client := ls.HeadClient
+	if historical && ls.TailClient != nil {
+		client = ls.TailClient
+	}
 	for start <= end {
 		bo := &backoff.Backoff{
 			Min:    1 * time.Second,
@@ -208,7 +221,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 		stop := start + min(int64(BatchSize), end-start)
 		if err := bo.Retry(ctx, func() error {
 			var err error
-			resp, err = ls.LogClient.GetRawEntries(ctx, start, stop)
+			resp, err = client.GetRawEntries(ctx, start, stop)
 			return err
 		}); err != nil {
 			if ls.handleError(err) {
@@ -216,8 +229,11 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb fun
 			}
 		} else {
 			for i := range resp.Entries {
-				cb(start, resp.Entries[i])
+				ls.sendEntry(ctx, start, resp.Entries[i], historical)
 				start++
+				if gapcounter != nil {
+					gapcounter.Add(-1)
+				}
 			}
 		}
 	}

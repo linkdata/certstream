@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/net/idna"
 )
@@ -27,6 +30,9 @@ type PgDB struct {
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
 	stmtSelectDnsnameLike string
+	mu                    sync.Mutex // protects following
+	batchCh               chan *LogEntry
+	estimates             map[string]float64 // row count estimates
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
@@ -76,13 +82,37 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
+							batchCh:               make(chan *LogEntry, batcherQueueSize),
+							estimates: map[string]float64{
+								"cert":    0,
+								"dnsname": 0,
+								"entry":   0,
+							},
 						}
+						cdb.refreshEstimates(ctx)
 					}
 				}
 			}
 		}
 	}
 	return
+}
+
+func (cdb *PgDB) Close() {
+	close(cdb.batchCh)
+	cdb.Pool.Close()
+}
+
+func (cdb *PgDB) Load() (pct int) {
+	pct = len(cdb.batchCh) * 100 / batcherQueueSize
+	return
+}
+
+func (cdb *PgDB) Send(ctx context.Context, le *LogEntry) {
+	select {
+	case <-ctx.Done():
+	case cdb.batchCh <- le:
+	}
 }
 
 func (cdb *PgDB) Operator(ctx context.Context, lo *LogOperator) (err error) {
@@ -150,15 +180,6 @@ func (cdb *PgDB) queueEntry(le *LogEntry) (args []any) {
 			strings.Join(uris, " "),
 		}
 	}
-	return
-}
-
-func (cdb *PgDB) Estimate(ctx context.Context, table string) (estimate float64, err error) {
-	if !strings.HasPrefix(table, "CERTDB_") {
-		table = "CERTDB_" + table
-	}
-	row := cdb.Pool.QueryRow(ctx, SelectEstimate, cdb.Pfx(table))
-	err = row.Scan(&estimate)
 	return
 }
 
@@ -230,4 +251,54 @@ func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCe
 		cert, err = cdb.getCertificate(ctx, &dbcert)
 	}
 	return
+}
+
+func (cdb *PgDB) Estimate(table string) (f float64) {
+	table = strings.TrimPrefix(table, "CERTDB_")
+	table = strings.TrimPrefix(table, cdb.CertStream.Config.PgPrefix)
+	cdb.mu.Lock()
+	f = cdb.estimates[table]
+	cdb.mu.Unlock()
+	return
+}
+
+func (cdb *PgDB) refreshEstimatesBatch() (batch *pgx.Batch) {
+	batch = &pgx.Batch{}
+	cdb.mu.Lock()
+	defer cdb.mu.Unlock()
+	for k := range cdb.estimates {
+		table := cdb.Pfx("CERTDB_" + k)
+		batch.Queue(SelectEstimate, table).QueryRow(func(row pgx.Row) error {
+			var estimate float64
+			if cdb.LogError(row.Scan(&estimate), "refreshEstimates", "table", table) == nil {
+				cdb.mu.Lock()
+				cdb.estimates[k] = estimate
+				cdb.mu.Unlock()
+			}
+			return nil
+		})
+	}
+	return
+}
+
+func (cdb *PgDB) refreshEstimates(ctx context.Context) {
+	if batch := cdb.refreshEstimatesBatch(); batch != nil {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		cdb.LogError(cdb.SendBatch(ctx, batch).Close(), "refreshEstimates")
+	}
+}
+
+func (cdb *PgDB) estimator(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cdb.refreshEstimates(ctx)
+		}
+	}
 }
