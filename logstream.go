@@ -72,8 +72,11 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-	defer ls.stopped.Store(true)
+	defer func() {
+		_ = ls.LogError(ls.Err, "stream failed", "url", ls.URL, "stream", ls.Id)
+		ls.stopped.Store(true)
+		wg.Done()
+	}()
 
 	end, err := ls.NewLastIndex(ctx)
 	start := end
@@ -169,6 +172,7 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	args := []any{"url", ls.URL, "stream", ls.Id}
 	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 		switch rspErr.StatusCode {
 		case http.StatusTooManyRequests,
@@ -177,19 +181,19 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 			http.StatusGatewayTimeout:
 			return false
 		}
+		if strings.Contains(err.Error(), "deadline exceeded") {
+			return false
+		}
 		b := rspErr.Body
 		if len(b) > 64 {
 			b = b[:64]
 		}
-		ls.LogError(rspErr, "GetRawEntries", "url", ls.URL, "code", rspErr.StatusCode, "body", string(b))
-		return true
+		args = append(args, "code", rspErr.StatusCode, "body", string(b))
+		err = rspErr
+		fatal = true
 	}
-	errTxt := err.Error()
-	if strings.Contains(errTxt, "context canceled") || strings.Contains(errTxt, "deadline exceeded") {
-		return true
-	}
-	ls.LogError(err, "GetRawEntries", "url", ls.URL)
-	return false
+	ls.LogError(err, "GetRawEntries", args...)
+	return
 }
 
 func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, cb func(logindex int64, entry ct.LeafEntry)) {
