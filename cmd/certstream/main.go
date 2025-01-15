@@ -62,9 +62,7 @@ func main() {
 		fmt.Println(err)
 	} else {
 		for le := range cs.C {
-			if le.Historical {
-				fmt.Printf("%q %v %v\n", le.Domain, le.Historical, le.Cert().DNSNames)
-			}
+			fmt.Printf("%q %v %v\n", le.Domain, le.Historical, le.Cert().DNSNames)
 		}
 	}
 }
