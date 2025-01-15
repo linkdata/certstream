@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,14 @@ func (cs *CertStream) CountStreams() (running, stopped int) {
 			}
 		}
 	}
+	return
+}
+
+func (cs *CertStream) Estimate(table string) (f float64) {
+	table = strings.TrimPrefix(table, "CERTDB_")
+	cs.mu.Lock()
+	f = cs.estimates[table]
+	cs.mu.Unlock()
 	return
 }
 
