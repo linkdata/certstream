@@ -28,32 +28,32 @@ DECLARE
 BEGIN
 
   SELECT id FROM CERTDB_ident INTO _iss_id WHERE organization=iss_org AND province=iss_prov AND country=iss_country;
-  IF NOT FOUND THEN
+  IF _iss_id IS NULL THEN
     INSERT INTO CERTDB_ident (organization, province, country)
       VALUES (iss_org, iss_prov, iss_country)
       ON CONFLICT (organization, province, country) DO NOTHING RETURNING id INTO _iss_id;
   END IF;
-  IF NOT FOUND THEN
+  IF _iss_id IS NULL THEN
     SELECT id FROM CERTDB_ident INTO _iss_id WHERE organization=iss_org AND province=iss_prov AND country=iss_country;
   END IF;
 
   SELECT id FROM CERTDB_ident INTO _sub_id WHERE organization=sub_org AND province=sub_prov AND country=sub_country;
-  IF NOT FOUND THEN
+  IF _sub_id IS NULL THEN
     INSERT INTO CERTDB_ident (organization, province, country)
       VALUES (sub_org, sub_prov, sub_country)
       ON CONFLICT (organization, province, country) DO NOTHING RETURNING id INTO _sub_id;
   END IF;
-  IF NOT FOUND THEN
+  IF _sub_id IS NULL THEN
     SELECT id FROM CERTDB_ident INTO _sub_id WHERE organization=sub_org AND province=sub_prov AND country=sub_country;
   END IF;
 
   SELECT id FROM CERTDB_cert INTO _cert_id WHERE sha256=hash;
-  IF NOT FOUND THEN
+  IF _cert_id IS NULL THEN
     INSERT INTO CERTDB_cert (notbefore, notafter, commonname, subject, issuer, sha256, precert)
       VALUES (notbefore, notafter, commonname, _sub_id, _iss_id, hash, precert)
       ON CONFLICT (sha256) DO NOTHING RETURNING id INTO _cert_id;
   END IF;
-  IF NOT FOUND THEN
+  IF _cert_id IS NULL THEN
     SELECT id FROM CERTDB_cert INTO _cert_id WHERE sha256=hash;
   END IF;
 
