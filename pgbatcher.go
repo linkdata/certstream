@@ -6,13 +6,27 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const batcherQueueSize = 16 * 1024
 
+func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
+	var tx pgx.Tx
+	if tx, err = cdb.Begin(ctx); err == nil {
+		if err = tx.SendBatch(ctx, batch).Close(); err == nil {
+			err = tx.Commit(ctx)
+		} else {
+			err = tx.Rollback(ctx)
+		}
+	}
+	return
+}
+
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
-	defer wg.Done()
 	batch := &pgx.Batch{}
+	remain := map[int]struct{}{}
+	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
@@ -21,8 +35,31 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 			batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
 		default:
 			if len(batch.QueuedQueries) > 0 {
-				cdb.LogError(cdb.SendBatch(ctx, batch).Close(), "worker")
-				batch = &pgx.Batch{}
+				clear(remain)
+				for index, qq := range batch.QueuedQueries {
+					remain[index] = struct{}{}
+					qq.Exec(func(ct pgconn.CommandTag) error {
+						delete(remain, index)
+						return nil
+					})
+				}
+				now := time.Now()
+				err := cdb.SendBatch(ctx, batch).Close()
+				elapsed := time.Since(now)
+				cdb.mu.Lock()
+				cdb.newentrycount += int64(len(batch.QueuedQueries) - len(remain))
+				cdb.newentrytime += elapsed
+				cdb.mu.Unlock()
+				pgerr, ok := err.(*pgconn.PgError)
+				if !ok || (pgerr.SQLState() != "23505" && pgerr.SQLState() != "40P01") {
+					cdb.LogError(err, "worker")
+				}
+				newbatch := &pgx.Batch{}
+				for index := range remain {
+					qq := batch.QueuedQueries[index]
+					newbatch.Queue(qq.SQL, qq.Arguments...)
+				}
+				batch = newbatch
 			} else {
 				if idlecount > 0 {
 					idlecount--
@@ -34,6 +71,16 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 			}
 		}
 	}
+}
+
+func (cdb *PgDB) AverageNewEntryTime() (d time.Duration) {
+	cdb.mu.Lock()
+	d = cdb.newentrytime
+	if cdb.newentrycount > 0 {
+		d /= time.Duration(cdb.newentrycount)
+	}
+	cdb.mu.Unlock()
+	return
 }
 
 func (cdb *PgDB) batcher(ctx context.Context, wg *sync.WaitGroup) {

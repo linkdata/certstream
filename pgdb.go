@@ -33,6 +33,8 @@ type PgDB struct {
 	mu                    sync.Mutex // protects following
 	batchCh               chan *LogEntry
 	estimates             map[string]float64 // row count estimates
+	newentrytime          time.Duration
+	newentrycount         int64
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
@@ -42,15 +44,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 			if _, err = db.Exec(ctx, pfx(callCreateSchema)); err == nil {
 				if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
 					if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
-						if _, err = db.Exec(ctx, pfx(FunctionEnsureIdent)); err == nil {
-							if _, err = db.Exec(ctx, pfx(FunctionEnsureCert)); err == nil {
-								if _, err = db.Exec(ctx, pfx(FunctionEnsureEntry)); err == nil {
-									if _, err = db.Exec(ctx, pfx(FunctionFillEntry)); err == nil {
-										_, err = db.Exec(ctx, pfx(ProcedureNewEntry))
-									}
-								}
-							}
-						}
+						_, err = db.Exec(ctx, pfx(FuncNewEntry))
 					}
 				}
 			}
@@ -63,7 +57,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
-	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
+	const callNewEntry = `SELECT CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
 			cs.Config.PgUser, cs.Config.PgPass, cs.Config.PgAddr, cs.Config.PgName, cs.Config.PgConns)

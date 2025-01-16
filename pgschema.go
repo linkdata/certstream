@@ -14,20 +14,8 @@ var FunctionStreamID string
 //go:embed assets/funcname.sql
 var FunctionName string
 
-//go:embed assets/funcensureident.sql
-var FunctionEnsureIdent string
-
-//go:embed assets/funcensurecert.sql
-var FunctionEnsureCert string
-
-//go:embed assets/funcensureentry.sql
-var FunctionEnsureEntry string
-
-//go:embed assets/funcfillentry.sql
-var FunctionFillEntry string
-
-//go:embed assets/procnewentry.sql
-var ProcedureNewEntry string
+//go:embed assets/funcnewentry.sql
+var FuncNewEntry string
 
 //go:embed assets/selectgaps.sql
 var SelectGaps string
