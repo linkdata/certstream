@@ -24,17 +24,40 @@ func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
 }
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
-	batch := &pgx.Batch{}
-	remain := map[int]struct{}{}
+	// batch := &pgx.Batch{}
+	// remain := map[int]struct{}{}
 	defer wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case le := <-cdb.batchCh:
-			batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
+			/*if cert := le.Cert(); cert != nil {
+				var issuer, subject JsonIdentity
+				issuer.Fill(&cert.Issuer)
+				subject.Fill(&cert.Subject)
+
+			}*/
+
+			for {
+				now := time.Now()
+				_, err := cdb.Exec(ctx, cdb.stmtNewEntry, cdb.queueEntry(le)...)
+				// err := cdb.SendBatch(ctx, batch).Close()
+				elapsed := time.Since(now)
+				pgerr, ok := err.(*pgconn.PgError)
+				if ok && (pgerr.SQLState() == "23505" || pgerr.SQLState() == "40P01") {
+					continue
+				}
+				cdb.LogError(err, "worker")
+				cdb.mu.Lock()
+				cdb.newentrycount++
+				cdb.newentrytime += elapsed
+				cdb.mu.Unlock()
+				break
+			}
+
 		default:
-			if len(batch.QueuedQueries) > 0 {
+			/*if len(batch.QueuedQueries) > 0 {
 				clear(remain)
 				for index, qq := range batch.QueuedQueries {
 					remain[index] = struct{}{}
@@ -60,15 +83,15 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 					newbatch.Queue(qq.SQL, qq.Arguments...)
 				}
 				batch = newbatch
-			} else {
-				if idlecount > 0 {
-					idlecount--
-					if idlecount == 0 {
-						return
-					}
+			} else {*/
+			if idlecount > 0 {
+				idlecount--
+				if idlecount == 0 {
+					return
 				}
-				time.Sleep(time.Millisecond * 100)
 			}
+			time.Sleep(time.Millisecond * 100)
+			//}
 		}
 	}
 }

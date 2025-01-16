@@ -30,13 +30,6 @@ BEGIN ATOMIC;
       )
       RETURNING *
     ),
-	  _subject AS (
-      (
-        SELECT id FROM CERTDB_ident WHERE organization=_sub_org AND province=_sub_prov AND country=_sub_country
-        UNION ALL
-        SELECT id FROM _ensure_subject
-      ) LIMIT 1
-	  ),
     _ensure_issuer AS (
       INSERT INTO CERTDB_ident (organization, province, country)
       SELECT _iss_org, _iss_prov, _iss_country
@@ -45,6 +38,13 @@ BEGIN ATOMIC;
       )
       RETURNING *
     ),
+	  _subject AS (
+      (
+        SELECT id FROM CERTDB_ident WHERE organization=_sub_org AND province=_sub_prov AND country=_sub_country
+        UNION ALL
+        SELECT id FROM _ensure_subject
+      ) LIMIT 1
+	  ),
 	  _issuer AS (
       (
         SELECT id FROM CERTDB_ident WHERE organization=_iss_org AND province=_iss_prov AND country=_iss_country

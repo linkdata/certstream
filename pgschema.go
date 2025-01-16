@@ -17,6 +17,9 @@ var FunctionName string
 //go:embed assets/funcnewentry.sql
 var FuncNewEntry string
 
+//go:embed assets/procaddnewentry.sql
+var ProcAddNewEntry string
+
 //go:embed assets/selectgaps.sql
 var SelectGaps string
 
