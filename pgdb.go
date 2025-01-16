@@ -25,7 +25,7 @@ type PgDB struct {
 	Pfx                   func(string) string // prefix replacer
 	funcOperatorID        string
 	funcStreamID          string
-	procNewEntry          string
+	stmtNewEntry          string
 	stmtSelectGaps        string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
@@ -42,7 +42,15 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 			if _, err = db.Exec(ctx, pfx(callCreateSchema)); err == nil {
 				if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
 					if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
-						_, err = db.Exec(ctx, pfx(ProcedureNewEntry))
+						if _, err = db.Exec(ctx, pfx(FunctionEnsureIdent)); err == nil {
+							if _, err = db.Exec(ctx, pfx(FunctionEnsureCert)); err == nil {
+								if _, err = db.Exec(ctx, pfx(FunctionEnsureEntry)); err == nil {
+									if _, err = db.Exec(ctx, pfx(FunctionFillEntry)); err == nil {
+										_, err = db.Exec(ctx, pfx(ProcedureNewEntry))
+									}
+								}
+							}
+						}
 					}
 				}
 			}
@@ -77,7 +85,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							Pfx:                   pfx,
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
-							procNewEntry:          pfx(callNewEntry),
+							stmtNewEntry:          pfx(callNewEntry),
 							stmtSelectGaps:        pfx(SelectGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),

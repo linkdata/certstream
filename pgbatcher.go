@@ -4,27 +4,34 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const batcherQueueSize = 16 * 1024
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
 	defer wg.Done()
+	batch := &pgx.Batch{}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case le := <-cdb.batchCh:
-			_, err := cdb.Exec(ctx, cdb.procNewEntry, cdb.queueEntry(le)...)
-			cdb.LogError(err, "worker")
+			batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
 		default:
-			if idlecount > 0 {
-				idlecount--
-				if idlecount == 0 {
-					return
+			if len(batch.QueuedQueries) > 0 {
+				cdb.LogError(cdb.SendBatch(ctx, batch).Close(), "worker")
+				batch = &pgx.Batch{}
+			} else {
+				if idlecount > 0 {
+					idlecount--
+					if idlecount == 0 {
+						return
+					}
 				}
+				time.Sleep(time.Millisecond * 100)
 			}
-			time.Sleep(time.Millisecond * 100)
 		}
 	}
 }
