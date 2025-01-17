@@ -7,9 +7,9 @@ IF to_regclass('CERTDB_operator') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_operator (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    UNIQUE(name, email)
+    email TEXT NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_operator_full_idx ON CERTDB_operator (name, email);
 END IF;
 
 IF to_regclass('CERTDB_stream') IS NULL THEN
@@ -19,6 +19,7 @@ IF to_regclass('CERTDB_stream') IS NULL THEN
     operator INTEGER NOT NULL REFERENCES CERTDB_operator (id),
     json TEXT NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_stream_url_idx ON CERTDB_stream (url);
 END IF;
 
 IF to_regclass('CERTDB_ident') IS NULL THEN

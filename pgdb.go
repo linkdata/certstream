@@ -36,6 +36,7 @@ type PgDB struct {
 	estimates             map[string]float64 // row count estimates
 	newentrytime          time.Duration
 	newentrycount         int64
+	avgentrytime          time.Duration
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {

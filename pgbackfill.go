@@ -25,10 +25,10 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 	}
 	if lastindex := ls.LastIndex.Load(); lastindex != -1 {
 		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
-		var maxindex int64
-		if err := row.Scan(&maxindex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL) == nil {
-			if maxindex < lastindex {
-				gaps = append(gaps, gap{start: maxindex + 1, end: lastindex})
+		var nullableMaxIndex sql.NullInt64
+		if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL) == nil {
+			if nullableMaxIndex.Valid && nullableMaxIndex.Int64 < lastindex {
+				gaps = append(gaps, gap{start: nullableMaxIndex.Int64 + 1, end: lastindex})
 			}
 		}
 	}
