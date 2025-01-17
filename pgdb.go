@@ -25,6 +25,7 @@ type PgDB struct {
 	Pfx                   func(string) string // prefix replacer
 	funcOperatorID        string
 	funcStreamID          string
+	funcEnsureIdent       string
 	stmtNewEntry          string
 	stmtSelectGaps        string
 	stmtSelectMinIdx      string
@@ -35,7 +36,6 @@ type PgDB struct {
 	estimates             map[string]float64 // row count estimates
 	newentrytime          time.Duration
 	newentrycount         int64
-	idents                map[JsonIdentity]int64
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
@@ -82,6 +82,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							Pfx:                   pfx,
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
+							funcEnsureIdent:       pfx(`SELECT CERTDB_ensure_ident($1,$2,$3);`),
 							stmtNewEntry:          pfx(callNewEntry),
 							stmtSelectGaps:        pfx(SelectGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
@@ -93,7 +94,6 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 								"dnsname": 0,
 								"entry":   0,
 							},
-							idents: map[JsonIdentity]int64{},
 						}
 						cdb.refreshEstimates(ctx)
 					}

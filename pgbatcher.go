@@ -23,6 +23,26 @@ func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
 	return
 }
 
+/*func (cdb *PgDB) ensureIdent(ctx context.Context, ident JsonIdentity) (id int64) {
+	cdb.mu.Lock()
+	idcache, ok := cdb.idents[ident]
+	if ok {
+		idcache.hits++
+		cdb.idents[ident] = idcache
+	}
+	cdb.mu.Unlock()
+	if !ok {
+		row := cdb.QueryRow(ctx, cdb.funcEnsureIdent, ident.Organization, ident.Province, ident.Country)
+		if cdb.LogError(row.Scan(&id), "ensureIdent") == nil {
+			idcache.id = id
+			cdb.mu.Lock()
+			cdb.idents[ident] = idcache
+			cdb.mu.Unlock()
+		}
+	}
+	return idcache.id
+}*/
+
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
 	// batch := &pgx.Batch{}
 	// remain := map[int]struct{}{}
@@ -32,17 +52,9 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		case <-ctx.Done():
 			return
 		case le := <-cdb.batchCh:
-			/*if cert := le.Cert(); cert != nil {
-				var issuer, subject JsonIdentity
-				issuer.Fill(&cert.Issuer)
-				subject.Fill(&cert.Subject)
-
-			}*/
-
 			for {
 				now := time.Now()
 				_, err := cdb.Exec(ctx, cdb.stmtNewEntry, cdb.queueEntry(le)...)
-				// err := cdb.SendBatch(ctx, batch).Close()
 				elapsed := time.Since(now)
 				pgerr, ok := err.(*pgconn.PgError)
 				if ok && (pgerr.SQLState() == "23505" || pgerr.SQLState() == "40P01") {
