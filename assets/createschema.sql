@@ -1,6 +1,4 @@
-CREATE OR REPLACE PROCEDURE CERTDB_create_schema()
-LANGUAGE plpgsql
-AS $procedure$
+DO $outer$
 BEGIN
 
 IF to_regclass('CERTDB_operator') IS NULL THEN
@@ -56,6 +54,29 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
     PRIMARY KEY (stream, logindex)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
+END IF;
+
+IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_name') THEN
+  CREATE FUNCTION CERTDB_name(
+    IN _dnsname TEXT
+  )
+  RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS $name_fn$
+  DECLARE
+    _a TEXT[];
+  BEGIN
+    _dnsname := lower(_dnsname);
+    IF substring(_dnsname for 4) = 'www.' THEN
+      _dnsname := substring(_dnsname from 4);
+    END IF;
+    _a := string_to_array(_dnsname, '.');
+    IF array_length(_a, 1) > 0 THEN
+      _a := trim_array(_a, 1);
+      _dnsname := array_to_string(_a, '.') || '.';
+    END IF;
+    RETURN _dnsname;
+  END;
+  $name_fn$
+  ;
 END IF;
 
 IF to_regclass('CERTDB_dnsname') IS NULL THEN
@@ -128,6 +149,5 @@ IF to_regclass('CERTDB_entries') IS NULL THEN
   ;
 END IF;
 
-END;
-$procedure$
-;
+END
+$outer$;

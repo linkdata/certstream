@@ -2,20 +2,14 @@ package certstream
 
 import _ "embed"
 
-//go:embed assets/proccreateschema.sql
-var ProcedureCreateSchema string
+//go:embed assets/createschema.sql
+var CreateSchema string
 
 //go:embed assets/funcoperatorid.sql
 var FunctionOperatorID string
 
 //go:embed assets/funcstreamid.sql
 var FunctionStreamID string
-
-//go:embed assets/funcname.sql
-var FunctionName string
-
-//go:embed assets/funcnewentry.sql
-var FuncNewEntry string
 
 //go:embed assets/procaddnewentry.sql
 var ProcAddNewEntry string

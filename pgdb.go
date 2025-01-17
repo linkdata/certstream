@@ -40,17 +40,10 @@ type PgDB struct {
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
-	const callCreateSchema = `CALL CERTDB_create_schema();`
-	if _, err = db.Exec(ctx, pfx(FunctionName)); err == nil {
-		if _, err = db.Exec(ctx, pfx(ProcedureCreateSchema)); err == nil {
-			if _, err = db.Exec(ctx, pfx(callCreateSchema)); err == nil {
-				if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
-					if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
-						if _, err = db.Exec(ctx, pfx(FuncNewEntry)); err == nil {
-							_, err = db.Exec(ctx, pfx(ProcAddNewEntry))
-						}
-					}
-				}
+	if _, err = db.Exec(ctx, pfx(CreateSchema)); err == nil {
+		if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
+			if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
+				_, err = db.Exec(ctx, pfx(ProcAddNewEntry))
 			}
 		}
 	}
