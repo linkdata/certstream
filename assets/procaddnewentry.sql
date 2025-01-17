@@ -18,12 +18,13 @@ CREATE OR REPLACE PROCEDURE CERTDB_add_new_entry(
   _emails TEXT,
   _uris TEXT
 )
-LANGUAGE plpgsql AS
-$proc$
+LANGUAGE plpgsql AS $proc$
+
 DECLARE
   _iss_id INTEGER;
   _sub_id INTEGER;
   _cert_id BIGINT;
+
 BEGIN
 
 	SELECT id FROM CERTDB_ident INTO _iss_id WHERE organization=_iss_org AND province=_iss_prov AND country=_iss_country;
@@ -81,5 +82,5 @@ BEGIN
 
 	COMMIT;
 
-END;
+END
 $proc$;
