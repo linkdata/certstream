@@ -25,7 +25,8 @@ type PgDB struct {
 	Pfx                   func(string) string // prefix replacer
 	funcOperatorID        string
 	funcStreamID          string
-	procNewEntry          string
+	funcEnsureIdent       string
+	stmtNewEntry          string
 	stmtSelectGaps        string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
@@ -33,18 +34,16 @@ type PgDB struct {
 	mu                    sync.Mutex // protects following
 	batchCh               chan *LogEntry
 	estimates             map[string]float64 // row count estimates
+	newentrytime          time.Duration
+	newentrycount         int64
+	avgentrytime          time.Duration
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
-	const callCreateSchema = `CALL CERTDB_create_schema();`
-	if _, err = db.Exec(ctx, pfx(FunctionName)); err == nil {
-		if _, err = db.Exec(ctx, pfx(ProcedureCreateSchema)); err == nil {
-			if _, err = db.Exec(ctx, pfx(callCreateSchema)); err == nil {
-				if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
-					if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
-						_, err = db.Exec(ctx, pfx(ProcedureNewEntry))
-					}
-				}
+	if _, err = db.Exec(ctx, pfx(CreateSchema)); err == nil {
+		if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
+			if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
+				_, err = db.Exec(ctx, pfx(ProcAddNewEntry))
 			}
 		}
 	}
@@ -55,7 +54,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
-	const callNewEntry = `CALL CERTDB_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
+	const callNewEntry = `CALL CERTDB_add_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
 			cs.Config.PgUser, cs.Config.PgPass, cs.Config.PgAddr, cs.Config.PgName, cs.Config.PgConns)
@@ -77,7 +76,8 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							Pfx:                   pfx,
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
-							procNewEntry:          pfx(callNewEntry),
+							funcEnsureIdent:       pfx(`SELECT CERTDB_ensure_ident($1,$2,$3);`),
+							stmtNewEntry:          pfx(callNewEntry),
 							stmtSelectGaps:        pfx(SelectGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
