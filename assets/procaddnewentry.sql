@@ -78,7 +78,7 @@ BEGIN
 
 	INSERT INTO CERTDB_entry (seen, logindex, cert, stream)
 		VALUES (_seen, _logindex, _cert_id, _stream)
-		ON CONFLICT DO NOTHING;
+		ON CONFLICT (stream, logindex) DO NOTHING;
 
 	COMMIT;
 
