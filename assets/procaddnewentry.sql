@@ -59,29 +59,26 @@ BEGIN
 		END IF;
 	END IF;
 
-	INSERT INTO CERTDB_dnsname (cert, dnsname) 
-		SELECT _cert_id, UNNEST(STRING_TO_ARRAY(_dnsnames, ' '))
-		ON CONFLICT (cert, dnsname) DO NOTHING;
-	COMMIT;
-
-	INSERT INTO CERTDB_ipaddress (cert, addr) 
-		SELECT _cert_id, inet(UNNEST(STRING_TO_ARRAY(_ipaddrs, ' ')))
-		ON CONFLICT (cert, addr) DO NOTHING;
-	COMMIT;
+    INSERT INTO CERTDB_uri (cert, uri) 
+		SELECT _cert_id, UNNEST(STRING_TO_ARRAY(_uris, ' '))
+		ON CONFLICT (cert, uri) DO NOTHING;
 
     INSERT INTO CERTDB_email (cert, email)
 		SELECT _cert_id, UNNEST(STRING_TO_ARRAY(_emails, ' '))
 		ON CONFLICT (cert, email) DO NOTHING;
-	COMMIT;
 
-    INSERT INTO CERTDB_uri (cert, uri) 
-		SELECT _cert_id, UNNEST(STRING_TO_ARRAY(_uris, ' '))
-		ON CONFLICT (cert, uri) DO NOTHING;
-	COMMIT;
+	INSERT INTO CERTDB_ipaddress (cert, addr) 
+		SELECT _cert_id, inet(UNNEST(STRING_TO_ARRAY(_ipaddrs, ' ')))
+		ON CONFLICT (cert, addr) DO NOTHING;
+
+	INSERT INTO CERTDB_dnsname (cert, dnsname) 
+		SELECT _cert_id, UNNEST(STRING_TO_ARRAY(_dnsnames, ' '))
+		ON CONFLICT (cert, dnsname) DO NOTHING;
 
 	INSERT INTO CERTDB_entry (seen, logindex, cert, stream)
 		VALUES (_seen, _logindex, _cert_id, _stream)
 		ON CONFLICT DO NOTHING;
+
 	COMMIT;
 
 END;
