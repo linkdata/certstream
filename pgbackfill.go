@@ -15,6 +15,7 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 	}
 	var gaps []gap
 	if rows, err := cdb.Query(ctx, cdb.stmtSelectGaps, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
+		defer rows.Close()
 		for rows.Next() {
 			var gap_start, gap_end int64
 			if err = rows.Scan(&gap_start, &gap_end); cdb.LogError(err, "backfillGaps/Scan", "url", ls.URL) == nil {
