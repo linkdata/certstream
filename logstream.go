@@ -236,5 +236,8 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 				}
 			}
 		}
+		for historical && ctx.Err() == nil && ls.DB.Load() > 20 {
+			time.Sleep(time.Millisecond * 100)
+		}
 	}
 }
