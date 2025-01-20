@@ -62,7 +62,7 @@ IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_name') THEN
   CREATE FUNCTION CERTDB_name(
     IN _dnsname TEXT
   )
-  RETURNS TEXT LANGUAGE plpgsql IMMUTABLE AS $name_fn$
+  RETURNS TEXT LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $name_fn$
   DECLARE
     _a TEXT[];
   BEGIN
@@ -88,7 +88,7 @@ IF to_regclass('CERTDB_dnsname') IS NULL THEN
     PRIMARY KEY (cert, dnsname)
   );
 END IF;
-CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
