@@ -88,7 +88,7 @@ IF to_regclass('CERTDB_dnsname') IS NULL THEN
     PRIMARY KEY (cert, dnsname)
   );
 END IF;
-CREATE INDEX CONCURRENTLY IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
