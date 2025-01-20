@@ -1,16 +1,14 @@
 DO $outer$
 BEGIN
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
 IF to_regclass('CERTDB_operator') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_operator (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name TEXT NOT NULL,
     email TEXT NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_operator_full_idx ON CERTDB_operator (name, email);
 END IF;
-CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_operator_full_idx ON CERTDB_operator (name, email);
 
 IF to_regclass('CERTDB_stream') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_stream (
@@ -19,8 +17,8 @@ IF to_regclass('CERTDB_stream') IS NULL THEN
     operator INTEGER NOT NULL REFERENCES CERTDB_operator (id),
     json TEXT NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_stream_url_idx ON CERTDB_stream (url);
 END IF;
-CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_stream_url_idx ON CERTDB_stream (url);
 
 IF to_regclass('CERTDB_ident') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ident (
@@ -30,8 +28,8 @@ IF to_regclass('CERTDB_ident') IS NULL THEN
     country TEXT NOT NULL
   );
   INSERT INTO CERTDB_ident (organization, province, country) VALUES ('', '', '') ON CONFLICT DO NOTHING;
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_ident_full_idx ON CERTDB_ident (organization, province, country);
 END IF;
-CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_ident_full_idx ON CERTDB_ident (organization, province, country);
 
 IF to_regclass('CERTDB_cert') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_cert (
@@ -44,8 +42,8 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     sha256 BYTEA NOT NULL,
     precert BOOLEAN NOT NULL
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
 END IF;
-CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
 
 IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_entry (
@@ -55,8 +53,8 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
     stream INTEGER NOT NULL REFERENCES CERTDB_stream (id),
     PRIMARY KEY (stream, logindex)
   );
+  CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
 END IF;
-CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
 
 IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_name') THEN
   CREATE FUNCTION CERTDB_name(
@@ -88,7 +86,11 @@ IF to_regclass('CERTDB_dnsname') IS NULL THEN
     PRIMARY KEY (cert, dnsname)
   );
 END IF;
-CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
+
+IF to_regclass('CERTDB_dnsname_name_idx') IS NULL THEN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
+END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
@@ -96,8 +98,8 @@ IF to_regclass('CERTDB_ipaddress') IS NULL THEN
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     PRIMARY KEY (cert, addr)
   );
+  CREATE INDEX IF NOT EXISTS CERTDB_ipaddress_addr_idx ON CERTDB_ipaddress (addr);
 END IF;
-CREATE INDEX IF NOT EXISTS CERTDB_ipaddress_addr_idx ON CERTDB_ipaddress (addr);
 
 IF to_regclass('CERTDB_email') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_email (
@@ -105,8 +107,8 @@ IF to_regclass('CERTDB_email') IS NULL THEN
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     PRIMARY KEY (cert, email)
   );
+  CREATE INDEX IF NOT EXISTS CERTDB_email_email_idx ON CERTDB_email (email);
 END IF;
-CREATE INDEX IF NOT EXISTS CERTDB_email_email_idx ON CERTDB_email (email);
 
 IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_uri (
@@ -114,8 +116,8 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     PRIMARY KEY (cert, uri)
   );
+  CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
-CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 
 IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
