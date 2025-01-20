@@ -32,6 +32,7 @@ type PgDB struct {
 	stmtSelectMaxIdx      string
 	stmtSelectDnsnameLike string
 	mu                    sync.Mutex // protects following
+	dbError               error
 	batchCh               chan *LogEntry
 	estimates             map[string]float64 // row count estimates
 	newentrytime          time.Duration
@@ -103,25 +104,32 @@ func (cdb *PgDB) Close() {
 	cdb.Pool.Close()
 }
 
-func (cdb *PgDB) Load() (pct int) {
+func (cdb *PgDB) QueueUsage() (pct int) {
 	pct = len(cdb.batchCh) * 100 / batcherQueueSize
 	return
 }
 
-func (cdb *PgDB) Send(ctx context.Context, le *LogEntry) {
+func (cdb *PgDB) DbError() (err error) {
+	cdb.mu.Lock()
+	err = cdb.dbError
+	cdb.mu.Unlock()
+	return
+}
+
+func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 	select {
 	case <-ctx.Done():
 	case cdb.batchCh <- le:
 	}
 }
 
-func (cdb *PgDB) Operator(ctx context.Context, lo *LogOperator) (err error) {
+func (cdb *PgDB) ensureOperator(ctx context.Context, lo *LogOperator) (err error) {
 	row := cdb.QueryRow(ctx, cdb.funcOperatorID, lo.Name, strings.Join(lo.Email, ","))
 	err = row.Scan(&lo.Id)
 	return
 }
 
-func (cdb *PgDB) Stream(ctx context.Context, ls *LogStream) (err error) {
+func (cdb *PgDB) ensureStream(ctx context.Context, ls *LogStream) (err error) {
 	var b []byte
 	if b, err = json.Marshal(ls.Log); err == nil {
 		row := cdb.QueryRow(ctx, cdb.funcStreamID, ls.URL, ls.LogOperator.Id, string(b))

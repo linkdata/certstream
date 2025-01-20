@@ -10,15 +10,15 @@ import (
 
 const batcherQueueSize = 16 * 1024
 
-func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
+func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) {
 	now := time.Now()
-	err = cdb.SendBatch(ctx, batch).Close()
+	err := cdb.SendBatch(ctx, batch).Close()
 	elapsed := time.Since(now)
 	cdb.mu.Lock()
 	cdb.newentrycount += int64(len(batch.QueuedQueries))
 	cdb.newentrytime += elapsed
+	cdb.dbError = err
 	cdb.mu.Unlock()
-	return cdb.LogError(err, "runBatch")
 }
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
@@ -59,18 +59,17 @@ func (cdb *PgDB) AverageNewEntryTime() (d time.Duration) {
 	return
 }
 
-func (cdb *PgDB) batcher(ctx context.Context, wg *sync.WaitGroup) {
+func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
+	const interval = time.Millisecond * 100
 	defer wg.Done()
 
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go cdb.worker(ctx, wg, -1)
-	}
+	wg.Add(1)
+	go cdb.worker(ctx, wg, -1)
 
 	loaded := 0
 	ticks := 0
-	ticker := time.NewTicker(time.Millisecond * 100)
-	avgentrytimes := make([]time.Duration, 100)
+	ticker := time.NewTicker(interval)
+	avgentrytimes := make([]time.Duration, time.Second*10/interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -79,8 +78,8 @@ func (cdb *PgDB) batcher(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ticker.C:
 			cdb.mu.Lock()
 			avgentrytime := cdb.newentrytime
-			if cdb.newentrycount > 0 {
-				avgentrytime /= time.Duration(cdb.newentrycount)
+			if d := time.Duration(cdb.newentrycount); d > 0 {
+				avgentrytime /= d
 			}
 			cdb.newentrytime = 0
 			cdb.newentrycount = 0
@@ -96,7 +95,7 @@ func (cdb *PgDB) batcher(ctx context.Context, wg *sync.WaitGroup) {
 			cdb.avgentrytime = avgentrytime / time.Duration(cap(avgentrytimes))
 			cdb.mu.Unlock()
 
-			if cdb.Load() > 30 {
+			if cdb.QueueUsage() > 30 {
 				loaded++
 				if loaded > 10 {
 					loaded /= 2

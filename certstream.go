@@ -70,7 +70,7 @@ func (cs *CertStream) run(ctx context.Context) {
 	}()
 	if cs.DB != nil {
 		wg.Add(2)
-		go cs.DB.batcher(ctx, &wg)
+		go cs.DB.runWorkers(ctx, &wg)
 		go cs.DB.estimator(ctx, &wg)
 	}
 	for _, logOp := range cs.Operators {
@@ -124,7 +124,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 							}
 							sort.Strings(op.Email)
 							if cs.DB != nil {
-								if err2 := cs.DB.Operator(ctx, logop); err2 != nil {
+								if err2 := cs.DB.ensureOperator(ctx, logop); err2 != nil {
 									err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
 									logop = nil
 								}

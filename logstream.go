@@ -58,7 +58,7 @@ func newLogStream(ctx context.Context, logop *LogOperator, headClient, tailClien
 				ls.MaxIndex.Store(-1)
 				ls.LastIndex.Store(-1)
 				if logop.DB != nil {
-					err = logop.DB.Stream(ctx, ls)
+					err = logop.DB.ensureStream(ctx, ls)
 				}
 			}
 		}
@@ -163,7 +163,7 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.LeafEntry, historical bool) {
 	le := ls.makeLogEntry(logindex, entry, historical)
 	if ls.DB != nil {
-		ls.DB.Send(ctx, le)
+		ls.DB.sendToBatcher(ctx, le)
 	}
 	select {
 	case <-ctx.Done():
@@ -236,7 +236,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 				}
 			}
 		}
-		for historical && ctx.Err() == nil && ls.DB.Load() > 50 {
+		for historical && ctx.Err() == nil && ls.DB.QueueUsage() > 50 {
 			time.Sleep(time.Millisecond * 100)
 		}
 	}
