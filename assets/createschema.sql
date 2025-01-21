@@ -80,15 +80,12 @@ IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_name') THEN
 END IF;
 
 IF to_regclass('CERTDB_dnsname') IS NULL THEN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE TABLE IF NOT EXISTS CERTDB_dnsname (
     dnsname TEXT NOT NULL,
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     PRIMARY KEY (cert, dnsname)
   );
-END IF;
-
-IF to_regclass('CERTDB_dnsname_name_idx') IS NULL THEN
-  CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE INDEX IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);
 END IF;
 
