@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sync"
+	"time"
 )
 
 var BulkRange = int64(4096)
@@ -55,12 +56,15 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 		}
 		minIndex := nullableMinIndex.Int64
 		if minIndex > 0 {
-			cdb.LogInfo("backlog", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
+			cdb.LogInfo("backlog start", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
 			for minIndex > 0 && ctx.Err() == nil {
 				start := max(0, minIndex-BulkRange)
 				stop := minIndex - 1
-				ls.GetRawEntries(ctx, start, stop, true, nil)
 				minIndex = start
+				if youngest := ls.GetRawEntries(ctx, start, stop, true, nil); youngest > time.Hour*24*time.Duration(cdb.PgMaxAge) {
+					cdb.LogInfo("backlog stop", "url", ls.URL, "stream", ls.Id, "logindex", minIndex, "age", youngest)
+					return
+				}
 			}
 		}
 	}

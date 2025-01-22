@@ -160,17 +160,21 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 	}
 }
 
-func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.LeafEntry, historical bool) {
+func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.LeafEntry, historical bool) (age time.Duration) {
 	le := ls.makeLogEntry(logindex, entry, historical)
-	if ls.DB != nil {
-		ls.DB.sendToBatcher(ctx, le)
+	if cert := le.Cert(); cert != nil {
+		age = time.Since(cert.Seen)
+		if ls.DB != nil {
+			ls.DB.sendToBatcher(ctx, le)
+		}
+		select {
+		case <-ctx.Done():
+		case ls.sendEntryCh <- le:
+			ls.Count.Add(1)
+			ls.LogOperator.Count.Add(1)
+		}
 	}
-	select {
-	case <-ctx.Done():
-	case ls.sendEntryCh <- le:
-		ls.Count.Add(1)
-		ls.LogOperator.Count.Add(1)
-	}
+	return
 }
 
 func (ls *LogStream) handleError(err error) (fatal bool) {
@@ -205,7 +209,7 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 	return
 }
 
-func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, gapcounter *atomic.Int64) {
+func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, gapcounter *atomic.Int64) (youngest time.Duration) {
 	client := ls.HeadClient
 	if historical && ls.TailClient != nil {
 		client = ls.TailClient
@@ -229,7 +233,9 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			}
 		} else {
 			for i := range resp.Entries {
-				ls.sendEntry(ctx, start, resp.Entries[i], historical)
+				if age := ls.sendEntry(ctx, start, resp.Entries[i], historical); youngest == 0 || age < youngest {
+					youngest = age
+				}
 				start++
 				if gapcounter != nil {
 					gapcounter.Add(-1)
@@ -240,4 +246,5 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			time.Sleep(time.Millisecond * 100)
 		}
 	}
+	return
 }

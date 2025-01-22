@@ -16,6 +16,7 @@ type Config struct {
 	PgAddr     string              // PostgreSQL address, no default
 	PgPrefix   string              // PostgreSQL naming prefix, default "certdb_"
 	PgConns    int                 // max number of database connections, default 100
+	PgMaxAge   int                 // maximum age in days to backfill
 }
 
 // NewConfig returns a new default Config
@@ -30,5 +31,6 @@ func NewConfig() *Config {
 		PgAddr:     "",
 		PgPrefix:   "certdb_",
 		PgConns:    100,
+		PgMaxAge:   356 * 2,
 	}
 }
