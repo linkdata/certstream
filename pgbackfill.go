@@ -62,7 +62,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				stop := minIndex - 1
 				minIndex = start
 				if youngest := ls.GetRawEntries(ctx, start, stop, true, nil); youngest > time.Hour*24*time.Duration(cdb.PgMaxAge) {
-					cdb.LogInfo("backlog stop", "url", ls.URL, "stream", ls.Id, "logindex", minIndex, "age", youngest)
+					cdb.LogInfo("backlog stops", "url", ls.URL, "stream", ls.Id, "logindex", minIndex, "age", int64(youngest/(time.Hour*24)))
 					return
 				}
 			}
