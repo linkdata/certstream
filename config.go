@@ -31,6 +31,6 @@ func NewConfig() *Config {
 		PgAddr:     "",
 		PgPrefix:   "certdb_",
 		PgConns:    100,
-		PgMaxAge:   356 * 2,
+		PgMaxAge:   356,
 	}
 }
