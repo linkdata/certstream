@@ -101,8 +101,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 }
 
 func (cdb *PgDB) createDnsnameNameIndexConcurrently(ctx context.Context) {
-	const makeNameIndex = `CREATE INDEX CONCURRENTLY IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);`
-	if _, err := cdb.Exec(ctx, cdb.Pfx(makeNameIndex)); err != nil {
+	if _, err := cdb.Exec(ctx, cdb.Pfx(DnsnameIndex)); err != nil {
 		cdb.LogError(err, "createDnsnameNameIndexConcurrently")
 	}
 }
