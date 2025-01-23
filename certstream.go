@@ -69,7 +69,7 @@ func (cs *CertStream) CountStreams() (n int) {
 func (cs *CertStream) run(ctx context.Context) {
 	var wg sync.WaitGroup
 
-	ticker := time.NewTicker(time.Second * 6)
+	ticker := time.NewTicker(time.Hour * 6)
 
 	defer func() {
 		ticker.Stop()
@@ -80,7 +80,7 @@ func (cs *CertStream) run(ctx context.Context) {
 		}
 	}()
 
-	cs.LogError(cs.updateStreams(ctx, &wg), "run")
+	cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@1")
 
 	if cs.DB != nil {
 		wg.Add(3)
@@ -94,7 +94,7 @@ func (cs *CertStream) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cs.LogError(cs.updateStreams(ctx, &wg), "run/refresh")
+			cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@2")
 		}
 	}
 }
