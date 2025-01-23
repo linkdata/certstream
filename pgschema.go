@@ -5,9 +5,6 @@ import _ "embed"
 //go:embed assets/createschema.sql
 var CreateSchema string
 
-//go:embed assets/dnsnameindex.sql
-var DnsnameIndex string
-
 //go:embed assets/funcoperatorid.sql
 var FunctionOperatorID string
 
