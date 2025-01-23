@@ -3,24 +3,22 @@ package certstream
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
-	"sort"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/certificate-transparency-go/loglist3"
 )
 
 type CertStream struct {
-	Config                              // copy of config
-	C           <-chan *LogEntry        // log entry channel
-	HeadClient  *http.Client            // main HTTP client, uses Config.HeadDialer
-	TailClient  *http.Client            // may be nil if not backfilling
-	Operators   map[string]*LogOperator // operators by operator domain, valid after Start()
+	Config                       // copy of config
+	C           <-chan *LogEntry // log entry channel
+	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
+	TailClient  *http.Client     // may be nil if not backfilling
 	DB          *PgDB
 	sendEntryCh chan *LogEntry
+	mu          sync.Mutex              // protects following
+	operators   map[string]*LogOperator // operators by operator domain, valid after Start()
 }
 
 var DefaultTransport = &http.Transport{
@@ -47,40 +45,58 @@ func (cs *CertStream) LogError(err error, msg string, args ...any) error {
 	return err
 }
 
-func (cs *CertStream) CountStreams() (running, stopped int) {
-	for _, logop := range cs.Operators {
-		for _, strm := range logop.Streams {
-			if strm.Stopped() {
-				stopped++
-			} else {
-				running++
-			}
-		}
+func (cs *CertStream) Operators() (operators []*LogOperator) {
+	cs.mu.Lock()
+	for _, logop := range cs.operators {
+		operators = append(operators, logop)
+	}
+	cs.mu.Unlock()
+	slices.SortFunc(operators, func(a, b *LogOperator) int { return strings.Compare(a.Name, b.Name) })
+	return
+}
+
+func (cs *CertStream) CountStreams() (n int) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	for _, logop := range cs.operators {
+		logop.mu.Lock()
+		n += len(logop.streams)
+		logop.mu.Unlock()
 	}
 	return
 }
 
 func (cs *CertStream) run(ctx context.Context) {
 	var wg sync.WaitGroup
+
+	ticker := time.NewTicker(time.Second * 6)
+
 	defer func() {
+		ticker.Stop()
+		wg.Wait()
 		close(cs.sendEntryCh)
 		if cs.DB != nil {
 			cs.DB.Close()
 		}
 	}()
+
+	cs.LogError(cs.updateStreams(ctx, &wg), "run")
+
 	if cs.DB != nil {
 		wg.Add(3)
 		go cs.DB.ensureDnsnameIndex(ctx, &wg)
 		go cs.DB.runWorkers(ctx, &wg)
 		go cs.DB.estimator(ctx, &wg)
 	}
-	for _, logOp := range cs.Operators {
-		for _, logStream := range logOp.Streams {
-			wg.Add(1)
-			go logStream.run(ctx, &wg)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cs.LogError(cs.updateStreams(ctx, &wg), "run/refresh")
 		}
 	}
-	wg.Wait()
 }
 
 func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
@@ -92,7 +108,7 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 			Timeout:   10 * time.Second,
 			Transport: tp,
 		},
-		Operators: map[string]*LogOperator{},
+		operators: map[string]*LogOperator{},
 	}
 
 	if cs.Config.TailDialer != nil {
@@ -105,46 +121,9 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 	}
 
 	if cs.DB, err = NewPgDB(ctx, cs); err == nil {
-		var logList *loglist3.LogList
-		if logList, err = GetLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
-			chanSize := BatchSize
-			chanSize *= len(logList.Operators)
-			cs.sendEntryCh = make(chan *LogEntry, chanSize)
-			cs.C = cs.sendEntryCh
-
-			for _, op := range logList.Operators {
-				for _, log := range op.Logs {
-					if log.State.LogStatus() == loglist3.UsableLogStatus {
-						opDom := OperatorDomain(log.URL)
-						logop := cs.Operators[opDom]
-						if logop == nil {
-							logop = &LogOperator{
-								CertStream: cs,
-								Operator:   op,
-								Domain:     opDom,
-							}
-							sort.Strings(op.Email)
-							if cs.DB != nil {
-								if err2 := cs.DB.ensureOperator(ctx, logop); err2 != nil {
-									err = errors.Join(err, fmt.Errorf("%q %q: %v", op.Name, log.URL, err2))
-									logop = nil
-								}
-							}
-							cs.Operators[opDom] = logop
-						}
-						newLogStream(ctx, logop, cs.HeadClient, cs.TailClient, log)
-					}
-				}
-			}
-
-			var operators []string
-			for opdom, lo := range cs.Operators {
-				operators = append(operators, fmt.Sprintf("%s*%d", opdom, len(lo.Streams)))
-			}
-			slices.Sort(operators)
-			cs.LogInfo("starting", "streams", operators)
-			go cs.run(ctx)
-		}
+		cs.sendEntryCh = make(chan *LogEntry, 1024*8)
+		cs.C = cs.sendEntryCh
+		go cs.run(ctx)
 	}
 
 	return

@@ -24,52 +24,16 @@ type LogStream struct {
 	*loglist3.Log
 	HeadClient *client.LogClient
 	TailClient *client.LogClient
-	Err        error        // set if Stopped() returns true
 	Count      atomic.Int64 // number of certificates sent to the channel
 	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
-	stopped    atomic.Bool  // atomic
 	Id         int32        // database ID, if available
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
-}
-
-func newLogStream(ctx context.Context, logop *LogOperator, headClient, tailClient *http.Client, log *loglist3.Log) {
-	if logop != nil {
-		var ls *LogStream
-		headLogClient, err := client.New(log.URL, headClient, jsonclient.Options{})
-		if err == nil {
-			var tailLogClient *client.LogClient
-			if tailClient != nil {
-				tailLogClient, err = client.New(log.URL, tailClient, jsonclient.Options{})
-			}
-			if err == nil {
-				ls = &LogStream{
-					LogOperator: logop,
-					Log:         log,
-					HeadClient:  headLogClient,
-					TailClient:  tailLogClient,
-				}
-				ls.MinIndex.Store(-1)
-				ls.MaxIndex.Store(-1)
-				ls.LastIndex.Store(-1)
-				if logop.DB != nil {
-					err = logop.DB.ensureStream(ctx, ls)
-				}
-			}
-		}
-		if logop.LogError(err, "newLogStream", "url", log.URL) == nil {
-			logop.Streams = append(logop.Streams, ls)
-		}
-	}
-}
-
-func (ls *LogStream) Stopped() bool {
-	return ls.stopped.Load()
 }
 
 func sleep(ctx context.Context, d time.Duration) {
@@ -82,13 +46,15 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
+	var end int64
+	var err error
 	defer func() {
-		_ = ls.LogError(ls.Err, "stream stopped", "url", ls.URL, "stream", ls.Id)
-		ls.stopped.Store(true)
+		ls.removeStream(ls)
+		_ = ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
 		wg.Done()
 	}()
 
-	end, err := ls.NewLastIndex(ctx)
+	end, err = ls.NewLastIndex(ctx)
 	start := end
 	if cdb := ls.DB; cdb != nil {
 		if ls.CertStream.Config.TailDialer != nil {
@@ -106,7 +72,6 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		}
 		end, err = ls.NewLastIndex(ctx)
 	}
-	ls.Err = err
 }
 
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
