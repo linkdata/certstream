@@ -39,7 +39,13 @@ func (cs *CertStream) LogInfo(msg string, args ...any) {
 func (cs *CertStream) LogError(err error, msg string, args ...any) error {
 	if err != nil && cs.Config.Logger != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			cs.Config.Logger.Error("certstream: "+msg, append(args, "err", err)...)
+			if unwrapper, ok := err.(interface{ Unwrap() []error }); ok {
+				for _, e := range unwrapper.Unwrap() {
+					cs.Config.Logger.Error("certstream: "+msg, append(args, "err", e)...)
+				}
+			} else {
+				cs.Config.Logger.Error("certstream: "+msg, append(args, "err", err)...)
+			}
 		}
 	}
 	return err
@@ -66,27 +72,28 @@ func (cs *CertStream) CountStreams() (n int) {
 	return
 }
 
-func (cs *CertStream) run(ctx context.Context) {
-	var wg sync.WaitGroup
+func (cs *CertStream) Close() {
+	close(cs.sendEntryCh)
+	if cs.DB != nil {
+		cs.DB.Close()
+	}
+}
 
+func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	ticker := time.NewTicker(time.Hour * 6)
 
 	defer func() {
 		ticker.Stop()
-		wg.Wait()
-		close(cs.sendEntryCh)
-		if cs.DB != nil {
-			cs.DB.Close()
-		}
+		wg.Done()
 	}()
 
-	cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@1")
+	cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
 
 	if cs.DB != nil {
 		wg.Add(3)
-		go cs.DB.ensureDnsnameIndex(ctx, &wg)
-		go cs.DB.runWorkers(ctx, &wg)
-		go cs.DB.estimator(ctx, &wg)
+		go cs.DB.ensureDnsnameIndex(ctx, wg)
+		go cs.DB.runWorkers(ctx, wg)
+		go cs.DB.estimator(ctx, wg)
 	}
 
 	for {
@@ -94,12 +101,12 @@ func (cs *CertStream) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@2")
+			cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@2")
 		}
 	}
 }
 
-func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
+func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream, err error) {
 	tp := DefaultTransport.Clone()
 	tp.DialContext = cfg.HeadDialer.DialContext
 	cs = &CertStream{
@@ -123,7 +130,8 @@ func Start(ctx context.Context, cfg *Config) (cs *CertStream, err error) {
 	if cs.DB, err = NewPgDB(ctx, cs); err == nil {
 		cs.sendEntryCh = make(chan *LogEntry, 1024*8)
 		cs.C = cs.sendEntryCh
-		go cs.run(ctx)
+		wg.Add(1)
+		go cs.run(ctx, wg)
 	}
 
 	return

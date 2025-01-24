@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/linkdata/bwlimit"
@@ -57,7 +58,10 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	cs, err := certstream.Start(ctx, cfg)
+	var wg sync.WaitGroup
+	cs, err := certstream.Start(ctx, &wg, cfg)
+	defer wg.Wait()
+
 	if err != nil {
 		fmt.Println(err)
 	} else {

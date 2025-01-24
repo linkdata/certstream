@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,7 @@ type PgDB struct {
 	*CertStream
 	*pgxpool.Pool
 	Pfx                   func(string) string // prefix replacer
+	Workers               atomic.Int32
 	funcOperatorID        string
 	funcStreamID          string
 	funcEnsureIdent       string
@@ -33,7 +35,6 @@ type PgDB struct {
 	stmtSelectMaxIdx      string
 	stmtSelectDnsnameLike string
 	mu                    sync.Mutex // protects following
-	dbError               error
 	batchCh               chan *LogEntry
 	estimates             map[string]float64 // row count estimates
 	newentrytime          time.Duration
@@ -133,13 +134,6 @@ func (cdb *PgDB) QueueUsage() (pct int) {
 	return
 }
 
-func (cdb *PgDB) DbError() (err error) {
-	cdb.mu.Lock()
-	err = cdb.dbError
-	cdb.mu.Unlock()
-	return
-}
-
 func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 	select {
 	case <-ctx.Done():
@@ -150,7 +144,7 @@ func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 func (cdb *PgDB) ensureOperator(ctx context.Context, lo *LogOperator) (err error) {
 	if cdb != nil {
 		row := cdb.QueryRow(ctx, cdb.funcOperatorID, lo.Name, strings.Join(lo.Email, ","))
-		err = row.Scan(&lo.Id)
+		err = wrap(row.Scan(&lo.Id), cdb.funcOperatorID)
 	}
 	return
 }
@@ -160,7 +154,7 @@ func (cdb *PgDB) ensureStream(ctx context.Context, ls *LogStream) (err error) {
 		var b []byte
 		if b, err = json.Marshal(ls.Log); err == nil {
 			row := cdb.QueryRow(ctx, cdb.funcStreamID, ls.URL, ls.LogOperator.Id, string(b))
-			err = row.Scan(&ls.Id)
+			err = wrap(row.Scan(&ls.Id), cdb.funcStreamID)
 		}
 	}
 	return

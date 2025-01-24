@@ -10,19 +10,24 @@ import (
 
 const batcherQueueSize = 16 * 1024
 
-func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) {
+func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
 	now := time.Now()
-	err := cdb.SendBatch(ctx, batch).Close()
+	err = cdb.SendBatch(ctx, batch).Close()
 	elapsed := time.Since(now)
 	cdb.mu.Lock()
 	cdb.newentrycount += int64(len(batch.QueuedQueries))
 	cdb.newentrytime += elapsed
-	cdb.dbError = err
 	cdb.mu.Unlock()
+	return
 }
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
-	defer wg.Done()
+	defer func() {
+		cdb.Workers.Add(-1)
+		wg.Done()
+	}()
+
+	cdb.Workers.Add(1)
 	batch := &pgx.Batch{}
 
 	for {
@@ -32,12 +37,16 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		case le := <-cdb.batchCh:
 			batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
 			if len(batch.QueuedQueries) >= BatchSize {
-				cdb.runBatch(ctx, batch)
+				if cdb.LogError(cdb.runBatch(ctx, batch), "worker@1") != nil {
+					return
+				}
 				batch = &pgx.Batch{}
 			}
 		default:
 			if len(batch.QueuedQueries) > 0 {
-				cdb.runBatch(ctx, batch)
+				if cdb.LogError(cdb.runBatch(ctx, batch), "worker@2") != nil {
+					return
+				}
 				batch = &pgx.Batch{}
 			} else {
 				if idlecount > 0 {

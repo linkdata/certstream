@@ -12,7 +12,6 @@ BEGIN
   IF _id IS NULL THEN
     INSERT INTO CERTDB_operator (name, email) VALUES (s_name, s_email)
       ON CONFLICT DO NOTHING RETURNING id INTO _id;
-    COMMIT;
     IF _id IS NULL THEN
       SELECT id FROM CERTDB_operator INTO _id WHERE name=s_name AND email=s_email;
     END IF;
