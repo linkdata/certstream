@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ import (
 )
 
 var BatchSize = 1024
+var MaxErrors = 25
 
 type LogStream struct {
 	*LogOperator
@@ -30,6 +32,8 @@ type LogStream struct {
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
 	Id         int32        // database ID, if available
+	mu         sync.Mutex   // protects following
+	errors     []error
 }
 
 func (ls *LogStream) String() string {
@@ -74,6 +78,25 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
+func (ls *LogStream) Errors() (errs []error) {
+	ls.mu.Lock()
+	errs = append(errs, ls.errors...)
+	ls.mu.Unlock()
+	return
+}
+
+func (ls *LogStream) addError(err error) {
+	if err != nil {
+		err = errorWithTime{When: time.Now(), Err: err}
+		ls.mu.Lock()
+		ls.errors = append(ls.errors, err)
+		for len(ls.errors) > MaxErrors {
+			ls.errors = slices.Delete(ls.errors, 0, 1)
+		}
+		ls.mu.Unlock()
+	}
+}
+
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
 		Min:    1 * time.Second,
@@ -97,6 +120,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 			}
 			return backoff.RetriableError("STH diff too low")
 		}
+		ls.addError(wrapErr(err, "GetSTH"))
 		return backoff.RetriableError(err.Error())
 	})
 	return
@@ -142,7 +166,7 @@ func (ls *LogStream) sendEntry(ctx context.Context, logindex int64, entry ct.Lea
 	return
 }
 
-func (ls *LogStream) handleError(err error) (fatal bool) {
+func (ls *LogStream) handleGetRawEntriesError(err error) (fatal bool) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
@@ -150,6 +174,7 @@ func (ls *LogStream) handleError(err error) (fatal bool) {
 	if strings.Contains(errTxt, "context canceled") {
 		return true
 	}
+	ls.addError(wrapErr(err, "GetRawEntries"))
 	args := []any{"url", ls.URL, "stream", ls.Id}
 	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 		switch rspErr.StatusCode {
@@ -193,7 +218,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			resp, err = client.GetRawEntries(ctx, start, stop)
 			return err
 		}); err != nil {
-			if ls.handleError(err) {
+			if ls.handleGetRawEntriesError(err) {
 				return
 			}
 		} else {

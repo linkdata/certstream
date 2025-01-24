@@ -1,21 +1,21 @@
 package certstream
 
-type wrapErr struct {
+type wrappedErr struct {
 	err error
 	msg string
 }
 
-func (we wrapErr) Error() string {
+func (we wrappedErr) Error() string {
 	return we.msg + ": " + we.err.Error()
 }
 
-func (we wrapErr) Unwrap() error {
+func (we wrappedErr) Unwrap() error {
 	return we.err
 }
 
-func wrap(err error, msg string) error {
+func wrapErr(err error, msg string) error {
 	if err == nil {
 		return nil
 	}
-	return wrapErr{err: err, msg: msg}
+	return wrappedErr{err: err, msg: msg}
 }
