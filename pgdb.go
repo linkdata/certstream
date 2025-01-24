@@ -105,7 +105,7 @@ func (cdb *PgDB) ensureDnsnameIndex(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 	const select_regclass = `SELECT to_regclass('CERTDB_dnsname_name_idx');`
 	const create_index = `CREATE INDEX CONCURRENTLY IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);`
-	const drop_index = `DROP INDEX CERTDB_dnsname_name_idx;`
+	const drop_index = `DROP INDEX IF EXISTS CERTDB_dnsname_name_idx;`
 	var regclass sql.NullString
 	row := cdb.QueryRow(ctx, cdb.Pfx(select_regclass))
 	if cdb.LogError(row.Scan(&regclass), "ensureDnsnameIndex/select_regclass") == nil {
