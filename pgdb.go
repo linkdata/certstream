@@ -103,26 +103,25 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 
 func (cdb *PgDB) ensureDnsnameIndex(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	const select_valid = `SELECT pg_index.indisvalid FROM pg_class, pg_index WHERE pg_index.indexrelid = pg_class.oid and pg_class.relname = 'CERTDB_dnsname_name_idx';`
+	const select_regclass = `SELECT to_regclass('CERTDB_dnsname_name_idx');`
 	const create_index = `CREATE INDEX CONCURRENTLY IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);`
 	const drop_index = `DROP INDEX IF EXISTS CERTDB_dnsname_name_idx;`
-	var isvalid sql.NullBool
-	row := cdb.QueryRow(ctx, cdb.Pfx(select_valid))
-	err := row.Scan(&isvalid)
-	if err == pgx.ErrNoRows {
-		err = nil
-	}
-	if cdb.LogError(err, "ensureDnsnameIndex/select_valid") == nil {
-		if isvalid.Valid && !isvalid.Bool {
-			_, err := cdb.Exec(ctx, cdb.Pfx(drop_index))
-			cdb.LogError(err, "ensureDnsnameIndex/drop_index")
-		}
-		if !isvalid.Valid || !isvalid.Bool {
+	var regclass sql.NullString
+	row := cdb.QueryRow(ctx, cdb.Pfx(select_regclass))
+	if cdb.LogError(row.Scan(&regclass), "ensureDnsnameIndex/select_regclass") == nil {
+		if !regclass.Valid {
 			now := time.Now()
 			_, err := cdb.Exec(ctx, cdb.Pfx(create_index))
 			elapsed := time.Since(now).Round(time.Second)
 			if cdb.LogError(err, "ensureDnsnameIndex/create_index") == nil {
 				cdb.LogInfo(cdb.Pfx("created CERTDB_dnsname_name_idx"), "elapsed", elapsed)
+			} else {
+				cdb.LogInfo(cdb.Pfx("aborting CERTDB_dnsname_name_idx creation"), "elapsed", elapsed)
+				time.Sleep(time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				_, err = cdb.Exec(ctx, cdb.Pfx(drop_index))
+				cdb.LogError(err, "ensureDnsnameIndex/drop_index")
 			}
 		}
 	}
