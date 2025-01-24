@@ -106,12 +106,20 @@ func (cdb *PgDB) ensureDnsnameIndex(ctx context.Context, wg *sync.WaitGroup) {
 	const select_regclass = `SELECT to_regclass('CERTDB_dnsname_name_idx');`
 	const create_index = `CREATE INDEX CONCURRENTLY IF NOT EXISTS CERTDB_dnsname_name_idx ON CERTDB_dnsname USING GIN (CERTDB_name(dnsname) gin_trgm_ops);`
 	const drop_index = `DROP INDEX IF EXISTS CERTDB_dnsname_name_idx;`
+	const set_autovacuum = `ALTER TABLE CERTDB_dnsname SET (autovacuum_enabled = `
 	var regclass sql.NullString
 	row := cdb.QueryRow(ctx, cdb.Pfx(select_regclass))
 	if cdb.LogError(row.Scan(&regclass), "ensureDnsnameIndex/select_regclass") == nil {
 		if !regclass.Valid {
+			_, err := cdb.Exec(ctx, cdb.Pfx(set_autovacuum)+"off);")
+			if cdb.LogError(err, "ensureDnsnameIndex/autovacuum/off") == nil {
+				defer func() {
+					_, err := cdb.Exec(ctx, cdb.Pfx(set_autovacuum)+"on);")
+					cdb.LogError(err, "ensureDnsnameIndex/autovacuum/on")
+				}()
+			}
 			now := time.Now()
-			_, err := cdb.Exec(ctx, cdb.Pfx(create_index))
+			_, err = cdb.Exec(ctx, cdb.Pfx(create_index))
 			elapsed := time.Since(now).Round(time.Second)
 			if cdb.LogError(err, "ensureDnsnameIndex/create_index") == nil {
 				cdb.LogInfo(cdb.Pfx("created CERTDB_dnsname_name_idx"), "elapsed", elapsed)
