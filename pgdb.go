@@ -112,25 +112,26 @@ func (cdb *PgDB) ensureDnsnameIndex(ctx context.Context, wg *sync.WaitGroup) {
 	if cdb.LogError(row.Scan(&regclass), "ensureDnsnameIndex/select_regclass") == nil {
 		if !regclass.Valid {
 			_, err := cdb.Exec(ctx, cdb.Pfx(set_autovacuum)+"off);")
-			if cdb.LogError(err, "ensureDnsnameIndex/autovacuum/off") == nil {
-				defer func() {
-					_, err := cdb.Exec(ctx, cdb.Pfx(set_autovacuum)+"on);")
-					cdb.LogError(err, "ensureDnsnameIndex/autovacuum/on")
-				}()
-			}
+			cdb.LogError(err, "ensureDnsnameIndex/autovacuum/off")
+
 			now := time.Now()
 			_, err = cdb.Exec(ctx, cdb.Pfx(create_index))
 			elapsed := time.Since(now).Round(time.Second)
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+
 			if cdb.LogError(err, "ensureDnsnameIndex/create_index") == nil {
 				cdb.LogInfo(cdb.Pfx("created CERTDB_dnsname_name_idx"), "elapsed", elapsed)
 			} else {
 				cdb.LogInfo(cdb.Pfx("aborting CERTDB_dnsname_name_idx creation"), "elapsed", elapsed)
 				time.Sleep(time.Second)
-				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-				defer cancel()
 				_, err = cdb.Exec(ctx, cdb.Pfx(drop_index))
 				cdb.LogError(err, "ensureDnsnameIndex/drop_index")
 			}
+
+			_, err = cdb.Exec(ctx, cdb.Pfx(set_autovacuum)+"on);")
+			cdb.LogError(err, "ensureDnsnameIndex/autovacuum/on")
 		}
 	}
 }
