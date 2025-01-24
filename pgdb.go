@@ -117,7 +117,10 @@ func (cdb *PgDB) ensureDnsnameIndex(ctx context.Context, wg *sync.WaitGroup) {
 				cdb.LogInfo(cdb.Pfx("created CERTDB_dnsname_name_idx"), "elapsed", elapsed)
 			} else {
 				cdb.LogInfo(cdb.Pfx("aborting CERTDB_dnsname_name_idx creation"), "elapsed", elapsed)
-				_, err = cdb.Exec(context.Background(), cdb.Pfx(drop_index))
+				time.Sleep(time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				_, err = cdb.Exec(ctx, cdb.Pfx(drop_index))
 				cdb.LogError(err, "ensureDnsnameIndex/drop_index")
 			}
 		}
