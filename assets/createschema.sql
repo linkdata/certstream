@@ -57,14 +57,9 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
 END IF;
 
 /*
-insert into certdb_domain SELECT  
-  dnsname ~ '^\*\.' as wild, 
-  (regexp_instr(dnsname, '^(?:\*\.)?(www\.)+',1,1,1)-1)/4 as www,
-  regexp_match(dnsname, '(?:^(?:\*\.)?(?:www\.)*)?(.*)\..*') as domain, 
-  regexp_match(dnsname, '(?:.*)\.([^.]+)') as tld,
-  cert
-  from certdb_dnsname
-  ;
+INSERT INTO certdb_domain
+  SELECT wild, www, domain, tld, cert
+  FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname) AS (wild BOOL, www SMALLINT, domain TEXT, tld TEXT);
 */
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -135,14 +130,23 @@ IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_split_domain') THEN
   LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
   AS $split_fn$
   DECLARE
+	  _wild BOOL;
+	  _www SMALLINT;
+	  _domain TEXT;
+    _tld TEXT;
     _ret RECORD;
   BEGIN
-    _ret := (
-      _fqdn ~ '^\*\.',
-      ((regexp_instr(_fqdn, '^(?:\*\.)?(www\.)+',1,1,1)-1)/4)::smallint,
-      array_to_string(regexp_match(_fqdn, '(?:^(?:\*\.)?(?:www\.)*)?(.*)\..*'),''),
-      array_to_string(regexp_match(_fqdn, '(?:.*)\.([^.]+)'),'')
-    );
+	  _wild := _fqdn ~ '^\*\.';
+	  _www := ((regexp_instr(_fqdn, '^(?:\*\.)?(www\.)+',1,1,1)-1)/4)::smallint;
+	  _domain := array_to_string(regexp_match(_fqdn, '(?:^(?:\*\.)?(?:www\.)*)?(.*)\..*'),'');
+	  _tld := array_to_string(regexp_match(_fqdn, '(?:.*)\.([^.]+)'),'');
+    IF _domain IS NULL THEN
+      _domain := _fqdn;
+	  END IF;
+	  IF _tld IS NULL THEN
+		  _tld := '';
+    END IF;
+    _ret := (_wild, _www, _domain, _tld);
     RETURN _ret;
   END;
   $split_fn$

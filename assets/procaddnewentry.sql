@@ -73,7 +73,7 @@ BEGIN
 		SELECT _cert_id, inet(UNNEST(STRING_TO_ARRAY(_ipaddrs, ' ')))
 		ON CONFLICT (cert, addr) DO NOTHING;
 
-	FOR _fqdn IN STRING_TO_ARRAY(_dnsnames, ' ') LOOP
+	FOREACH _fqdn IN ARRAY STRING_TO_ARRAY(_dnsnames, ' ') LOOP
 		INSERT INTO CERTDB_domain
 			SELECT *, _cert_id AS cert FROM CERTDB_split_domain(_fqdn) AS (wild BOOL, www SMALLINT, domain TEXT, tld TEXT)
 		ON CONFLICT DO NOTHING;
