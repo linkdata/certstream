@@ -24,6 +24,7 @@ DECLARE
   _iss_id INTEGER;
   _sub_id INTEGER;
   _cert_id BIGINT;
+  _fqdn TEXT;
 
 BEGIN
 
@@ -72,9 +73,11 @@ BEGIN
 		SELECT _cert_id, inet(UNNEST(STRING_TO_ARRAY(_ipaddrs, ' ')))
 		ON CONFLICT (cert, addr) DO NOTHING;
 
-	INSERT INTO CERTDB_dnsname (cert, dnsname) 
-		SELECT _cert_id, UNNEST(STRING_TO_ARRAY(_dnsnames, ' '))
-		ON CONFLICT (cert, dnsname) DO NOTHING;
+	FOR _fqdn IN STRING_TO_ARRAY(_dnsnames, ' ') LOOP
+		INSERT INTO CERTDB_domain
+			SELECT *, _cert_id AS cert FROM CERTDB_split_domain(_fqdn) AS (wild BOOL, www SMALLINT, domain TEXT, tld TEXT)
+		ON CONFLICT DO NOTHING;
+	END LOOP;
 
 	INSERT INTO CERTDB_entry (seen, logindex, cert, stream)
 		VALUES (_seen, _logindex, _cert_id, _stream)

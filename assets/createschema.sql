@@ -56,12 +56,27 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
 END IF;
 
-IF to_regclass('CERTDB_dnsname') IS NULL THEN
-  CREATE TABLE IF NOT EXISTS CERTDB_dnsname (
-    dnsname TEXT NOT NULL,
+/*
+insert into certdb_domain SELECT  
+  dnsname ~ '^\*\.' as wild, 
+  (regexp_instr(dnsname, '^(?:\*\.)?(www\.)+',1,1,1)-1)/4 as www,
+  regexp_match(dnsname, '(?:^(?:\*\.)?(?:www\.)*)?(.*)\..*') as domain, 
+  regexp_match(dnsname, '(?:.*)\.([^.]+)') as tld,
+  cert
+  from certdb_dnsname
+  ;
+*/
+IF to_regclass('CERTDB_domain') IS NULL THEN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE TABLE IF NOT EXISTS CERTDB_domain (
+    wild BOOLEAN NOT NULL,
+    www SMALLINT NOT NULL,
+    domain TEXT NOT NULL,
+    tld TEXT NOT NULL,
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (cert, dnsname)
+    PRIMARY KEY (cert, wild, www, domain, tld)
   );
+  CREATE INDEX CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops);
 END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
@@ -91,43 +106,62 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
-IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_name') THEN
-  CREATE FUNCTION CERTDB_name(
-    IN _dnsname TEXT
+IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_fqdn') THEN
+  CREATE OR REPLACE FUNCTION CERTDB_fqdn(
+    _wild BOOLEAN,
+    _www SMALLINT,
+    _domain TEXT,
+    _tld TEXT
   )
-  RETURNS TEXT LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $name_fn$
+  RETURNS TEXT
+  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
+  AS $fqdn_fn$
   DECLARE
-    _a TEXT[];
+    _fqdn TEXT NOT NULL DEFAULT '';
   BEGIN
-    _dnsname := lower(_dnsname);
-    IF substring(_dnsname for 4) = 'www.' THEN
-      _dnsname := substring(_dnsname from 4);
+    IF _wild THEN
+      _fqdn := '*.';
     END IF;
-    _a := string_to_array(_dnsname, '.');
-    IF array_length(_a, 1) > 0 THEN
-      _a := trim_array(_a, 1);
-      _dnsname := array_to_string(_a, '.') || '.';
-    END IF;
-    RETURN _dnsname;
+    _fqdn := _fqdn || repeat('www.', _www) ||  _domain || '.' || _tld;
+    RETURN _fqdn;
   END;
-  $name_fn$
+  $fqdn_fn$
+  ;
+END IF;
+
+IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_split_domain') THEN
+  CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn TEXT)
+  RETURNS RECORD
+  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
+  AS $split_fn$
+  DECLARE
+    _ret RECORD;
+  BEGIN
+    _ret := (
+      _fqdn ~ '^\*\.',
+      ((regexp_instr(_fqdn, '^(?:\*\.)?(www\.)+',1,1,1)-1)/4)::smallint,
+      array_to_string(regexp_match(_fqdn, '(?:^(?:\*\.)?(?:www\.)*)?(.*)\..*'),''),
+      array_to_string(regexp_match(_fqdn, '(?:.*)\.([^.]+)'),'')
+    );
+    RETURN _ret;
+  END;
+  $split_fn$
   ;
 END IF;
 
 IF to_regclass('CERTDB_dnsnames') IS NULL THEN
-  CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
   SELECT
     cert,
-    dnsname,
+    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld),
     cc.notbefore AS notbefore,
-    dnsname !~ '^[[:ascii:]]+$'::text AS idna,
+    cd.domain !~ '^[[:ascii:]]+$'::text AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
     cc.precert AS precert,
     iss.organization as issuer,
     subj.organization as subject,
     CONCAT('https://crt.sh/?q=', ENCODE(cc.sha256, 'hex'::text)) AS crtsh
-  FROM CERTDB_dnsname cd
+  FROM CERTDB_domain cd
   INNER JOIN CERTDB_cert cc on cc.id = cd.cert 
   INNER JOIN CERTDB_ident subj on subj.id = cc.subject
   INNER JOIN CERTDB_ident iss on iss.id = cc.issuer
