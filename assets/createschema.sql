@@ -100,28 +100,32 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
-IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_fqdn') THEN
-  CREATE OR REPLACE FUNCTION CERTDB_fqdn(
-    _wild BOOLEAN,
-    _www SMALLINT,
-    _domain TEXT,
-    _tld TEXT
-  )
-  RETURNS TEXT
-  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
-  AS $fqdn_fn$
-  DECLARE
-    _fqdn TEXT NOT NULL DEFAULT '';
-  BEGIN
-    IF _wild THEN
-      _fqdn := '*.';
-    END IF;
-    _fqdn := _fqdn || repeat('www.', _www) ||  _domain || '.' || _tld;
-    RETURN _fqdn;
-  END;
-  $fqdn_fn$
-  ;
-END IF;
+CREATE OR REPLACE FUNCTION CERTDB_fqdn(
+  _wild BOOLEAN,
+  _www SMALLINT,
+  _domain TEXT,
+  _tld TEXT
+)
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
+AS $fqdn_fn$
+DECLARE
+  _ary TEXT[];
+BEGIN
+  IF _wild THEN
+    _ary := _ary || '*'::text;
+  END IF;
+  _ary := ARRAY_CAT(_ary, ARRAY_FILL('www'::text, ARRAY[_www]));
+  IF _domain <> '' THEN
+    _ary := _ary || _domain;
+  END IF;
+  IF _tld <> '' THEN
+    _ary := _ary || _tld;
+  END IF;
+  RETURN ARRAY_TO_STRING(_ary, '.');
+END;
+$fqdn_fn$
+;
 
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn TEXT)
   RETURNS TABLE(wild BOOL, www SMALLINT, domain TEXT, tld TEXT)
