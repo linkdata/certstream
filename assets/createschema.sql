@@ -57,8 +57,8 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
 END IF;
 
 /*
-  INSERT INTO certdb_domain (cert, hash, wild, www, domain, tld)
-  SELECT cert, hash, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
+  INSERT INTO certdb_domain (cert, wild, www, domain, tld)
+  SELECT cert, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
 */
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
