@@ -76,7 +76,7 @@ BEGIN
 	FOREACH _fqdn IN ARRAY STRING_TO_ARRAY(_dnsnames, ' ') LOOP
 		INSERT INTO CERTDB_domain (cert, wild, www, domain, tld)
 			SELECT _cert_id AS cert, wild, www, domain, tld FROM CERTDB_split_domain(_fqdn)
-			ON CONFLICT DO NOTHING;
+			ON CONFLICT (cert, wild, www, domain, tld) DO NOTHING;
 	END LOOP;
 
 	INSERT INTO CERTDB_entry (seen, logindex, cert, stream)

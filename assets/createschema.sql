@@ -67,9 +67,9 @@ IF to_regclass('CERTDB_domain') IS NULL THEN
     wild BOOLEAN NOT NULL,
     www SMALLINT NOT NULL,
     domain TEXT NOT NULL,
-    tld TEXT NOT NULL
+    tld TEXT NOT NULL,
+    PRIMARY KEY (cert, wild, www, domain, tld)
   );
-  CREATE INDEX CERTDB_domain_cert_idx ON CERTDB_domain (cert);
   CREATE INDEX CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops);
 END IF;
 
