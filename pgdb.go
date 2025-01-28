@@ -86,9 +86,9 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
 							batchCh:               make(chan *LogEntry, batcherQueueSize),
 							estimates: map[string]float64{
-								"cert":    0,
-								"dnsname": 0,
-								"entry":   0,
+								"cert":   0,
+								"domain": 0,
+								"entry":  0,
 							},
 						}
 						cdb.refreshEstimates(ctx)

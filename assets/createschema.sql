@@ -57,20 +57,19 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
 END IF;
 
 /*
-INSERT INTO certdb_domain
-  SELECT wild, www, domain, tld, cert
-  FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname) AS (wild BOOL, www SMALLINT, domain TEXT, tld TEXT);
+  INSERT INTO certdb_domain (cert, wild, www, domain, tld)
+  SELECT cert, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
 */
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE TABLE IF NOT EXISTS CERTDB_domain (
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
     wild BOOLEAN NOT NULL,
     www SMALLINT NOT NULL,
     domain TEXT NOT NULL,
-    tld TEXT NOT NULL,
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (cert, wild, www, domain, tld)
+    tld TEXT NOT NULL
   );
+  CREATE INDEX CERTDB_domain_cert_idx ON CERTDB_domain (cert);
   CREATE INDEX CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops);
 END IF;
 
@@ -124,34 +123,39 @@ IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_fqdn') THEN
   ;
 END IF;
 
-IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_split_domain') THEN
-  CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn TEXT)
-  RETURNS RECORD
-  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
-  AS $split_fn$
-  DECLARE
-	  _wild BOOL;
-	  _www SMALLINT;
-	  _domain TEXT;
-    _tld TEXT;
-    _ret RECORD;
-  BEGIN
-	  _wild := _fqdn ~ '^\*\.';
-	  _www := ((regexp_instr(_fqdn, '^(?:\*\.)?(www\.)+',1,1,1)-1)/4)::smallint;
-	  _domain := array_to_string(regexp_match(_fqdn, '(?:^(?:\*\.)?(?:www\.)*)?(.*)\..*'),'');
-	  _tld := array_to_string(regexp_match(_fqdn, '(?:.*)\.([^.]+)'),'');
-    IF _domain IS NULL THEN
-      _domain := _fqdn;
-	  END IF;
-	  IF _tld IS NULL THEN
-		  _tld := '';
+CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn TEXT)
+  RETURNS TABLE(wild BOOL, www SMALLINT, domain TEXT, tld TEXT)
+  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS
+$split_fn$
+DECLARE
+  _wild BOOL NOT NULL DEFAULT FALSE;
+  _www SMALLINT NOT NULL DEFAULT 0;
+  _domain TEXT NOT NULL DEFAULT '';
+  _tld TEXT NOT NULL DEFAULT '';
+  _pos INTEGER NOT NULL DEFAULT 1;
+  _ary TEXT[];
+  _len INTEGER;
+BEGIN
+  _ary := STRING_TO_ARRAY(_fqdn, '.');
+  _len := ARRAY_LENGTH(_ary, 1);
+  IF _len > 0 THEN
+    IF _ary[_pos] = '*' THEN
+      _wild := TRUE;
+      _pos := _pos + 1;
     END IF;
-    _ret := (_wild, _www, _domain, _tld);
-    RETURN _ret;
-  END;
-  $split_fn$
-  ;
-END IF;
+    WHILE _pos + 1 < _len AND _ary[_pos] = 'www' LOOP
+      _www := _www + 1;
+      _pos := _pos + 1;
+    END LOOP;
+    IF _pos < _len OR _pos > 1 AND _pos <= _len THEN
+      _tld := _ary[_len];
+      _len := _len - 1;
+    END IF;
+    _domain := ARRAY_TO_STRING(_ary[_pos:_len], '.');
+  END IF;
+  RETURN QUERY SELECT _wild, _www, _domain, _tld;
+END;
+$split_fn$;
 
 IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS

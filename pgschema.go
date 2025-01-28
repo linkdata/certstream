@@ -21,6 +21,6 @@ const SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE
 
 const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
 
-const SelectDnsnameLike = `SELECT * FROM CERTDB_dnsnames WHERE dnsname LIKE $1;`
+const SelectDnsnameLike = `SELECT * FROM CERTDB_domain WHERE domain LIKE $1;`
 
 const SelectEstimate = `SELECT reltuples AS estimate FROM pg_class WHERE relname = $1;`
