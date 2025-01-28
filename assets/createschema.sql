@@ -57,8 +57,8 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
 END IF;
 
 /*
-  INSERT INTO certdb_domain (cert, wild, www, domain, tld)
-  SELECT cert, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
+  INSERT INTO certdb_domain (cert, hash, wild, www, domain, tld)
+  SELECT cert, hash, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
 */
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -67,9 +67,9 @@ IF to_regclass('CERTDB_domain') IS NULL THEN
     wild BOOLEAN NOT NULL,
     www SMALLINT NOT NULL,
     domain TEXT NOT NULL,
-    tld TEXT NOT NULL,
-    PRIMARY KEY (cert, wild, www, domain, tld)
+    tld TEXT NOT NULL
   );
+  CREATE INDEX CERTDB_domain_cert_idx ON CERTDB_domain (cert);
   CREATE INDEX CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops);
 END IF;
 
