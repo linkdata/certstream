@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
@@ -15,11 +16,13 @@ import (
 type LogOperator struct {
 	*CertStream
 	*loglist3.Operator
-	Domain  string       // e.g. "letsencrypt.org" or "googleapis.com"
-	Count   atomic.Int64 // atomic; sum of the stream's Count
-	Id      int32        // database ID, if available
-	mu      sync.Mutex   // protects following
-	streams map[string]*LogStream
+	Domain   string       // e.g. "letsencrypt.org" or "googleapis.com"
+	Count    atomic.Int64 // atomic; sum of the stream's Count
+	Id       int32        // database ID, if available
+	mu       sync.Mutex   // protects following
+	streams  map[string]*LogStream
+	errcount int
+	errors   []StreamError
 }
 
 func (lo *LogOperator) StreamCount() (n int) {
@@ -27,6 +30,33 @@ func (lo *LogOperator) StreamCount() (n int) {
 	n = len(lo.streams)
 	lo.mu.Unlock()
 	return
+}
+
+func (lo *LogOperator) ErrorCount() (n int) {
+	lo.mu.Lock()
+	n = lo.errcount
+	lo.mu.Unlock()
+	return
+}
+
+func (lo *LogOperator) Errors() (errs []StreamError) {
+	lo.mu.Lock()
+	errs = append(errs, lo.errors...)
+	lo.mu.Unlock()
+	return
+}
+
+func (lo *LogOperator) addError(ls *LogStream, err error) {
+	if err != nil {
+		now := time.Now()
+		lo.mu.Lock()
+		defer lo.mu.Unlock()
+		lo.errors = append(lo.errors, StreamError{LogStream: ls, When: now, Err: err})
+		if len(lo.errors) > MaxErrors {
+			lo.errors = slices.Delete(lo.errors, 0, len(lo.errors)-MaxErrors)
+		}
+		ls.errcount++
+	}
 }
 
 func (lo *LogOperator) Streams() (sl []*LogStream) {

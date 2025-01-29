@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,8 +31,6 @@ type LogStream struct {
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
 	Id         int32        // database ID, if available
-	mu         sync.Mutex   // protects following
-	errors     []ErrorWithTime
 }
 
 func (ls *LogStream) String() string {
@@ -78,25 +75,6 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-func (ls *LogStream) Errors() (errs []ErrorWithTime) {
-	ls.mu.Lock()
-	errs = append(errs, ls.errors...)
-	ls.mu.Unlock()
-	return
-}
-
-func (ls *LogStream) addError(err error) {
-	if err != nil {
-		now := time.Now()
-		ls.mu.Lock()
-		defer ls.mu.Unlock()
-		ls.errors = append(ls.errors, ErrorWithTime{When: now, Err: err})
-		if len(ls.errors) > MaxErrors {
-			ls.errors = slices.Delete(ls.errors, 0, len(ls.errors)-MaxErrors)
-		}
-	}
-}
-
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
 		Min:    1 * time.Second,
@@ -120,7 +98,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 			}
 			return backoff.RetriableError("STH diff too low")
 		}
-		ls.addError(wrapErr(err, "GetSTH"))
+		ls.addError(ls, wrapErr(err, "GetSTH"))
 		return backoff.RetriableError(err.Error())
 	})
 	return
@@ -174,7 +152,7 @@ func (ls *LogStream) handleGetRawEntriesError(err error) (fatal bool) {
 	if strings.Contains(errTxt, "context canceled") {
 		return true
 	}
-	ls.addError(wrapErr(err, "GetRawEntries"))
+	ls.addError(ls, wrapErr(err, "GetRawEntries"))
 	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 		switch rspErr.StatusCode {
 		case http.StatusTooManyRequests,
