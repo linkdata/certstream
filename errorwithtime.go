@@ -5,15 +5,15 @@ import (
 	"time"
 )
 
-type errorWithTime struct {
+type ErrorWithTime struct {
 	When time.Time
 	Err  error
 }
 
-func (ewt errorWithTime) Error() string {
+func (ewt ErrorWithTime) Error() string {
 	return fmt.Sprintf("%v %s", ewt.When.Format(time.DateTime), ewt.Err.Error())
 }
 
-func (ewt errorWithTime) Unwrap() error {
+func (ewt ErrorWithTime) Unwrap() error {
 	return ewt.Err
 }

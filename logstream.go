@@ -19,7 +19,7 @@ import (
 )
 
 var BatchSize = 1024
-var MaxErrors = 25
+var MaxErrors = 100
 
 type LogStream struct {
 	*LogOperator
@@ -33,7 +33,7 @@ type LogStream struct {
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
 	Id         int32        // database ID, if available
 	mu         sync.Mutex   // protects following
-	errors     []error
+	errors     []ErrorWithTime
 }
 
 func (ls *LogStream) String() string {
@@ -78,7 +78,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-func (ls *LogStream) Errors() (errs []error) {
+func (ls *LogStream) Errors() (errs []ErrorWithTime) {
 	ls.mu.Lock()
 	errs = append(errs, ls.errors...)
 	ls.mu.Unlock()
@@ -87,13 +87,13 @@ func (ls *LogStream) Errors() (errs []error) {
 
 func (ls *LogStream) addError(err error) {
 	if err != nil {
-		err = errorWithTime{When: time.Now(), Err: err}
+		now := time.Now()
 		ls.mu.Lock()
-		ls.errors = append(ls.errors, err)
-		for len(ls.errors) > MaxErrors {
-			ls.errors = slices.Delete(ls.errors, 0, 1)
+		defer ls.mu.Unlock()
+		ls.errors = append(ls.errors, ErrorWithTime{When: now, Err: err})
+		if len(ls.errors) > MaxErrors {
+			ls.errors = slices.Delete(ls.errors, 0, len(ls.errors)-MaxErrors)
 		}
-		ls.mu.Unlock()
 	}
 }
 
@@ -175,7 +175,6 @@ func (ls *LogStream) handleGetRawEntriesError(err error) (fatal bool) {
 		return true
 	}
 	ls.addError(wrapErr(err, "GetRawEntries"))
-	args := []any{"url", ls.URL, "stream", ls.Id}
 	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 		switch rspErr.StatusCode {
 		case http.StatusTooManyRequests,
@@ -187,15 +186,9 @@ func (ls *LogStream) handleGetRawEntriesError(err error) (fatal bool) {
 		if strings.Contains(errTxt, "deadline exceeded") {
 			return false
 		}
-		b := rspErr.Body
-		if len(b) > 64 {
-			b = b[:64]
-		}
-		args = append(args, "code", rspErr.StatusCode, "body", string(b))
 		err = rspErr
 		fatal = true
 	}
-	ls.LogError(err, "GetRawEntries", args...)
 	return
 }
 
