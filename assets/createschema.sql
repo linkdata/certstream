@@ -56,12 +56,21 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
 END IF;
 
-IF to_regclass('CERTDB_dnsname') IS NULL THEN
-  CREATE TABLE IF NOT EXISTS CERTDB_dnsname (
-    dnsname TEXT NOT NULL,
+/*
+  INSERT INTO certdb_domain (cert, wild, www, domain, tld)
+  SELECT cert, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
+*/
+IF to_regclass('CERTDB_domain') IS NULL THEN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE TABLE IF NOT EXISTS CERTDB_domain (
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    PRIMARY KEY (cert, dnsname)
+    wild BOOLEAN NOT NULL,
+    www SMALLINT NOT NULL,
+    domain TEXT NOT NULL,
+    tld TEXT NOT NULL
   );
+  CREATE INDEX CERTDB_domain_cert_idx ON CERTDB_domain (cert);
+  CREATE INDEX CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops);
 END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
@@ -91,43 +100,80 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
-IF NOT EXISTS(SELECT * FROM pg_proc WHERE proname = 'CERTDB_name') THEN
-  CREATE FUNCTION CERTDB_name(
-    IN _dnsname TEXT
-  )
-  RETURNS TEXT LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $name_fn$
-  DECLARE
-    _a TEXT[];
-  BEGIN
-    _dnsname := lower(_dnsname);
-    IF substring(_dnsname for 4) = 'www.' THEN
-      _dnsname := substring(_dnsname from 4);
+CREATE OR REPLACE FUNCTION CERTDB_fqdn(
+  _wild BOOLEAN,
+  _www SMALLINT,
+  _domain TEXT,
+  _tld TEXT
+)
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
+AS $fqdn_fn$
+DECLARE
+  _ary TEXT[];
+BEGIN
+  IF _wild THEN
+    _ary := _ary || '*'::text;
+  END IF;
+  _ary := ARRAY_CAT(_ary, ARRAY_FILL('www'::text, ARRAY[_www]));
+  IF _domain <> '' THEN
+    _ary := _ary || _domain;
+  END IF;
+  IF _tld <> '' THEN
+    _ary := _ary || _tld;
+  END IF;
+  RETURN ARRAY_TO_STRING(_ary, '.');
+END;
+$fqdn_fn$
+;
+
+CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn TEXT)
+  RETURNS TABLE(wild BOOL, www SMALLINT, domain TEXT, tld TEXT)
+  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS
+$split_fn$
+DECLARE
+  _wild BOOL NOT NULL DEFAULT FALSE;
+  _www SMALLINT NOT NULL DEFAULT 0;
+  _domain TEXT NOT NULL DEFAULT '';
+  _tld TEXT NOT NULL DEFAULT '';
+  _pos INTEGER NOT NULL DEFAULT 1;
+  _ary TEXT[];
+  _len INTEGER;
+BEGIN
+  _ary := STRING_TO_ARRAY(_fqdn, '.');
+  _len := ARRAY_LENGTH(_ary, 1);
+  IF _len > 0 THEN
+    IF _ary[_pos] = '*' THEN
+      _wild := TRUE;
+      _pos := _pos + 1;
     END IF;
-    _a := string_to_array(_dnsname, '.');
-    IF array_length(_a, 1) > 0 THEN
-      _a := trim_array(_a, 1);
-      _dnsname := array_to_string(_a, '.') || '.';
+    WHILE _pos + 1 < _len AND _ary[_pos] = 'www' LOOP
+      _www := _www + 1;
+      _pos := _pos + 1;
+    END LOOP;
+    IF _pos < _len OR _pos > 1 AND _pos <= _len THEN
+      _tld := _ary[_len];
+      _len := _len - 1;
     END IF;
-    RETURN _dnsname;
-  END;
-  $name_fn$
-  ;
-END IF;
+    _domain := ARRAY_TO_STRING(_ary[_pos:_len], '.');
+  END IF;
+  RETURN QUERY SELECT _wild, _www, _domain, _tld;
+END;
+$split_fn$;
 
 IF to_regclass('CERTDB_dnsnames') IS NULL THEN
-  CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
   SELECT
     cert,
-    dnsname,
+    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld),
     cc.notbefore AS notbefore,
-    dnsname !~ '^[[:ascii:]]+$'::text AS idna,
+    cd.domain !~ '^[[:ascii:]]+$'::text AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
     cc.precert AS precert,
     iss.organization as issuer,
     subj.organization as subject,
     CONCAT('https://crt.sh/?q=', ENCODE(cc.sha256, 'hex'::text)) AS crtsh
-  FROM CERTDB_dnsname cd
+  FROM CERTDB_domain cd
   INNER JOIN CERTDB_cert cc on cc.id = cd.cert 
   INNER JOIN CERTDB_ident subj on subj.id = cc.subject
   INNER JOIN CERTDB_ident iss on iss.id = cc.issuer

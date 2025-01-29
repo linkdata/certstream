@@ -90,8 +90,8 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
 
 	if cs.DB != nil {
-		wg.Add(3)
-		go cs.DB.ensureDnsnameIndex(ctx, wg)
+		wg.Add(2)
+		// go cs.DB.ensureDnsnameIndex(ctx, wg)
 		go cs.DB.runWorkers(ctx, wg)
 		go cs.DB.estimator(ctx, wg)
 	}
