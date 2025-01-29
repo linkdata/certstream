@@ -161,14 +161,15 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
   SELECT
     cert,
-    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld) as dnsname,
+    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld) as fqdn,
     cc.notbefore AS notbefore,
     cd.domain !~ '^[[:ascii:]]+$'::text AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
     cc.precert AS precert,
     iss.organization as issuer,
     subj.organization as subject,
-    CONCAT('https://crt.sh/?q=', ENCODE(cc.sha256, 'hex'::text)) AS crtsh
+    CONCAT('https://crt.sh/?q=', ENCODE(cc.sha256, 'hex'::text)) AS crtsh,
+    cd.domain
   FROM CERTDB_domain cd
   INNER JOIN CERTDB_cert cc on cc.id = cd.cert 
   INNER JOIN CERTDB_ident subj on subj.id = cc.subject

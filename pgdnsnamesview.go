@@ -6,7 +6,7 @@ import (
 
 type PgDnsnamesView struct {
 	CertID    int64
-	DNSName   string
+	FQDN      string
 	NotBefore time.Time
 	Idna      bool
 	Valid     bool
@@ -14,12 +14,13 @@ type PgDnsnamesView struct {
 	Issuer    string
 	Subject   string
 	Crtsh     string
+	Domain    string
 }
 
 func ScanDnsnamesView(row Scanner, dnsname *PgDnsnamesView) (err error) {
 	return row.Scan(
 		&dnsname.CertID,
-		&dnsname.DNSName,
+		&dnsname.FQDN,
 		&dnsname.NotBefore,
 		&dnsname.Idna,
 		&dnsname.Valid,
@@ -27,5 +28,6 @@ func ScanDnsnamesView(row Scanner, dnsname *PgDnsnamesView) (err error) {
 		&dnsname.Issuer,
 		&dnsname.Subject,
 		&dnsname.Crtsh,
+		&dnsname.Domain,
 	)
 }
