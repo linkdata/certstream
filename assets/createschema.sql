@@ -56,10 +56,6 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
 END IF;
 
-/*
-  INSERT INTO certdb_domain (cert, wild, www, domain, tld)
-  SELECT cert, wild, www, domain, tld FROM certdb_dnsname, CERTDB_split_domain(certdb_dnsname.dnsname);
-*/
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE TABLE IF NOT EXISTS CERTDB_domain (
@@ -165,7 +161,7 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
   SELECT
     cert,
-    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld),
+    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld) as dnsname,
     cc.notbefore AS notbefore,
     cd.domain !~ '^[[:ascii:]]+$'::text AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
