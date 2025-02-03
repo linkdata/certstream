@@ -15,6 +15,7 @@ type PgDnsnamesView struct {
 	Subject   string
 	Crtsh     string
 	Domain    string
+	Tld       string
 }
 
 func ScanDnsnamesView(row Scanner, dnsname *PgDnsnamesView) (err error) {
@@ -29,5 +30,6 @@ func ScanDnsnamesView(row Scanner, dnsname *PgDnsnamesView) (err error) {
 		&dnsname.Subject,
 		&dnsname.Crtsh,
 		&dnsname.Domain,
+		&dnsname.Tld,
 	)
 }

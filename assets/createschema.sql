@@ -169,7 +169,8 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
     iss.organization as issuer,
     subj.organization as subject,
     CONCAT('https://crt.sh/?q=', ENCODE(cc.sha256, 'hex'::text)) AS crtsh,
-    cd.domain
+    cd.domain,
+    cd.tld
   FROM CERTDB_domain cd
   INNER JOIN CERTDB_cert cc on cc.id = cd.cert 
   INNER JOIN CERTDB_ident subj on subj.id = cc.subject
