@@ -3,8 +3,8 @@ package certstream
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
-	"time"
 )
 
 var BulkRange = int64(4096)
@@ -61,8 +61,9 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				start := max(0, minIndex-BulkRange)
 				stop := minIndex - 1
 				minIndex = start
-				if youngest := ls.GetRawEntries(ctx, start, stop, true, nil); youngest > time.Hour*24*time.Duration(cdb.PgMaxAge) {
-					cdb.LogInfo("backlog stops", "url", ls.URL, "stream", ls.Id, "logindex", minIndex, "age", int64(youngest/(time.Hour*24)))
+				if !ls.GetRawEntries(ctx, start, stop, true, nil) {
+					cdb.LogInfo("backlog stops", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
+					ls.addError(ls, fmt.Errorf("log entries are older than %d days", cdb.PgMaxAge))
 					return
 				}
 			}
