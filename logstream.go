@@ -142,12 +142,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 	return
 }
 
-func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry {
-	var ctle *ct.LogEntry
-	ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &entry)
-	if leaferr == nil {
-		ctle, leaferr = ctrle.ToLogEntry()
-	}
+func (ls *LogStream) seeIndex(logindex int64) {
 	if logindex >= 0 {
 		if x := ls.MinIndex.Load(); x > logindex || x == -1 {
 			ls.MinIndex.CompareAndSwap(x, logindex)
@@ -156,6 +151,15 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 			ls.MaxIndex.CompareAndSwap(x, logindex)
 		}
 	}
+}
+
+func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry {
+	var ctle *ct.LogEntry
+	ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &entry)
+	if leaferr == nil {
+		ctle, leaferr = ctrle.ToLogEntry()
+	}
+	ls.seeIndex(logindex)
 	return &LogEntry{
 		LogStream:   ls,
 		Err:         leaferr,

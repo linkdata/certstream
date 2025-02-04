@@ -47,7 +47,6 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {
 	defer wg.Done()
-	cdb.backfillGaps(ctx, ls)
 	row := cdb.QueryRow(ctx, cdb.stmtSelectMinIdx, ls.Id)
 	var nullableMinIndex sql.NullInt64
 	if err := cdb.LogError(row.Scan(&nullableMinIndex), "Backfill/MinIndex", "url", ls.URL); err == nil {
@@ -55,7 +54,9 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 			nullableMinIndex.Int64 = ls.LastIndex.Load()
 		}
 		minIndex := nullableMinIndex.Int64
-		if minIndex > 0 {
+		ls.seeIndex(minIndex)
+		cdb.backfillGaps(ctx, ls)
+		if minIndex > 0 && ctx.Err() == nil {
 			cdb.LogInfo("backlog start", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
 			for minIndex > 0 && ctx.Err() == nil {
 				start := max(0, minIndex-BulkRange)
