@@ -33,7 +33,6 @@ type LogStream struct {
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
-	Activity   atomic.Int64 // last activity time, Unix time
 	Id         int32        // database ID, if available
 }
 
@@ -121,7 +120,6 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
-				ls.Activity.Store(now.Unix())
 				if lastIndex+int64(BatchSize) < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
 					ls.LastIndex.Store(lastIndex)
@@ -159,7 +157,6 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 	if leaferr == nil {
 		ctle, leaferr = ctrle.ToLogEntry()
 	}
-	ls.seeIndex(logindex)
 	return &LogEntry{
 		LogStream:   ls,
 		Err:         leaferr,
@@ -172,6 +169,7 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool) {
 	le := ls.makeLogEntry(logindex, entry, historical)
 	if cert := le.Cert(); cert != nil {
+		ls.seeIndex(logindex)
 		wanted = now.Before(cert.NotAfter) || now.Sub(cert.Seen) < time.Hour*24*time.Duration(ls.PgMaxAge)
 		if ls.DB != nil {
 			ls.DB.sendToBatcher(ctx, le)
@@ -237,7 +235,6 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			}
 		} else {
 			now := time.Now()
-			ls.Activity.Store(now.Unix())
 			for i := range resp.Entries {
 				if handleFn(ctx, now, start, resp.Entries[i], historical) {
 					wanted = true
@@ -246,6 +243,9 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 				if gapcounter != nil {
 					gapcounter.Add(-1)
 				}
+			}
+			if historical && !wanted {
+				return
 			}
 		}
 		for historical && ctx.Err() == nil && ls.DB.QueueUsage() > 50 {
