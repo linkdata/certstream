@@ -40,7 +40,7 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 	for _, gap := range gaps {
 		if ctx.Err() == nil {
 			cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
-			ls.GetRawEntries(ctx, gap.start, gap.end, true, &ls.InsideGaps)
+			ls.GetRawEntries(ctx, gap.start, gap.end, true, ls.sendEntry, &ls.InsideGaps)
 		}
 	}
 }
@@ -61,7 +61,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				start := max(0, minIndex-BulkRange)
 				stop := minIndex - 1
 				minIndex = start
-				if !ls.GetRawEntries(ctx, start, stop, true, nil) {
+				if !ls.GetRawEntries(ctx, start, stop, true, ls.sendEntry, nil) {
 					cdb.LogInfo("backlog stops", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
 					ls.addError(ls, fmt.Errorf("log entries are older than %d days", cdb.PgMaxAge))
 					return

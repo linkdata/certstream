@@ -19,6 +19,9 @@ import (
 
 var BatchSize = 1024
 var MaxErrors = 100
+var IdleCloseTime = time.Hour * 24 * 7
+
+type handleEntryFn func(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool)
 
 type LogStream struct {
 	*LogOperator
@@ -47,6 +50,18 @@ func sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
+func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time) {
+	fn := func(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool) {
+		le := ls.makeLogEntry(logindex, entry, historical)
+		if cert := le.Cert(); cert != nil {
+			seen = cert.Seen
+		}
+		return
+	}
+	ls.GetRawEntries(ctx, end, end, false, fn, nil)
+	return
+}
+
 func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	var end int64
 	var err error
@@ -64,29 +79,24 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 
 	end, err = ls.NewLastIndex(ctx)
-	start := end
-	if cdb := ls.DB; cdb != nil {
-		if rows, qerr := cdb.Query(ctx, cdb.Pfx(`SELECT * FROM CERTDB_entry WHERE stream=$1 AND logindex=$2`), ls.Id, end); qerr == nil {
-			if rows.Next() {
-				var entry PgLogEntry
-				if qerr = ScanLogEntry(rows, &entry); qerr == nil {
-					if time.Since(entry.Seen) > IdleCloseTime {
-						err = errLogIdle{Since: entry.Seen}
-					}
-				}
-			}
-			rows.Close()
-		}
-		if err == nil {
-			if ls.CertStream.Config.TailDialer != nil {
-				wg2.Add(1)
-				go cdb.backfillStream(ctx, ls, &wg2)
-			}
+	if seen := ls.getEndSeen(ctx, end); !seen.IsZero() {
+		if time.Since(seen) > IdleCloseTime {
+			err = errLogIdle{Since: seen}
+			return
 		}
 	}
+
+	start := end
+	if cdb := ls.DB; cdb != nil {
+		if ls.CertStream.Config.TailDialer != nil {
+			wg2.Add(1)
+			go cdb.backfillStream(ctx, ls, &wg2)
+		}
+	}
+
 	for err == nil {
 		if start < end {
-			ls.GetRawEntries(ctx, start, end, false, nil)
+			ls.GetRawEntries(ctx, start, end, false, ls.sendEntry, nil)
 			if end-start <= int64(BatchSize/2) {
 				sleep(ctx, time.Second*15)
 			}
@@ -95,8 +105,6 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		end, err = ls.NewLastIndex(ctx)
 	}
 }
-
-var IdleCloseTime = time.Hour * 24
 
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
@@ -201,7 +209,7 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	return true
 }
 
-func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, gapcounter *atomic.Int64) (wanted bool) {
+func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
 	client := ls.HeadClient
 	if historical && ls.TailClient != nil {
 		client = ls.TailClient
@@ -227,7 +235,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			now := time.Now()
 			ls.Activity.Store(now.Unix())
 			for i := range resp.Entries {
-				if ls.sendEntry(ctx, now, start, resp.Entries[i], historical) {
+				if handleFn(ctx, now, start, resp.Entries[i], historical) {
 					wanted = true
 				}
 				start++
