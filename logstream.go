@@ -30,6 +30,7 @@ type LogStream struct {
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
+	Activity   atomic.Int64 // last activity time, Unix time
 	Id         int32        // database ID, if available
 }
 
@@ -49,9 +50,16 @@ func sleep(ctx context.Context, d time.Duration) {
 func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	var end int64
 	var err error
+	var wg2 sync.WaitGroup
 	defer func() {
+		ls.addError(ls, err)
+		wg2.Wait()
 		ls.removeStream(ls)
-		_ = ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
+		if e, ok := err.(errLogIdle); ok {
+			ls.LogInfo("stream stopped", "url", ls.URL, "stream", ls.Id, "idle", e.IdleTime)
+		} else {
+			ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
+		}
 		wg.Done()
 	}()
 
@@ -59,8 +67,8 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	start := end
 	if cdb := ls.DB; cdb != nil {
 		if ls.CertStream.Config.TailDialer != nil {
-			wg.Add(1)
-			go cdb.backfillStream(ctx, ls, wg)
+			wg2.Add(1)
+			go cdb.backfillStream(ctx, ls, &wg2)
 		}
 	}
 	for err == nil {
@@ -74,6 +82,8 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		end, err = ls.NewLastIndex(ctx)
 	}
 }
+
+var IdleCloseTime = time.Hour
 
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
@@ -90,15 +100,22 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
+				ls.Activity.Store(now.Unix())
 				if lastIndex+int64(BatchSize) < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
 					ls.LastIndex.Store(lastIndex)
 					return nil
 				}
+			} else {
+				if time.Since(now) > IdleCloseTime {
+					return errLogIdle{IdleTime: IdleCloseTime}
+				}
 			}
 			return backoff.RetriableError("STH diff too low")
 		}
-		ls.addError(ls, wrapErr(err, "GetSTH"))
+		if ls.handleStreamError(err, "GetSTH") {
+			return err
+		}
 		return backoff.RetriableError(err.Error())
 	})
 	return
@@ -144,30 +161,31 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int6
 	return
 }
 
-func (ls *LogStream) handleGetRawEntriesError(err error) (fatal bool) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
+func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	errTxt := err.Error()
-	if strings.Contains(errTxt, "context canceled") {
+	if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") {
 		return true
 	}
-	ls.addError(ls, wrapErr(err, "GetRawEntries"))
-	if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
+		return false
+	}
+	rspErr, isRspErr := err.(jsonclient.RspError)
+	if isRspErr {
 		switch rspErr.StatusCode {
 		case http.StatusTooManyRequests,
-			http.StatusInternalServerError,
-			http.StatusBadGateway,
 			http.StatusGatewayTimeout:
 			return false
 		}
-		if strings.Contains(errTxt, "deadline exceeded") {
+	}
+	ls.addError(ls, wrapErr(err, from))
+	if isRspErr {
+		switch rspErr.StatusCode {
+		case http.StatusInternalServerError,
+			http.StatusBadGateway:
 			return false
 		}
-		err = rspErr
-		fatal = true
 	}
-	return
+	return true
 }
 
 func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, gapcounter *atomic.Int64) (wanted bool) {
@@ -189,13 +207,16 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			resp, err = client.GetRawEntries(ctx, start, stop)
 			return err
 		}); err != nil {
-			if ls.handleGetRawEntriesError(err) {
+			if ls.handleStreamError(err, "GetRawEntries") {
 				return
 			}
 		} else {
 			now := time.Now()
+			ls.Activity.Store(now.Unix())
 			for i := range resp.Entries {
-				wanted = ls.sendEntry(ctx, now, start, resp.Entries[i], historical) || wanted
+				if ls.sendEntry(ctx, now, start, resp.Entries[i], historical) {
+					wanted = true
+				}
 				start++
 				if gapcounter != nil {
 					gapcounter.Add(-1)
