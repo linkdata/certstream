@@ -15,6 +15,18 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 		end   int64
 	}
 	var gaps []gap
+	if lastindex := ls.LastIndex.Load(); lastindex != -1 {
+		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
+		var nullableMaxIndex sql.NullInt64
+		if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL) == nil {
+			if nullableMaxIndex.Valid {
+				ls.seeIndex(nullableMaxIndex.Int64)
+				if nullableMaxIndex.Int64 < lastindex {
+					gaps = append(gaps, gap{start: nullableMaxIndex.Int64 + 1, end: lastindex})
+				}
+			}
+		}
+	}
 	if rows, err := cdb.Query(ctx, cdb.stmtSelectGaps, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -24,15 +36,6 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 			}
 		}
 		rows.Close()
-	}
-	if lastindex := ls.LastIndex.Load(); lastindex != -1 {
-		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
-		var nullableMaxIndex sql.NullInt64
-		if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL) == nil {
-			if nullableMaxIndex.Valid && nullableMaxIndex.Int64 < lastindex {
-				gaps = append(gaps, gap{start: nullableMaxIndex.Int64 + 1, end: lastindex})
-			}
-		}
 	}
 	for _, gap := range gaps {
 		ls.InsideGaps.Add((gap.end - gap.start) + 1)
