@@ -56,7 +56,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		wg2.Wait()
 		ls.removeStream(ls)
 		if e, ok := err.(errLogIdle); ok {
-			ls.LogInfo("stream stopped", "url", ls.URL, "stream", ls.Id, "idle", e.IdleTime)
+			ls.LogInfo("stream stopped", "url", ls.URL, "stream", ls.Id, "idle-since", e.Since)
 		} else {
 			ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
 		}
@@ -66,9 +66,22 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	end, err = ls.NewLastIndex(ctx)
 	start := end
 	if cdb := ls.DB; cdb != nil {
-		if ls.CertStream.Config.TailDialer != nil {
-			wg2.Add(1)
-			go cdb.backfillStream(ctx, ls, &wg2)
+		if rows, qerr := cdb.Query(ctx, cdb.Pfx(`SELECT * FROM CERTDB_entry WHERE stream=$1 AND logindex=$2`), ls.Id, end); qerr == nil {
+			if rows.Next() {
+				var entry PgLogEntry
+				if qerr = ScanLogEntry(rows, &entry); qerr == nil {
+					if time.Since(entry.Seen) > IdleCloseTime {
+						err = errLogIdle{Since: entry.Seen}
+					}
+				}
+			}
+			rows.Close()
+		}
+		if err == nil {
+			if ls.CertStream.Config.TailDialer != nil {
+				wg2.Add(1)
+				go cdb.backfillStream(ctx, ls, &wg2)
+			}
 		}
 	}
 	for err == nil {
@@ -83,7 +96,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-var IdleCloseTime = time.Hour
+var IdleCloseTime = time.Hour * 24
 
 func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
@@ -108,7 +121,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 				}
 			} else {
 				if time.Since(now) > IdleCloseTime {
-					return errLogIdle{IdleTime: IdleCloseTime}
+					return errLogIdle{Since: now}
 				}
 			}
 			return backoff.RetriableError("STH diff too low")

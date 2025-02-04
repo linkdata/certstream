@@ -6,11 +6,11 @@ import (
 )
 
 type errLogIdle struct {
-	IdleTime time.Duration
+	Since time.Time
 }
 
 func (err errLogIdle) Error() string {
-	return fmt.Sprintf("log idle for %v", err.IdleTime)
+	return fmt.Sprintf("log idle since %v", err.Since.Round(time.Second))
 }
 
 var ErrLogIdle errLogIdle
