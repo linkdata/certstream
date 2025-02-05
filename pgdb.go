@@ -227,7 +227,7 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 	cdb.fillIdentity(ctx, dbcert.IssuerID, &cert.Issuer)
 	cdb.fillIdentity(ctx, dbcert.SubjectID, &cert.Subject)
 	cert.Subject.CommonName = dbcert.CommonName
-	cert.DNSNames = cdb.getCertStrings(ctx, dbcert.Id, "dnsname", "dnsname")
+	cert.DNSNames = cdb.getCertStrings(ctx, dbcert.Id, "dnsnames", "fqdn")
 	cert.EmailAddresses = cdb.getCertStrings(ctx, dbcert.Id, "email", "email")
 	cert.IPAddresses = cdb.getCertStrings(ctx, dbcert.Id, "ipaddress", "addr")
 	cert.URIs = cdb.getCertStrings(ctx, dbcert.Id, "uri", "uri")
@@ -235,10 +235,7 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 }
 
 func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry) (cert *JsonCertificate, err error) {
-	if cert, err = cdb.GetCertificateByID(ctx, entry.CertID); cert != nil {
-		cert.Seen = entry.Seen
-	}
-	return
+	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
 func (cdb *PgDB) GetCertificateByHash(ctx context.Context, hash []byte) (cert *JsonCertificate, err error) {

@@ -1,6 +1,7 @@
 package certstream
 
 import (
+	"encoding/hex"
 	"net/mail"
 	"sort"
 	"strings"
@@ -9,10 +10,15 @@ import (
 	"golang.org/x/net/idna"
 )
 
+type hexEncoded []byte
+
+func (h hexEncoded) MarshalText() (text []byte, err error) {
+	return hex.AppendEncode(nil, h), nil
+}
+
 type JsonCertificate struct {
 	PreCert        bool         `json:",omitempty"`
-	Seen           time.Time    `json:",omitempty"`
-	Signature      []byte       `json:",omitempty"` // SHA256 signature, searchable on crt.sh
+	Signature      hexEncoded   `json:",omitempty"` // SHA256 signature, searchable on crt.sh
 	Issuer         JsonIdentity `json:",omitempty"`
 	Subject        JsonIdentity `json:",omitempty"`
 	DNSNames       []string     `json:",omitempty"`
@@ -26,7 +32,6 @@ type JsonCertificate struct {
 func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
 	jsoncert = &JsonCertificate{
 		PreCert:   cert.PreCert,
-		Seen:      cert.Seen,
 		Signature: cert.Signature,
 		NotBefore: cert.NotBefore,
 		NotAfter:  cert.NotAfter,
