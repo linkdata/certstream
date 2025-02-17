@@ -14,7 +14,7 @@ IF to_regclass('CERTDB_stream') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_stream (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     url TEXT NOT NULL UNIQUE,
-    operator INTEGER NOT NULL REFERENCES CERTDB_operator (id),
+    operator INTEGER NOT NULL REFERENCES CERTDB_operator (id) ON DELETE CASCADE,
     json TEXT NOT NULL
   );
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_stream_url_idx ON CERTDB_stream (url);
@@ -48,9 +48,9 @@ END IF;
 IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_entry (
     seen TIMESTAMP NOT NULL DEFAULT NOW(),
+    cert BIGINT NOT NULL, -- do not reference CERTDB_cert since we have no index on this column
     logindex BIGINT NOT NULL,
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
-    stream INTEGER NOT NULL REFERENCES CERTDB_stream (id),
+    stream INTEGER NOT NULL REFERENCES CERTDB_stream (id) ON DELETE CASCADE,
     PRIMARY KEY (stream, logindex)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_entry_seen_idx ON CERTDB_entry (seen);
@@ -59,7 +59,7 @@ END IF;
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE TABLE IF NOT EXISTS CERTDB_domain (
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,
     wild BOOLEAN NOT NULL,
     www SMALLINT NOT NULL,
     domain TEXT NOT NULL,
@@ -72,7 +72,7 @@ END IF;
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_ipaddress (
     addr INET NOT NULL,
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,
     PRIMARY KEY (cert, addr)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_ipaddress_addr_idx ON CERTDB_ipaddress (addr);
@@ -81,7 +81,7 @@ END IF;
 IF to_regclass('CERTDB_email') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_email (
     email TEXT NOT NULL,
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,
     PRIMARY KEY (cert, email)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_email_email_idx ON CERTDB_email (email);
@@ -90,7 +90,7 @@ END IF;
 IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_uri (
     uri TEXT NOT NULL,
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id),
+    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,
     PRIMARY KEY (cert, uri)
   );
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
