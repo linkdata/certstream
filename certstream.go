@@ -80,7 +80,7 @@ func (cs *CertStream) Close() {
 }
 
 func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
-	ticker := time.NewTicker(time.Hour * 6)
+	ticker := time.NewTicker(time.Hour * 24)
 
 	defer func() {
 		ticker.Stop()
