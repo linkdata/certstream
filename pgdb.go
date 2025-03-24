@@ -200,7 +200,7 @@ func (cdb *PgDB) fillIdentity(ctx context.Context, id int, ident *JsonIdentity) 
 }
 
 func (cdb *PgDB) getCertStrings(ctx context.Context, id int64, tablename, colname string) (sl []string) {
-	rows, err := cdb.Query(ctx, cdb.Pfx(fmt.Sprintf("SELECT %s FROM CERTDB_%s WHERE cert=$1", colname, tablename)), id)
+	rows, err := cdb.Query(ctx, cdb.Pfx(fmt.Sprintf("SELECT %s::text FROM CERTDB_%s WHERE cert=$1", colname, tablename)), id)
 	if cdb.LogError(err, "getCertStrings/"+tablename, "id", id) == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -230,6 +230,9 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 	cert.DNSNames = cdb.getCertStrings(ctx, dbcert.Id, "dnsnames", "fqdn")
 	cert.EmailAddresses = cdb.getCertStrings(ctx, dbcert.Id, "email", "email")
 	cert.IPAddresses = cdb.getCertStrings(ctx, dbcert.Id, "ipaddress", "addr")
+	for i := range cert.IPAddresses {
+		cert.IPAddresses[i] = strings.TrimSuffix(cert.IPAddresses[i], "/32")
+	}
 	cert.URIs = cdb.getCertStrings(ctx, dbcert.Id, "uri", "uri")
 	return
 }
