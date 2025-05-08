@@ -200,7 +200,7 @@ func (cdb *PgDB) fillIdentity(ctx context.Context, id int, ident *JsonIdentity) 
 }
 
 func (cdb *PgDB) getCertStrings(ctx context.Context, id int64, tablename, colname string) (sl []string) {
-	rows, err := cdb.Query(ctx, cdb.Pfx(fmt.Sprintf("SELECT %s::text FROM CERTDB_%s WHERE cert=$1", colname, tablename)), id)
+	rows, err := cdb.Query(ctx, cdb.Pfx(fmt.Sprintf("SELECT %s::text FROM CERTDB_%s WHERE cert=$1;", colname, tablename)), id)
 	if cdb.LogError(err, "getCertStrings/"+tablename, "id", id) == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -241,8 +241,25 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
+func (cdb *PgDB) GetCertificatesByCommmonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {
+	var rows pgx.Rows
+	if rows, err = cdb.Query(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE commonname=$1 ORDER BY notbefore DESC;`), commonname); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var dbcert PgCertificate
+			if err = ScanCertificate(rows, &dbcert); err == nil {
+				var cert *JsonCertificate
+				if cert, err = cdb.getCertificate(ctx, &dbcert); err == nil {
+					certs = append(certs, cert)
+				}
+			}
+		}
+	}
+	return
+}
+
 func (cdb *PgDB) GetCertificateByHash(ctx context.Context, hash []byte) (cert *JsonCertificate, err error) {
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE sha256=$1`), hash)
+	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE sha256=$1;`), hash)
 	var dbcert PgCertificate
 	if err = ScanCertificate(row, &dbcert); err == nil {
 		cert, err = cdb.getCertificate(ctx, &dbcert)
@@ -251,7 +268,7 @@ func (cdb *PgDB) GetCertificateByHash(ctx context.Context, hash []byte) (cert *J
 }
 
 func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCertificate, err error) {
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE id=$1`), id)
+	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE id=$1;`), id)
 	var dbcert PgCertificate
 	if err = ScanCertificate(row, &dbcert); err == nil {
 		cert, err = cdb.getCertificate(ctx, &dbcert)
