@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -247,13 +248,16 @@ func (cdb *PgDB) GetCertificatesByCommmonName(ctx context.Context, commonname st
 		defer rows.Close()
 		for rows.Next() {
 			var dbcert PgCertificate
-			if err = ScanCertificate(rows, &dbcert); err == nil {
+			e := ScanCertificate(rows, &dbcert)
+			if e == nil {
 				var cert *JsonCertificate
-				if cert, err = cdb.getCertificate(ctx, &dbcert); err == nil {
+				if cert, e = cdb.getCertificate(ctx, &dbcert); e == nil {
 					certs = append(certs, cert)
 				}
 			}
+			err = errors.Join(err, e)
 		}
+		err = errors.Join(err, rows.Err())
 	}
 	return
 }
