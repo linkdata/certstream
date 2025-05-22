@@ -199,6 +199,7 @@ func (cdb *PgDB) fillIdentity(ctx context.Context, id int, ident *JsonIdentity) 
 	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_ident WHERE id=$1;`), id)
 	var dbident PgIdent
 	if err := cdb.LogError(ScanIdent(row, &dbident), "fillIdentity", "id", id); err == nil {
+		ident.ID = id
 		ident.Country = dbident.Country
 		ident.Organization = dbident.Organization
 		ident.Province = dbident.Province

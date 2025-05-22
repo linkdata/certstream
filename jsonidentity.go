@@ -7,6 +7,7 @@ import (
 )
 
 type JsonIdentity struct {
+	ID           int    `json:",omitempty"`
 	Country      string `json:",omitempty"`
 	Organization string `json:",omitempty"`
 	Province     string `json:",omitempty"`
