@@ -249,8 +249,8 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
-func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string) (since time.Time, err error) {
-	row := cdb.QueryRow(ctx, cdb.funcFindSince, commonname)
+func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, notbefore time.Time) (since time.Time, err error) {
+	row := cdb.QueryRow(ctx, cdb.funcFindSince, commonname, notbefore)
 	err = row.Scan(&since)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil

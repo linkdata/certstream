@@ -1,5 +1,6 @@
 CREATE OR REPLACE FUNCTION CERTDB_find_since(
-  IN _commonname TEXT
+  IN _commonname TEXT,
+  IN _notbefore TIMESTAMP
 )
 RETURNS TIMESTAMP
 LANGUAGE plpgsql
@@ -11,7 +12,7 @@ DECLARE _issuer INTEGER;
 BEGIN
   FOR _temprow IN
 	  (SELECT subject, issuer, notbefore, notafter FROM CERTDB_cert
-	  WHERE commonname=_commonname
+	  WHERE commonname=_commonname AND notbefore <= _notbefore
 	  ORDER BY notbefore DESC)
   LOOP
     IF _since IS NOT NULL THEN
