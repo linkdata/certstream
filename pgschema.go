@@ -11,6 +11,9 @@ var FunctionOperatorID string
 //go:embed assets/funcstreamid.sql
 var FunctionStreamID string
 
+//go:embed assets/funcfindsince.sql
+var FunctionFindSince string
+
 //go:embed assets/procaddnewentry.sql
 var ProcAddNewEntry string
 

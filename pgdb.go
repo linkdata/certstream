@@ -29,6 +29,7 @@ type PgDB struct {
 	funcOperatorID        string
 	funcStreamID          string
 	funcEnsureIdent       string
+	funcFindSince         string
 	stmtNewEntry          string
 	stmtSelectGaps        string
 	stmtSelectMinIdx      string
@@ -46,7 +47,9 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 	if _, err = db.Exec(ctx, pfx(CreateSchema)); err == nil {
 		if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
 			if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
-				_, err = db.Exec(ctx, pfx(ProcAddNewEntry))
+				if _, err = db.Exec(ctx, pfx(FunctionFindSince)); err == nil {
+					_, err = db.Exec(ctx, pfx(ProcAddNewEntry))
+				}
 			}
 		}
 	}
@@ -57,6 +60,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
+	const callFindSince = `SELECT CERTDB_find_since($1,$2,$3);`
 	const callNewEntry = `CALL CERTDB_add_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
@@ -80,6 +84,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
 							funcEnsureIdent:       pfx(`SELECT CERTDB_ensure_ident($1,$2,$3);`),
+							funcFindSince:         pfx(callFindSince),
 							stmtNewEntry:          pfx(callNewEntry),
 							stmtSelectGaps:        pfx(SelectGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
@@ -241,6 +246,16 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 
 func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry) (cert *JsonCertificate, err error) {
 	return cdb.GetCertificateByID(ctx, entry.CertID)
+}
+
+func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, subject, issuer int64) (since time.Time, err error) {
+	row := cdb.QueryRow(ctx, cdb.funcFindSince, commonname, subject, issuer)
+	err = row.Scan(&since)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = nil
+		since = time.Time{}
+	}
+	return
 }
 
 func (cdb *PgDB) GetCertificatesByCommonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {
