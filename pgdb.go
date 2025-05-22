@@ -249,7 +249,7 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
-func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, subject, issuer int64) (since time.Time, err error) {
+func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, subject, issuer int) (since time.Time, err error) {
 	row := cdb.QueryRow(ctx, cdb.funcFindSince, commonname, subject, issuer)
 	err = row.Scan(&since)
 	if errors.Is(err, pgx.ErrNoRows) {
