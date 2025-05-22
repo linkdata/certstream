@@ -21,6 +21,7 @@ type JsonCertificate struct {
 	Signature      hexEncoded   `json:",omitempty"` // SHA256 signature, searchable on crt.sh
 	Issuer         JsonIdentity `json:",omitempty"`
 	Subject        JsonIdentity `json:",omitempty"`
+	CommonName     string       `json:",omitempty"` // Subject common name
 	DNSNames       []string     `json:",omitempty"`
 	EmailAddresses []string     `json:",omitempty"`
 	IPAddresses    []string     `json:",omitempty"`
@@ -31,10 +32,11 @@ type JsonCertificate struct {
 
 func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
 	jsoncert = &JsonCertificate{
-		PreCert:   cert.PreCert,
-		Signature: cert.Signature,
-		NotBefore: cert.NotBefore,
-		NotAfter:  cert.NotAfter,
+		PreCert:    cert.PreCert,
+		Signature:  cert.Signature,
+		CommonName: cert.Subject.CommonName,
+		NotBefore:  cert.NotBefore,
+		NotAfter:   cert.NotAfter,
 	}
 	jsoncert.Issuer.Fill(&cert.Issuer)
 	jsoncert.Subject.Fill(&cert.Subject)

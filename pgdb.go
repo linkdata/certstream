@@ -218,6 +218,7 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 	cert = &JsonCertificate{
 		PreCert:        dbcert.PreCert,
 		Signature:      dbcert.Sha256,
+		CommonName:     dbcert.CommonName,
 		DNSNames:       []string{},
 		EmailAddresses: []string{},
 		IPAddresses:    []string{},
