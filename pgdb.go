@@ -243,7 +243,7 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
-func (cdb *PgDB) GetCertificatesByCommmonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {
+func (cdb *PgDB) GetCertificatesByCommonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {
 	var rows pgx.Rows
 	if rows, err = cdb.Query(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE commonname=$1 ORDER BY notbefore DESC;`), commonname); err == nil {
 		defer rows.Close()
