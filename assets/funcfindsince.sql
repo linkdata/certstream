@@ -11,9 +11,9 @@ DECLARE _subject INTEGER;
 DECLARE _issuer INTEGER;
 BEGIN
   FOR _temprow IN
-	  (SELECT subject, issuer, notbefore, notafter FROM CERTDB_cert
+	  (SELECT DISTINCT subject, issuer, notbefore, notafter FROM CERTDB_cert
 	  WHERE commonname=_commonname AND notbefore <= _notbefore
-	  ORDER BY notbefore DESC)
+	  ORDER BY notbefore DESC LIMIT 365)
   LOOP
     IF _since IS NOT NULL THEN
       IF _subject = _temprow.subject AND _issuer = _temprow.issuer THEN
