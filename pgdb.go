@@ -250,12 +250,9 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 }
 
 func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, notbefore time.Time) (since time.Time, err error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
-	defer cancel()
 	row := cdb.QueryRow(ctx, cdb.funcFindSince, commonname, notbefore)
 	err = row.Scan(&since)
-	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, context.DeadlineExceeded) {
-		cdb.LogInfo("GetLatestCertificateSince", "commonname", commonname, "notbefore", notbefore, "error", err)
+	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil
 		since = time.Time{}
 	}
