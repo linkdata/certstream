@@ -13,7 +13,7 @@ BEGIN
   FOR _temprow IN
 	  (SELECT DISTINCT subject, issuer, notbefore, notafter FROM CERTDB_cert
 	  WHERE commonname=_commonname AND notbefore <= _notbefore
-	  ORDER BY notbefore DESC LIMIT 365)
+	  ORDER BY notbefore DESC LIMIT 90)
   LOOP
     IF _since IS NOT NULL THEN
       IF _subject = _temprow.subject AND _issuer = _temprow.issuer THEN
