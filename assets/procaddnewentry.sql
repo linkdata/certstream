@@ -58,7 +58,7 @@ BEGIN
 			ORDER BY notbefore DESC LIMIT 1;
 
 		IF _since IS NULL THEN
-			_since = notbefore;
+			_since = _notbefore;
 		END IF;
 
 		INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
