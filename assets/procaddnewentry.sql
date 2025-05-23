@@ -24,6 +24,7 @@ DECLARE
   _iss_id INTEGER;
   _sub_id INTEGER;
   _cert_id BIGINT;
+  _since TIMESTAMP;
   _fqdn TEXT;
 
 BEGIN
@@ -52,8 +53,16 @@ BEGIN
 			END IF;
 		END IF;
 
-		INSERT INTO CERTDB_cert (notbefore, notafter, commonname, subject, issuer, sha256, precert)
-			VALUES (_notbefore, _notafter, _commonname, _sub_id, _iss_id, _hash, _precert)
+		SELECT since FROM CERTDB_cert INTO _since
+			WHERE commonname=_commonname AND subject=_subject AND issuer=_issuer AND notbefore < _notbefore
+			ORDER BY notbefore DESC LIMIT 1;
+			
+		IF _since IS NULL THEN
+			_since = notbefore;
+		END IF;
+
+		INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+			VALUES (_notbefore, _notafter, _since, _commonname, _sub_id, _iss_id, _hash, _precert)
 			ON CONFLICT (sha256) DO NOTHING RETURNING id INTO _cert_id;
 		COMMIT;
 

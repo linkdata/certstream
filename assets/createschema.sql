@@ -36,6 +36,7 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     notbefore TIMESTAMP NOT NULL,
     notafter TIMESTAMP NOT NULL,
+    since TIMESTAMP NOT NULL,
     commonname TEXT NOT NULL,
     subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
