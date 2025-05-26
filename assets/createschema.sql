@@ -36,12 +36,12 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     notbefore TIMESTAMP NOT NULL,
     notafter TIMESTAMP NOT NULL,
-    since TIMESTAMP NOT NULL,
     commonname TEXT NOT NULL,
     subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     sha256 BYTEA NOT NULL,
-    precert BOOLEAN NOT NULL
+    precert BOOLEAN NOT NULL,
+    since TIMESTAMP NOT NULL
   );
   CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_notbefore_idx ON CERTDB_cert (commonname ASC, notbefore DESC);
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
