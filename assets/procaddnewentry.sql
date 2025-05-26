@@ -54,7 +54,7 @@ BEGIN
 		END IF;
 
 		SELECT since FROM CERTDB_cert INTO _since
-			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore
+			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore AND notafter >= _notbefore
 			ORDER BY notbefore DESC LIMIT 1;
 
 		IF _since IS NULL THEN
