@@ -13,6 +13,7 @@ type PgCertificate struct {
 	IssuerID   int
 	Sha256     []byte
 	PreCert    bool
+	Since      time.Time
 }
 
 func ScanCertificate(row Scanner, cert *PgCertificate) (err error) {
@@ -25,5 +26,6 @@ func ScanCertificate(row Scanner, cert *PgCertificate) (err error) {
 		&cert.IssuerID,
 		&cert.Sha256,
 		&cert.PreCert,
+		&cert.Since,
 	)
 }

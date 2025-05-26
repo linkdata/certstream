@@ -231,6 +231,7 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 		URIs:           []string{},
 		NotBefore:      dbcert.NotBefore,
 		NotAfter:       dbcert.NotAfter,
+		Since:          dbcert.Since,
 	}
 	cdb.fillIdentity(ctx, dbcert.IssuerID, &cert.Issuer)
 	cdb.fillIdentity(ctx, dbcert.SubjectID, &cert.Subject)

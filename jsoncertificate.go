@@ -28,6 +28,7 @@ type JsonCertificate struct {
 	URIs           []string     `json:",omitempty"`
 	NotBefore      time.Time    `json:",omitempty"`
 	NotAfter       time.Time    `json:",omitempty"`
+	Since          time.Time    `json:",omitzero"`
 }
 
 func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
