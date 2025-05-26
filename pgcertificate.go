@@ -17,7 +17,8 @@ type PgCertificate struct {
 }
 
 func ScanCertificate(row Scanner, cert *PgCertificate) (err error) {
-	return row.Scan(
+	var p_since *time.Time
+	if err = row.Scan(
 		&cert.Id,
 		&cert.NotBefore,
 		&cert.NotAfter,
@@ -26,6 +27,11 @@ func ScanCertificate(row Scanner, cert *PgCertificate) (err error) {
 		&cert.IssuerID,
 		&cert.Sha256,
 		&cert.PreCert,
-		&cert.Since,
-	)
+		&p_since,
+	); err == nil {
+		if p_since != nil {
+			cert.Since = *p_since
+		}
+	}
+	return
 }
