@@ -251,7 +251,13 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 }
 
 func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, notbefore time.Time) (since time.Time, err error) {
-	row := cdb.QueryRow(ctx, cdb.funcFindSince, commonname, notbefore)
+	var p_since *time.Time
+	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT since FROM CERTDB_cert WHERE commonname=$1 AND notbefore<=$2 ORDER BY notbefore DESC LIMIT 1;`), commonname, notbefore)
+	if err = row.Scan(&p_since); err == nil && p_since != nil {
+		since = *p_since
+		return
+	}
+	row = cdb.QueryRow(ctx, cdb.funcFindSince, commonname, notbefore)
 	err = row.Scan(&since)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil
