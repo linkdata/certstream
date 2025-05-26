@@ -25,6 +25,7 @@ DECLARE
   _sub_id INTEGER;
   _cert_id BIGINT;
   _since TIMESTAMP;
+  _sinceafter TIMESTAMP;
   _fqdn TEXT;
 
 BEGIN
@@ -53,11 +54,11 @@ BEGIN
 			END IF;
 		END IF;
 
-		SELECT since FROM CERTDB_cert INTO _since
-			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore AND notafter >= _notbefore
+		SELECT since, notafter FROM CERTDB_cert INTO _since, _sinceafter
+			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore
 			ORDER BY notbefore DESC LIMIT 1;
-
-		IF _since IS NULL THEN
+		
+		IF _sinceafter < _notbefore OR _since IS NULL THEN
 			_since = _notbefore;
 		END IF;
 
