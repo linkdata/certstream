@@ -35,6 +35,7 @@ type PgDB struct {
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
 	stmtSelectDnsnameLike string
+	stmtSelectIDSince     string
 	mu                    sync.Mutex // protects following
 	batchCh               chan *LogEntry
 	estimates             map[string]float64 // row count estimates
@@ -62,6 +63,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
 	const callFindSince = `SELECT CERTDB_find_since($1,$2);`
 	const callNewEntry = `CALL CERTDB_add_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
+
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
 			cs.Config.PgUser, cs.Config.PgPass, cs.Config.PgAddr, cs.Config.PgName, cs.Config.PgConns)
@@ -90,6 +92,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
+							stmtSelectIDSince:     pfx(SelectIDSince),
 							batchCh:               make(chan *LogEntry, batcherQueueSize),
 							estimates: map[string]float64{
 								"cert":   0,
@@ -250,15 +253,28 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
-func (cdb *PgDB) GetLatestCertificateSince(ctx context.Context, commonname string, notbefore time.Time) (since time.Time, err error) {
+func (cdb *PgDB) GetCertificateSince(ctx context.Context, cert *JsonCertificate) (since time.Time, err error) {
+	row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
+		cert.Subject.CommonName,
+		cert.Subject.Organization, cert.Subject.Province, cert.Subject.Country,
+		cert.Issuer.Organization, cert.Issuer.Province, cert.Issuer.Country,
+		cert.NotBefore,
+	)
+	// id, subject, issuer, notbefore, since
+	var id int64
+	var subject, issuer int
+	var notbefore time.Time
 	var p_since *time.Time
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT since FROM CERTDB_cert WHERE commonname=$1 AND notbefore<=$2 ORDER BY notbefore DESC LIMIT 1;`), commonname, notbefore)
-	if err = row.Scan(&p_since); err == nil && p_since != nil {
-		since = *p_since
-		return
+	if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
+		if p_since != nil {
+			since = *p_since
+		} else {
+			row = cdb.QueryRow(ctx, cdb.funcFindSince, cert.Subject.CommonName, subject, issuer, notbefore)
+			if err = row.Scan(&since); err == nil && !since.IsZero() {
+				_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE id=$2;`), since, id)
+			}
+		}
 	}
-	row = cdb.QueryRow(ctx, cdb.funcFindSince, commonname, notbefore)
-	err = row.Scan(&since)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil
 		since = time.Time{}
