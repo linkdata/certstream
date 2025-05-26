@@ -254,22 +254,22 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 }
 
 func (cdb *PgDB) GetCertificateSince(ctx context.Context, cert *JsonCertificate) (since time.Time, err error) {
-	row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
-		cert.Subject.CommonName,
-		cert.Subject.Organization, cert.Subject.Province, cert.Subject.Country,
-		cert.Issuer.Organization, cert.Issuer.Province, cert.Issuer.Country,
-		cert.NotBefore,
-	)
-	// id, subject, issuer, notbefore, since
-	var id int64
-	var subject, issuer int
-	var notbefore time.Time
-	var p_since *time.Time
-	if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
-		if p_since != nil {
-			since = *p_since
-		} else {
-			if false {
+	if false { // needs index CERTDB_cert_commonname_subject_issuer_notbefore_idx
+		row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
+			cert.Subject.CommonName,
+			cert.Subject.Organization, cert.Subject.Province, cert.Subject.Country,
+			cert.Issuer.Organization, cert.Issuer.Province, cert.Issuer.Country,
+			cert.NotBefore,
+		)
+		// id, subject, issuer, notbefore, since
+		var id int64
+		var subject, issuer int
+		var notbefore time.Time
+		var p_since *time.Time
+		if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
+			if p_since != nil {
+				since = *p_since
+			} else {
 				row = cdb.QueryRow(ctx, cdb.funcFindSince, cert.Subject.CommonName, subject, issuer, notbefore)
 				if err = row.Scan(&since); err == nil && !since.IsZero() {
 					_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE commonname=$2 AND subject=$3 AND issuer=$4 AND notbefore <= $5;`),
@@ -277,10 +277,10 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, cert *JsonCertificate)
 				}
 			}
 		}
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = nil
-		since = time.Time{}
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = nil
+			since = time.Time{}
+		}
 	}
 	return
 }
