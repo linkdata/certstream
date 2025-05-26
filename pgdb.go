@@ -61,7 +61,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
-	const callFindSince = `SELECT CERTDB_find_since($1,$2);`
+	const callFindSince = `SELECT CERTDB_find_since($1,$2,$3,$4);`
 	const callNewEntry = `CALL CERTDB_add_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
 
 	if cs.Config.PgAddr != "" {
