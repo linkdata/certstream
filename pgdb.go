@@ -269,9 +269,12 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, cert *JsonCertificate)
 		if p_since != nil {
 			since = *p_since
 		} else {
-			row = cdb.QueryRow(ctx, cdb.funcFindSince, cert.Subject.CommonName, subject, issuer, notbefore)
-			if err = row.Scan(&since); err == nil && !since.IsZero() {
-				_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE id=$2;`), since, id)
+			if false {
+				row = cdb.QueryRow(ctx, cdb.funcFindSince, cert.Subject.CommonName, subject, issuer, notbefore)
+				if err = row.Scan(&since); err == nil && !since.IsZero() {
+					_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE commonname=$2 AND subject=$3 AND issuer=$4 AND notbefore <= $5;`),
+						since, cert.Subject.CommonName, subject, issuer, notbefore)
+				}
 			}
 		}
 	}
