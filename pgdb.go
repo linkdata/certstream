@@ -188,7 +188,7 @@ func (cdb *PgDB) queueEntry(le *LogEntry) (args []any) {
 			strings.Join(cert.Subject.Country, ","),
 			cert.NotBefore,
 			cert.NotAfter,
-			cert.Subject.CommonName,
+			cert.GetCommonName(),
 			strings.Join(dnsnames, " "),
 			strings.Join(ipaddrs, " "),
 			strings.Join(emails, " "),
@@ -246,6 +246,7 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 		cert.IPAddresses[i] = strings.TrimSuffix(cert.IPAddresses[i], "/32")
 	}
 	cert.URIs = cdb.getCertStrings(ctx, dbcert.Id, "uri", "uri")
+	cert.SetCommonName()
 	return
 }
 
@@ -253,12 +254,12 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
-func (cdb *PgDB) GetCertificateSince(ctx context.Context, cert *JsonCertificate) (since time.Time, err error) {
+func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate) (since time.Time, err error) {
 	row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
-		cert.Subject.CommonName,
-		cert.Subject.Organization, cert.Subject.Province, cert.Subject.Country,
-		cert.Issuer.Organization, cert.Issuer.Province, cert.Issuer.Country,
-		cert.NotBefore,
+		jcert.Subject.CommonName,
+		jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
+		jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
+		jcert.NotBefore,
 	)
 	// id, subject, issuer, notbefore, since
 	var id int64
@@ -269,10 +270,10 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, cert *JsonCertificate)
 		if p_since != nil {
 			since = *p_since
 		} else {
-			row = cdb.QueryRow(ctx, cdb.funcFindSince, cert.Subject.CommonName, subject, issuer, notbefore)
+			row = cdb.QueryRow(ctx, cdb.funcFindSince, jcert.CommonName, subject, issuer, notbefore)
 			if err = row.Scan(&since); err == nil && !since.IsZero() {
 				_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE commonname=$2 AND subject=$3 AND issuer=$4 AND notbefore <= $5 AND notbefore >= $1;`),
-					since, cert.Subject.CommonName, subject, issuer, notbefore)
+					since, jcert.CommonName, subject, issuer, notbefore)
 			}
 		}
 	}

@@ -3,6 +3,7 @@ package certstream
 import (
 	"encoding/hex"
 	"net/mail"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
 	jsoncert = &JsonCertificate{
 		PreCert:    cert.PreCert,
 		Signature:  cert.Signature,
-		CommonName: cert.Subject.CommonName,
+		CommonName: cert.GetCommonName(),
 		NotBefore:  cert.NotBefore,
 		NotAfter:   cert.NotAfter,
 	}
@@ -70,4 +71,14 @@ func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
 	}
 	sort.Strings(jsoncert.URIs)
 	return
+}
+
+func (js *JsonCertificate) SetCommonName() {
+	if js.CommonName == "" {
+		if len(js.DNSNames) > 0 {
+			names := slices.Clone(js.DNSNames)
+			slices.Sort(names)
+			js.CommonName = js.DNSNames[0]
+		}
+	}
 }
