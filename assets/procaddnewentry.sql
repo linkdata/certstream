@@ -89,7 +89,7 @@ BEGIN
 		END IF;
 	END IF;
 
-	IF _since IS NULL AND _since_id IS NOT NULL THEN
+	IF _since IS NULL AND _since_id IS NOT NULL AND _commonname<>"" THEN
 		INSERT INTO CERTDB_sincequeue (cert) VALUES (_cert_id) ON CONFLICT DO NOTHING;
 	END IF;
 
