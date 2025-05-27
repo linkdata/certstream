@@ -26,6 +26,7 @@ DECLARE
   _cert_id BIGINT;
   _since TIMESTAMP;
   _fqdn TEXT;
+  _updatesince BOOLEAN;
 
 BEGIN
 	SELECT id FROM CERTDB_cert INTO _cert_id WHERE sha256=_hash;
@@ -57,7 +58,12 @@ BEGIN
 			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore AND notafter >= _notbefore
 			ORDER BY notbefore DESC LIMIT 1;
 		IF _since IS NULL THEN
-			_since = _notbefore;
+			SELECT CERTDB_find_since(_commonname,_sub_id,_iss_id,_notbefore) INTO _since;
+			IF _since IS NOT NULL THEN
+				_updatesince = TRUE;
+			ELSE
+				_since = _notbefore;
+			END IF;
 		END IF;
 
 		INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
@@ -92,6 +98,12 @@ BEGIN
 		VALUES (_seen, _logindex, _cert_id, _stream)
 		ON CONFLICT (stream, logindex) DO NOTHING;
 	COMMIT;
+
+	IF _updatesince = TRUE THEN
+		UPDATE CERTDB_cert SET since=_since
+			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore AND notbefore >= _since;
+		COMMIT;
+	END IF;
 
 END
 $proc$;
