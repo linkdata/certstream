@@ -5,9 +5,64 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var BulkRange = int64(4096)
+
+func (cdb *PgDB) backfillSince(ctx context.Context, wg *sync.WaitGroup) {
+	var certid int64
+	getquery := cdb.Pfx(`SELECT cert FROM CERTDB_sincequeue LIMIT 1;`)
+	delquery := cdb.Pfx(`DELETE FROM CERTDB_sincequeue WHERE cert=$1;`)
+	putquery := cdb.Pfx(`INSERT INTO CERTDB_sincequeue (cert) VALUES ($1) ON CONFLICT DO NOTHING;`)
+	infoquery := cdb.Pfx(`SELECT commonname,subject,issuer,notbefore FROM CERTDB_cert WHERE id=$1;`)
+	updatequery := cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE commonname=$2 AND subject=$3 AND issuer=$4 AND notbefore <= $5 AND notbefore >= $1;`)
+	sleeptime := time.Second
+
+	defer func() {
+		if certid != 0 {
+			_, _ = cdb.Exec(context.Background(), putquery, certid)
+		}
+		wg.Done()
+	}()
+
+	for ctx.Err() == nil {
+		row := cdb.QueryRow(ctx, getquery)
+		if err := row.Scan(&certid); err == nil {
+			sleeptime = time.Second
+			var ct pgconn.CommandTag
+			if ct, err = cdb.Exec(ctx, delquery, certid); err == nil {
+				if ct.RowsAffected() == 1 {
+					row = cdb.QueryRow(ctx, infoquery, certid)
+					var commonname string
+					var subject, issuer int
+					var notbefore time.Time
+					if err = row.Scan(&commonname, &subject, &issuer, &notbefore); err == nil {
+						row = cdb.QueryRow(ctx, cdb.funcFindSince, commonname, subject, issuer, notbefore)
+						var since time.Time
+						if err = row.Scan(&since); err == nil && !since.IsZero() {
+							if _, err = cdb.Exec(ctx, updatequery, since, commonname, subject, issuer, notbefore); err == nil {
+								certid = 0
+								continue
+							}
+						}
+					}
+					_, _ = cdb.Exec(context.Background(), putquery, certid)
+				}
+			}
+			cdb.LogError(err, "backfillSince", "cert", certid)
+		} else {
+			sleeptime = min(time.Minute, sleeptime*2)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.NewTimer(sleeptime).C:
+			}
+		}
+	}
+}
 
 func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 	type gap struct {
@@ -50,6 +105,8 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {
 	defer wg.Done()
+	wg.Add(1)
+	go cdb.backfillSince(ctx, wg)
 	row := cdb.QueryRow(ctx, cdb.stmtSelectMinIdx, ls.Id)
 	var nullableMinIndex sql.NullInt64
 	if err := cdb.LogError(row.Scan(&nullableMinIndex), "Backfill/MinIndex", "url", ls.URL); err == nil {
