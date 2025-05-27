@@ -41,7 +41,7 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
     sha256 BYTEA NOT NULL,
     precert BOOLEAN NOT NULL,
-    since TIMESTAMP NOT NULL
+    since TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx ON CERTDB_cert (commonname, subject, issuer, notbefore DESC);
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
