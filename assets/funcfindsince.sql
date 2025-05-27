@@ -10,6 +10,9 @@ AS $$
 DECLARE _temprow RECORD;
 DECLARE _since TIMESTAMP;
 BEGIN
+  IF _commonname='' THEN
+    RETURN _notbefore;
+  END IF;
   FOR _temprow IN
 	  (SELECT DISTINCT notbefore, notafter FROM CERTDB_cert
 	  WHERE commonname=_commonname AND subject=_subject AND issuer=_issuer AND notbefore <= _notbefore
