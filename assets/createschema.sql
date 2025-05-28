@@ -98,13 +98,6 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
-IF to_regclass('CERTDB_sincequeue') IS NULL THEN
-  CREATE TABLE IF NOT EXISTS CERTDB_sincequeue (
-    cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,
-    PRIMARY KEY (cert)
-  );
-END IF;
-
 CREATE OR REPLACE FUNCTION CERTDB_fqdn(
   _wild BOOLEAN,
   _www SMALLINT,
