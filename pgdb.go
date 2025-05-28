@@ -261,7 +261,6 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate
 		jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
 		jcert.NotBefore,
 	)
-	// id, subject, issuer, notbefore, since
 	var id int64
 	var subject, issuer int
 	var notbefore time.Time
@@ -269,17 +268,10 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate
 	if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
 		if p_since != nil {
 			since = *p_since
-		} else {
-			row = cdb.QueryRow(ctx, cdb.funcFindSince, jcert.CommonName, subject, issuer, notbefore)
-			if err = row.Scan(&since); err == nil && !since.IsZero() {
-				_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_cert SET since=$1 WHERE commonname=$2 AND subject=$3 AND issuer=$4 AND notbefore <= $5 AND notbefore >= $1;`),
-					since, jcert.CommonName, subject, issuer, notbefore)
-			}
 		}
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil
-		since = time.Time{}
 	}
 	return
 }
