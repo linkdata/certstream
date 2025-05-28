@@ -58,10 +58,12 @@ BEGIN
 		SELECT since, notbefore FROM CERTDB_cert INTO _since, _sincebefore
 			WHERE commonname=_commonname AND subject=_sub_id AND issuer=_iss_id AND notbefore < _notbefore AND notafter >= _notbefore
 			ORDER BY notbefore DESC LIMIT 1;
-		IF _sincebefore IS NULL THEN
-			_since = _notbefore;
-		ELSE
-			_since = _sincebefore;
+		IF _since IS NULL THEN
+			IF _sincebefore IS NULL THEN
+				_since = _notbefore;
+			ELSE
+				_since = _sincebefore;
+			END IF;
 		END IF;
 
 		INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
