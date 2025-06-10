@@ -268,6 +268,8 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate
 	if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
 		if p_since != nil {
 			since = *p_since
+		} else {
+			since = notbefore
 		}
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
