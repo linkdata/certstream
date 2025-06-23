@@ -81,8 +81,8 @@ func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) {
 
 func (cs *CertStream) Close() {
 	cs.mu.Lock()
-	cs.sendEntryCh = nil
 	close(cs.sendEntryCh)
+	cs.sendEntryCh = nil
 	cs.mu.Unlock()
 	if cs.DB != nil {
 		cs.DB.Close()
