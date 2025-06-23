@@ -176,7 +176,7 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int6
 		}
 		select {
 		case <-ctx.Done():
-		case ls.sendEntryCh <- le:
+		case ls.getSendEntryCh() <- le:
 			ls.Count.Add(1)
 			ls.LogOperator.Count.Add(1)
 		}

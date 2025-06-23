@@ -16,8 +16,8 @@ type CertStream struct {
 	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
 	TailClient  *http.Client     // may be nil if not backfilling
 	DB          *PgDB
+	mu          sync.Mutex // protects following
 	sendEntryCh chan *LogEntry
-	mu          sync.Mutex              // protects following
 	operators   map[string]*LogOperator // operators by operator domain, valid after Start()
 }
 
@@ -72,8 +72,18 @@ func (cs *CertStream) CountStreams() (n int) {
 	return
 }
 
+func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) {
+	cs.mu.Lock()
+	ch = cs.sendEntryCh
+	cs.mu.Unlock()
+	return
+}
+
 func (cs *CertStream) Close() {
+	cs.mu.Lock()
+	cs.sendEntryCh = nil
 	close(cs.sendEntryCh)
+	cs.mu.Unlock()
 	if cs.DB != nil {
 		cs.DB.Close()
 	}
@@ -128,8 +138,10 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 	}
 
 	if cs.DB, err = NewPgDB(ctx, cs); err == nil {
+		cs.mu.Lock()
 		cs.sendEntryCh = make(chan *LogEntry, 1024*8)
 		cs.C = cs.sendEntryCh
+		cs.mu.Unlock()
 		wg.Add(1)
 		go cs.run(ctx, wg)
 	}
