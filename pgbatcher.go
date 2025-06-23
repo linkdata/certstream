@@ -34,7 +34,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		select {
 		case <-ctx.Done():
 			return
-		case le := <-cdb.batchCh:
+		case le := <-cdb.getBatchCh():
 			batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
 			if len(batch.QueuedQueries) >= BatchSize {
 				if cdb.LogError(cdb.runBatch(ctx, batch), "worker@1") != nil {

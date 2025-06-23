@@ -110,19 +110,29 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 }
 
 func (cdb *PgDB) Close() {
+	cdb.mu.Lock()
 	close(cdb.batchCh)
+	cdb.batchCh = nil
+	cdb.mu.Unlock()
 	cdb.Pool.Close()
 }
 
 func (cdb *PgDB) QueueUsage() (pct int) {
-	pct = len(cdb.batchCh) * 100 / batcherQueueSize
+	pct = len(cdb.getBatchCh()) * 100 / batcherQueueSize
+	return
+}
+
+func (cdb *PgDB) getBatchCh() (ch chan *LogEntry) {
+	cdb.mu.Lock()
+	ch = cdb.batchCh
+	cdb.mu.Unlock()
 	return
 }
 
 func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 	select {
 	case <-ctx.Done():
-	case cdb.batchCh <- le:
+	case cdb.getBatchCh() <- le:
 	}
 }
 
