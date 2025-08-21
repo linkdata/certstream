@@ -97,7 +97,7 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		wg.Done()
 	}()
 
-	cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
+	_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
 
 	if cs.DB != nil {
 		wg.Add(2)
@@ -111,7 +111,7 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@2")
+			_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@2")
 		}
 	}
 }

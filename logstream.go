@@ -72,7 +72,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		if e, ok := err.(errLogIdle); ok {
 			ls.LogInfo("stream stopped", "url", ls.URL, "stream", ls.Id, "idle-since", e.Since)
 		} else {
-			ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
+			_ = ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
 		}
 		wg.Done()
 	}()

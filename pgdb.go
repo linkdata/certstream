@@ -358,7 +358,7 @@ func (cdb *PgDB) refreshEstimates(ctx context.Context) {
 	if batch := cdb.refreshEstimatesBatch(); batch != nil {
 		ctx, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
-		cdb.LogError(cdb.SendBatch(ctx, batch).Close(), "refreshEstimates")
+		_ = cdb.LogError(cdb.SendBatch(ctx, batch).Close(), "refreshEstimates")
 	}
 }
 
