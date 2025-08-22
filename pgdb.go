@@ -67,6 +67,9 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
 			cs.Config.PgUser, cs.Config.PgPass, cs.Config.PgAddr, cs.Config.PgName, cs.Config.PgConns)
+		if cs.Config.PgNoSSL {
+			dsn += "&sslmode=disable"
+		}
 		var poolcfg *pgxpool.Config
 		if poolcfg, err = pgxpool.ParseConfig(dsn); err == nil {
 			var pool *pgxpool.Pool

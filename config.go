@@ -17,6 +17,7 @@ type Config struct {
 	PgPrefix   string              // PostgreSQL naming prefix, default "certdb_"
 	PgConns    int                 // max number of database connections, default 100
 	PgMaxAge   int                 // maximum age in days to backfill
+	PgNoSSL    bool                // if true, do not use SSL
 }
 
 // NewConfig returns a new default Config
