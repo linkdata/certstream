@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         go:
-          - "1.23"
+          - "1.24"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
         run: go build -v ./...
 
       - name: Test
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -coverprofile=coverage.out .
 
       - name: Go report card
         uses: creekorful/goreportcard-action@v1.0
