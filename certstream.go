@@ -101,7 +101,6 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 
 	if cs.DB != nil {
 		wg.Add(2)
-		// go cs.DB.ensureDnsnameIndex(ctx, wg)
 		go cs.DB.runWorkers(ctx, wg)
 		go cs.DB.estimator(ctx, wg)
 	}
