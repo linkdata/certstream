@@ -22,10 +22,16 @@ func (le *LogEntry) String() (s string) {
 	var b []byte
 	b = append(b, "LogEntry{"...)
 	if le != nil {
-		b = strconv.AppendQuote(b, le.Operator.Name)
-		b = append(b, ", "...)
-		b = strconv.AppendQuote(b, le.Log.URL)
-		b = append(b, ", "...)
+		if le.LogStream != nil {
+			if le.Operator != nil {
+				b = strconv.AppendQuote(b, le.Operator.Name)
+				b = append(b, ", "...)
+			}
+			if le.Log != nil {
+				b = strconv.AppendQuote(b, le.Log.URL)
+				b = append(b, ", "...)
+			}
+		}
 		b = strconv.AppendInt(b, le.Index(), 10)
 		if le.Err != nil {
 			b = append(b, ", "...)

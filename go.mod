@@ -1,6 +1,6 @@
 module github.com/linkdata/certstream
 
-go 1.23
+go 1.24
 
 require (
 	github.com/google/certificate-transparency-go v1.2.2
