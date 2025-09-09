@@ -19,6 +19,7 @@ jobs:
       matrix:
         go:
           - "1.24"
+          - "stable"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,7 +28,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
 
@@ -43,14 +44,14 @@ jobs:
       - name: Go report card
         uses: creekorful/goreportcard-action@v1.0
 
-      - name: Coverage
+      - name: Calculate code coverage
         id: coverage
         run: |
           echo "COVERAGE=$(go tool cover -func=coverage.out | tail -n 1 | tr -s '\t' | cut -f 3)" >> $GITHUB_OUTPUT
-          go tool cover -html=coverage.out -o=coveragereport.out
+          go tool cover -html=coverage.out -o=coveragereport.html.out
 
-      - name: Publish coverage badge (and optional report)
-        uses: linkdata/gitcoverage@main
+      - name: Publish code coverage badge (and optional report)
+        uses: linkdata/gitcoverage@v1
         with:
           coverage: ${{ steps.coverage.outputs.coverage }}
-          report:   "coveragereport.out"
+          report:   "coveragereport.html.out"
