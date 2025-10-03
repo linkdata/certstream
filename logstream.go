@@ -171,14 +171,16 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int6
 	if cert := le.Cert(); cert != nil {
 		ls.seeIndex(logindex)
 		wanted = now.Before(cert.NotAfter) || now.Sub(cert.Seen) < time.Hour*24*time.Duration(ls.PgMaxAge)
-		if ls.DB != nil {
-			ls.DB.sendToBatcher(ctx, le)
-		}
-		select {
-		case <-ctx.Done():
-		case ls.getSendEntryCh() <- le:
-			ls.Count.Add(1)
-			ls.LogOperator.Count.Add(1)
+		if ctx.Err() == nil {
+			if ls.DB != nil {
+				ls.DB.sendToBatcher(ctx, le)
+			}
+			select {
+			case <-ctx.Done():
+			case ls.getSendEntryCh() <- le:
+				ls.Count.Add(1)
+				ls.LogOperator.Count.Add(1)
+			}
 		}
 	}
 	return
@@ -217,6 +219,9 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 		client = ls.TailClient
 	}
 	for start <= end {
+		if ctx.Err() != nil {
+			return
+		}
 		bo := &backoff.Backoff{
 			Min:    1 * time.Second,
 			Max:    30 * time.Second,
@@ -248,7 +253,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 				return
 			}
 		}
-		for historical && ctx.Err() == nil && ls.DB.QueueUsage() > 50 {
+		for historical && ctx.Err() == nil && ls.DB != nil && ls.DB.QueueUsage() > 50 {
 			time.Sleep(time.Millisecond * 100)
 		}
 	}

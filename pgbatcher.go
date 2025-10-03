@@ -31,16 +31,21 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 	batch := &pgx.Batch{}
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case le := <-cdb.getBatchCh():
-			batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
-			if len(batch.QueuedQueries) >= BatchSize {
-				if cdb.LogError(cdb.runBatch(ctx, batch), "worker@1") != nil {
-					return
+		case le, ok := <-cdb.getBatchCh():
+			if ok && le != nil {
+				batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
+				if len(batch.QueuedQueries) >= BatchSize {
+					if cdb.LogError(cdb.runBatch(ctx, batch), "worker@1") != nil {
+						return
+					}
+					batch = &pgx.Batch{}
 				}
-				batch = &pgx.Batch{}
 			}
 		default:
 			if len(batch.QueuedQueries) > 0 {

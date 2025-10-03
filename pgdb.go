@@ -133,9 +133,11 @@ func (cdb *PgDB) getBatchCh() (ch chan *LogEntry) {
 }
 
 func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
-	select {
-	case <-ctx.Done():
-	case cdb.getBatchCh() <- le:
+	if le != nil && ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+		case cdb.getBatchCh() <- le:
+		}
 	}
 }
 
