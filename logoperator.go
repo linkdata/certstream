@@ -22,7 +22,7 @@ type LogOperator struct {
 	mu       sync.Mutex   // protects following
 	streams  map[string]*LogStream
 	errcount int
-	errors   []StreamError
+	errors   []*StreamError
 }
 
 func (lo *LogOperator) StreamCount() (n int) {
@@ -39,7 +39,7 @@ func (lo *LogOperator) ErrorCount() (n int) {
 	return
 }
 
-func (lo *LogOperator) Errors() (errs []StreamError) {
+func (lo *LogOperator) Errors() (errs []*StreamError) {
 	lo.mu.Lock()
 	errs = append(errs, lo.errors...)
 	lo.mu.Unlock()
@@ -51,7 +51,7 @@ func (lo *LogOperator) addError(ls *LogStream, err error) {
 		now := time.Now()
 		lo.mu.Lock()
 		defer lo.mu.Unlock()
-		lo.errors = append(lo.errors, StreamError{LogStream: ls, When: now, Err: err})
+		lo.errors = append(lo.errors, &StreamError{LogStream: ls, When: now, Err: err})
 		if len(lo.errors) > MaxErrors {
 			lo.errors = slices.Delete(lo.errors, 0, len(lo.errors)-MaxErrors)
 		}
