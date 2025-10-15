@@ -172,14 +172,15 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int6
 		ls.seeIndex(logindex)
 		wanted = now.Before(cert.NotAfter) || now.Sub(cert.Seen) < time.Hour*24*time.Duration(ls.PgMaxAge)
 		if ctx.Err() == nil {
+			ls.Count.Add(1)
+			ls.LogOperator.Count.Add(1)
 			if ls.DB != nil {
 				ls.DB.sendToBatcher(ctx, le)
-			}
-			select {
-			case <-ctx.Done():
-			case ls.getSendEntryCh() <- le:
-				ls.Count.Add(1)
-				ls.LogOperator.Count.Add(1)
+			} else {
+				select {
+				case <-ctx.Done():
+				case ls.getSendEntryCh() <- le:
+				}
 			}
 		}
 	}
