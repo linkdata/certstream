@@ -269,26 +269,53 @@ func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry
 	return cdb.GetCertificateByID(ctx, entry.CertID)
 }
 
-func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate) (since time.Time, err error) {
-	row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
-		jcert.Subject.CommonName,
-		jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
-		jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
-		jcert.NotBefore,
-	)
-	var id int64
-	var subject, issuer int
-	var notbefore time.Time
-	var p_since *time.Time
-	if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
-		if p_since != nil {
-			since = *p_since
-		} else {
-			since = notbefore
+func RenderSQL(query string, args ...any) string {
+	for i, arg := range args {
+		var s string
+		switch v := arg.(type) {
+		case string:
+			s = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+		case time.Time:
+			s = fmt.Sprintf("'%s'", v.Format(time.RFC3339))
+		default:
+			s = fmt.Sprint(v)
 		}
+		query = strings.ReplaceAll(query, fmt.Sprintf("$%d", i+1), s)
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = nil
+	return query
+}
+
+func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate) (since time.Time, err error) {
+	if true || jcert.CommonName != "" {
+		ctx, cancel := context.WithTimeout(ctx, time.Second*5)
+		defer cancel()
+		row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
+			jcert.CommonName,
+			jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
+			jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
+			jcert.NotBefore,
+		)
+		var id int64
+		var subject, issuer int
+		var notbefore time.Time
+		var p_since *time.Time
+		if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
+			if p_since != nil {
+				since = *p_since
+			} else {
+				since = notbefore
+			}
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			cdb.LogError(err, "GetCertificateSince", "signature", jcert.Signature, "query", strings.ReplaceAll(RenderSQL(cdb.stmtSelectIDSince,
+				jcert.CommonName,
+				jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
+				jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
+				jcert.NotBefore), "\n", " "))
+		}
 	}
 	return
 }
