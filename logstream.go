@@ -237,7 +237,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 		}); err != nil {
 			if ls.handleStreamError(err, "GetRawEntries") {
 				if gapcounter != nil && ctx.Err() == nil {
-					ls.LogError(err, "gap not fillable", "url", ls.URL, "start", start, "end", end)
+					_ = ls.LogError(err, "gap not fillable", "url", ls.URL, "start", start, "end", end)
 					gapcounter.Add(start - (end + 1))
 				}
 				return

@@ -310,7 +310,7 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate
 			err = nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			cdb.LogError(err, "GetCertificateSince", "signature", jcert.Signature, "query", strings.ReplaceAll(RenderSQL(cdb.stmtSelectIDSince,
+			_ = cdb.LogError(err, "GetCertificateSince", "signature", jcert.Signature, "query", strings.ReplaceAll(RenderSQL(cdb.stmtSelectIDSince,
 				jcert.CommonName,
 				jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
 				jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
