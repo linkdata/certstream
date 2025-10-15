@@ -286,7 +286,7 @@ func RenderSQL(query string, args ...any) string {
 }
 
 func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate) (since time.Time, err error) {
-	if true || jcert.CommonName != "" {
+	if jcert.CommonName != "" {
 		ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 		defer cancel()
 		row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
