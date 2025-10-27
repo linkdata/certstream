@@ -2,29 +2,64 @@ package certstream
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const batcherQueueSize = 16 * 1024
 
-func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch, entries []*LogEntry) (err error) {
-	now := time.Now()
-	err = cdb.SendBatch(ctx, batch).Close()
-	elapsed := time.Since(now)
-	cdb.mu.Lock()
-	cdb.newentrycount += int64(len(batch.QueuedQueries))
-	cdb.newentrytime += elapsed
-	cdb.mu.Unlock()
-	for _, le := range entries {
-		select {
-		case <-ctx.Done():
-		case le.getSendEntryCh() <- le:
+func (cdb *PgDB) finishEntry(ctx context.Context, le *LogEntry) {
+	if le == nil {
+		return
+	}
+	ch := le.getSendEntryCh()
+	if ch == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case ch <- le:
+	}
+}
+
+func isDeadlockError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.SQLState() == "40P01"
+	}
+	return false
+}
+
+func (cdb *PgDB) runEntry(ctx context.Context, le *LogEntry) (err error) {
+	if le == nil {
+		return nil
+	}
+	defer cdb.finishEntry(ctx, le)
+
+	args := cdb.queueEntry(le)
+	if len(args) == 0 {
+		return nil
+	}
+
+	for attempts := 0; attempts < 2; attempts++ {
+		start := time.Now()
+		_, err = cdb.Exec(ctx, cdb.stmtNewEntry, args...)
+		elapsed := time.Since(start)
+		cdb.mu.Lock()
+		cdb.newentrycount++
+		cdb.newentrytime += elapsed
+		cdb.mu.Unlock()
+		if err == nil {
+			return nil
+		}
+		if !isDeadlockError(err) || attempts == 1 {
+			return err
 		}
 	}
-	return
+	return err
 }
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
@@ -34,8 +69,6 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 	}()
 
 	cdb.Workers.Add(1)
-	batch := &pgx.Batch{}
-	var queued []*LogEntry
 
 	for {
 		if ctx.Err() != nil {
@@ -45,33 +78,20 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		case <-ctx.Done():
 			return
 		case le, ok := <-cdb.getBatchCh():
-			if ok && le != nil {
-				batch.Queue(cdb.stmtNewEntry, cdb.queueEntry(le)...)
-				queued = append(queued, le)
-				if len(batch.QueuedQueries) >= BatchSize {
-					if cdb.LogError(cdb.runBatch(ctx, batch, queued), "worker@1") != nil {
-						return
-					}
-					queued = queued[:0]
-					batch = &pgx.Batch{}
-				}
+			if !ok {
+				return
+			}
+			if cdb.LogError(cdb.runEntry(ctx, le), "worker") != nil {
+				return
 			}
 		default:
-			if len(batch.QueuedQueries) > 0 {
-				if cdb.LogError(cdb.runBatch(ctx, batch, queued), "worker@2") != nil {
+			if idlecount > 0 {
+				idlecount--
+				if idlecount == 0 {
 					return
 				}
-				queued = queued[:0]
-				batch = &pgx.Batch{}
-			} else {
-				if idlecount > 0 {
-					idlecount--
-					if idlecount == 0 {
-						return
-					}
-				}
-				time.Sleep(time.Millisecond * 100)
 			}
+			time.Sleep(time.Millisecond * 100)
 		}
 	}
 }
