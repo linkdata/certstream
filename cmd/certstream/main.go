@@ -5,10 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/linkdata/bwlimit"
 	"github.com/linkdata/certstream"
@@ -32,6 +35,7 @@ var (
 	flagPgConns    = flag.Int("pgconns", 100, "max number of database connections")
 	flagPgBackfill = flag.Float64("pgbackfill", 1, "backfill rate limit in MB/sec, zero for no backfill")
 	flagMaxEntries = flag.Int("maxentries", 100, "stop after printing this many entries (zero for no limit)")
+	flagMaxRuntime = flag.Int("maxruntime", 0, "stop after this many seconds (zero for no limit)")
 )
 
 func main() {
@@ -60,9 +64,30 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	go func() {
+		slog.Error(http.ListenAndServe("localhost:6060", nil).Error()) // #nosec G114
+	}()
+	slog.Info("pprof listening on http://localhost:6060/debug/pprof/")
+
+	go func() {
+		<-ctx.Done()
+		slog.Info("stop requested")
+	}()
+
+	if *flagMaxRuntime > 0 {
+		go func() {
+			<-time.NewTimer(time.Second * time.Duration(*flagMaxRuntime)).C
+			slog.Info("max runtime reached")
+			stop()
+		}()
+	}
+
 	var wg sync.WaitGroup
 	cs, err := certstream.Start(ctx, &wg, cfg)
-	defer wg.Wait()
+	defer func() {
+		slog.Info("waiting for certstream to stop")
+		wg.Wait()
+	}()
 
 	if err != nil {
 		fmt.Println(err)

@@ -81,11 +81,15 @@ func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) {
 
 func (cs *CertStream) Close() {
 	cs.mu.Lock()
-	close(cs.sendEntryCh)
-	cs.sendEntryCh = nil
+	if cs.sendEntryCh != nil {
+		close(cs.sendEntryCh)
+		cs.sendEntryCh = nil
+	}
+	db := cs.DB
+	cs.DB = nil
 	cs.mu.Unlock()
-	if cs.DB != nil {
-		cs.DB.Close()
+	if db != nil {
+		db.Close()
 	}
 }
 
@@ -95,6 +99,7 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	defer func() {
 		ticker.Stop()
 		wg.Done()
+		cs.Close()
 	}()
 
 	_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
