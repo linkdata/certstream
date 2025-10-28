@@ -43,7 +43,9 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     sha256 BYTEA NOT NULL,
     precert BOOLEAN NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx ON CERTDB_cert (commonname, subject, issuer, notbefore DESC) INCLUDE (since, notafter);
+  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx 
+    ON CERTDB_cert (commonname, subject, issuer, notbefore DESC)
+    INCLUDE (since, notafter);
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
 END IF;
 
