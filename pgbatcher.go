@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const batcherQueueSize = 100
+const batcherQueueSize = 1000
 
 /*func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err error) {
 	args = cdb.insertCertArgs(le)
@@ -34,14 +34,15 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	}
 	b = append(b, `]`...)
 	now := time.Now()
-	if _, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b)); err != nil {
+	_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
+	elapsed := time.Since(now)
+	if err != nil {
 		if pe, ok := err.(*pgconn.PgError); ok {
 			if pe.SQLState() == "22P02" {
 				cdb.LogInfo("generated invalid JSON data", "json", string(b))
 			}
 		}
 	}
-	elapsed := time.Since(now)
 	cdb.mu.Lock()
 	cdb.newentrycount += int64(len(queued))
 	cdb.newentrytime += elapsed
