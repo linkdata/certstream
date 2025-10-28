@@ -8,19 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-/*func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err error) {
-	args = cdb.insertCertArgs(le)
-	start := time.Now()
-	err = cdb.QueryRow(ctx, cdb.stmtEnsureCert, args[:14]...).Scan(&args[14])
-	elapsed := time.Since(start)
-	args = args[14:]
-	cdb.mu.Lock()
-	cdb.newentrycount++
-	cdb.newentrytime += elapsed
-	cdb.mu.Unlock()
-	return
-}*/
-
 func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	var b []byte
 	b = append(b, `[`...)
@@ -95,36 +82,6 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 			}
 		}
 	}
-	/*
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case le, ok := <-cdb.getBatchCh():
-				if !ok {
-					return
-				}
-				if cdb.LogError(cdb.insertEntry(ctx, le), "worker") != nil {
-					return
-				}
-				select {
-				case <-ctx.Done():
-				case le.getSendEntryCh() <- le:
-				}
-			default:
-				if idlecount > 0 {
-					idlecount--
-					if idlecount == 0 {
-						return
-					}
-				}
-				time.Sleep(time.Millisecond * 100)
-			}
-		}
-	*/
 }
 
 func (cdb *PgDB) AverageNewEntryTime() (d time.Duration) {
@@ -185,59 +142,3 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 		}
 	}
 }
-
-/*func (cdb *PgDB) insertCertArgs(le *LogEntry) (args []any) {
-	if cert := le.Cert(); cert != nil {
-		logindex := le.Index()
-
-		var dnsnames []string
-		for _, dnsname := range cert.DNSNames {
-			dnsname = strings.ToLower(dnsname)
-			if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
-				dnsnames = append(dnsnames, uniname)
-			} else {
-				dnsnames = append(dnsnames, dnsname)
-			}
-		}
-
-		var ipaddrs []string
-		for _, ip := range cert.IPAddresses {
-			ipaddrs = append(ipaddrs, ip.String())
-		}
-
-		var emails []string
-		for _, email := range cert.EmailAddresses {
-			emails = append(emails, strings.ReplaceAll(email, " ", "_"))
-		}
-
-		var uris []string
-		for _, uri := range cert.URIs {
-			uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
-		}
-
-		args = []any{
-			strings.Join(cert.Issuer.Organization, ","),
-			strings.Join(cert.Issuer.Province, ","),
-			strings.Join(cert.Issuer.Country, ","),
-			strings.Join(cert.Subject.Organization, ","),
-			strings.Join(cert.Subject.Province, ","),
-			strings.Join(cert.Subject.Country, ","),
-			cert.NotBefore,
-			cert.NotAfter,
-			cert.GetCommonName(),
-			cert.Signature,
-			cert.PreCert,
-			cert.Seen,
-			le.LogStream.Id,
-			logindex,
-			int64(-123), // cert ID placeholder
-			strings.Join(dnsnames, " "),
-			strings.Join(ipaddrs, " "),
-			strings.Join(emails, " "),
-			strings.Join(uris, " "),
-		}
-	} else {
-
-	}
-	return
-}*/

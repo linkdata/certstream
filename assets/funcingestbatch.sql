@@ -3,8 +3,11 @@ RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  -- Lower commit latency for high-throughput ingest (acceptable risk window)
+  -- Enable asynchronous commit for high-throughput ingest
   PERFORM set_config('synchronous_commit','off', true);
+  
+  -- Optionally increase work_mem for this session if dealing with large batches
+  -- PERFORM set_config('work_mem', '256MB', true);
 
   -- 1) Stage payload into a TEMP table (drops at commit)
   CREATE TEMP TABLE tmp_ingest ON COMMIT DROP AS
@@ -29,122 +32,173 @@ BEGIN
     coalesce(x->>'uris','')     AS uris
   FROM jsonb_array_elements(_rows) AS x;
 
-  -- 2) Ensure idents (issuer & subject), set-wise
-  WITH d AS (
+  -- Add indexes to speed up subsequent operations
+  CREATE INDEX tmp_ingest_iss_idx ON tmp_ingest(iss_org, iss_prov, iss_country);
+  CREATE INDEX tmp_ingest_sub_idx ON tmp_ingest(sub_org, sub_prov, sub_country);
+  CREATE INDEX tmp_ingest_sha256_idx ON tmp_ingest(sha256);
+
+  -- 2) Ensure all identities exist (combined issuer and subject in single operation)
+  WITH all_idents AS (
     SELECT DISTINCT iss_org AS organization, iss_prov AS province, iss_country AS country
     FROM tmp_ingest
-  )
-  INSERT INTO CERTDB_ident(organization, province, country)
-  SELECT organization, province, country FROM d
-  ORDER BY organization, province, country
-  ON CONFLICT (organization, province, country) DO NOTHING;
-
-  WITH d AS (
+    UNION
     SELECT DISTINCT sub_org AS organization, sub_prov AS province, sub_country AS country
     FROM tmp_ingest
   )
   INSERT INTO CERTDB_ident(organization, province, country)
-  SELECT organization, province, country FROM d
+  SELECT organization, province, country 
+  FROM all_idents
   ORDER BY organization, province, country
   ON CONFLICT (organization, province, country) DO NOTHING;
 
-  -- Map to ident IDs
-  ALTER TABLE tmp_ingest ADD COLUMN iss_id integer, ADD COLUMN sub_id integer;
-  UPDATE tmp_ingest t
-    SET iss_id = i.id
-  FROM CERTDB_ident i
-  WHERE i.organization=t.iss_org AND i.province=t.iss_prov AND i.country=t.iss_country;
-
-  UPDATE tmp_ingest t
-    SET sub_id = i.id
-  FROM CERTDB_ident i
-  WHERE i.organization=t.sub_org AND i.province=t.sub_prov AND i.country=t.sub_country;
-
-  -- 3) Compute 'since' with overlap rule via index-only LATERAL seek
-  CREATE TEMP TABLE tmp_certs ON COMMIT DROP AS
+  -- 3) Create temp table with mapped IDs and computed 'since' in one pass
+  CREATE TEMP TABLE tmp_certs_with_ids ON COMMIT DROP AS
+  WITH mapped_data AS (
+    SELECT 
+      t.sha256,
+      t.notbefore,
+      t.notafter,
+      t.commonname,
+      t.precert,
+      t.seen,
+      t.stream,
+      t.logindex,
+      t.dnsnames,
+      t.ipaddrs,
+      t.emails,
+      t.uris,
+      iss.id AS iss_id,
+      sub.id AS sub_id
+    FROM tmp_ingest t
+    JOIN CERTDB_ident iss ON (
+      iss.organization = t.iss_org 
+      AND iss.province = t.iss_prov 
+      AND iss.country = t.iss_country
+    )
+    JOIN CERTDB_ident sub ON (
+      sub.organization = t.sub_org 
+      AND sub.province = t.sub_prov 
+      AND sub.country = t.sub_country
+    )
+  )
   SELECT
-    t.notbefore,
-    t.notafter,
-    COALESCE(w.since, t.notbefore) AS since,  -- fallback if no overlap
-    t.commonname,
-    t.sub_id   AS subject,
-    t.iss_id   AS issuer,
-    t.sha256,
-    t.precert
-  FROM tmp_ingest t
+    m.sha256,
+    m.notbefore,
+    m.notafter,
+    COALESCE(overlap.since, m.notbefore) AS since,
+    m.commonname,
+    m.sub_id AS subject,
+    m.iss_id AS issuer,
+    m.precert,
+    m.seen,
+    m.stream,
+    m.logindex,
+    m.dnsnames,
+    m.ipaddrs,
+    m.emails,
+    m.uris
+  FROM mapped_data m
   LEFT JOIN LATERAL (
     SELECT c.since
     FROM CERTDB_cert c
-    WHERE c.subject = t.sub_id
-      AND c.issuer = t.iss_id
-      AND c.commonname = t.commonname
-      AND c.notbefore <  t.notbefore
-      AND c.notafter  >= t.notbefore
+    WHERE c.subject = m.sub_id
+      AND c.issuer = m.iss_id
+      AND c.commonname = m.commonname
+      AND c.notbefore < m.notbefore
+      AND c.notafter >= m.notbefore
     ORDER BY c.notbefore DESC
     LIMIT 1
-  ) w ON TRUE;
+  ) overlap ON TRUE;
 
-  -- 4) Insert certs (unique on sha256)
-  INSERT INTO CERTDB_cert(notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
-  SELECT notbefore, notafter, since, commonname, subject, issuer, sha256, precert
-  FROM tmp_certs
-  ORDER BY sha256
-  ON CONFLICT (sha256) DO NOTHING;
+  -- Add index for sha256 lookups
+  CREATE INDEX tmp_certs_sha256_idx ON tmp_certs_with_ids(sha256);
 
-  -- 5) Fetch cert IDs back to staging
-  ALTER TABLE tmp_ingest ADD COLUMN cert_id bigint;
-  UPDATE tmp_ingest t
-  SET cert_id = c.id
+  -- 4) Insert certificates and capture the mapping in one operation
+  CREATE TEMP TABLE cert_mapping ON COMMIT DROP AS
+  WITH new_certs AS (
+    INSERT INTO CERTDB_cert(notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+    SELECT notbefore, notafter, since, commonname, subject, issuer, sha256, precert
+    FROM tmp_certs_with_ids
+    ORDER BY sha256
+    ON CONFLICT (sha256) DO NOTHING
+    RETURNING id, sha256
+  )
+  -- Get both newly inserted and existing cert IDs
+  SELECT id AS cert_id, sha256 FROM new_certs
+  UNION ALL
+  SELECT c.id AS cert_id, c.sha256 
   FROM CERTDB_cert c
-  WHERE c.sha256 = t.sha256;
+  INNER JOIN tmp_certs_with_ids t ON c.sha256 = t.sha256
+  WHERE NOT EXISTS (
+    SELECT 1 FROM new_certs nc WHERE nc.sha256 = c.sha256
+  );
 
-  -- 6) Entries (idempotent)
+  -- Add index for efficient joins
+  CREATE INDEX cert_mapping_sha256_idx ON cert_mapping(sha256);
+
+  -- 5) Insert entries using the cert mapping
   INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
-  SELECT seen, logindex, cert_id, stream
-  FROM tmp_ingest
-  WHERE cert_id IS NOT NULL
-  ORDER BY stream, logindex
+  SELECT t.seen, t.logindex, cm.cert_id, t.stream
+  FROM tmp_certs_with_ids t
+  INNER JOIN cert_mapping cm ON cm.sha256 = t.sha256
+  ORDER BY t.stream, t.logindex
   ON CONFLICT (stream, logindex) DO NOTHING;
 
-  -- 7) Attach metadata (set-wise, idempotent for uri/email/ip; duplicates allowed for domain)
-
-  -- URIs
+  -- 6) Process URIs efficiently
   INSERT INTO CERTDB_uri (cert, uri)
-  SELECT t.cert_id, unnest(string_to_array(t.uris,' '))
-  FROM tmp_ingest t
-  WHERE t.uris <> '' AND t.cert_id IS NOT NULL
-  ORDER BY t.cert_id, 2
+  SELECT DISTINCT cm.cert_id, trim(unnest(string_to_array(t.uris, ' ')))
+  FROM tmp_certs_with_ids t
+  INNER JOIN cert_mapping cm ON cm.sha256 = t.sha256
+  WHERE t.uris <> ''
+  ORDER BY 1, 2
   ON CONFLICT (cert, uri) DO NOTHING;
 
-  -- Emails
+  -- 7) Process Emails efficiently
   INSERT INTO CERTDB_email (cert, email)
-  SELECT t.cert_id, unnest(string_to_array(t.emails,' '))
-  FROM tmp_ingest t
-  WHERE t.emails <> '' AND t.cert_id IS NOT NULL
-  ORDER BY t.cert_id, 2
+  SELECT DISTINCT cm.cert_id, trim(unnest(string_to_array(t.emails, ' ')))
+  FROM tmp_certs_with_ids t
+  INNER JOIN cert_mapping cm ON cm.sha256 = t.sha256
+  WHERE t.emails <> ''
+  ORDER BY 1, 2
   ON CONFLICT (cert, email) DO NOTHING;
 
-  -- IPs
+  -- 8) Process IP addresses efficiently
   INSERT INTO CERTDB_ipaddress (cert, addr)
-  SELECT x.cert_id, inet(x.addr_txt)
-  FROM (
-    SELECT cert_id, unnest(string_to_array(ipaddrs,' ')) AS addr_txt
-    FROM tmp_ingest
-    WHERE ipaddrs <> '' AND cert_id IS NOT NULL
-  ) x
-  ORDER BY x.cert_id, x.addr_txt
+  WITH ip_data AS (
+    SELECT DISTINCT 
+      cm.cert_id, 
+      trim(unnest(string_to_array(t.ipaddrs, ' '))) AS addr_txt
+    FROM tmp_certs_with_ids t
+    INNER JOIN cert_mapping cm ON cm.sha256 = t.sha256
+    WHERE t.ipaddrs <> ''
+  )
+  SELECT cert_id, inet(addr_txt)
+  FROM ip_data
+  WHERE addr_txt <> ''  -- Filter out empty strings
+  ORDER BY cert_id, addr_txt
   ON CONFLICT (cert, addr) DO NOTHING;
 
-  -- Domains (allow duplicates; DISTINCT trims trivial repeats within the batch)
+  -- 9) Process domains with optimized string operations
   INSERT INTO CERTDB_domain (cert, wild, www, domain, tld)
-  SELECT t.cert_id, (d.s).wild, (d.s).www, (d.s).domain, (d.s).tld
-  FROM (
-    SELECT DISTINCT cert_id, CERTDB_split_domain(fqdn) AS s
-    FROM tmp_ingest
-    CROSS JOIN LATERAL unnest(string_to_array(dnsnames,' ')) AS fqdn
-    WHERE dnsnames <> '' AND cert_id IS NOT NULL
-  ) d
-  JOIN tmp_ingest t ON t.cert_id = d.cert_id
-  WHERE (d.s).domain <> '' AND (d.s).tld <> '';
+  WITH expanded_domains AS (
+    SELECT 
+      cm.cert_id,
+      trim(unnest(string_to_array(t.dnsnames, ' '))) AS fqdn
+    FROM tmp_certs_with_ids t
+    INNER JOIN cert_mapping cm ON cm.sha256 = t.sha256
+    WHERE t.dnsnames <> ''
+  ),
+  parsed_domains AS (
+    SELECT DISTINCT 
+      cert_id,
+      (CERTDB_split_domain(fqdn)).*
+    FROM expanded_domains
+    WHERE fqdn <> ''  -- Filter out empty strings
+  )
+  SELECT cert_id, wild, www, domain, tld
+  FROM parsed_domains
+  WHERE domain <> '' AND tld <> ''
+  ORDER BY cert_id;
+
 END;
 $$;

@@ -119,8 +119,10 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 
 func (cdb *PgDB) Close() {
 	cdb.mu.Lock()
-	close(cdb.batchCh)
-	cdb.batchCh = nil
+	if cdb.batchCh != nil {
+		close(cdb.batchCh)
+		cdb.batchCh = nil
+	}
 	cdb.mu.Unlock()
 	cdb.Pool.Close()
 }
