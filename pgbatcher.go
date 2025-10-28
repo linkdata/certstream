@@ -85,6 +85,8 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		if isIdle {
 			if idlecount > 0 {
 				idlecount--
+			}
+			if idlecount != 0 {
 				time.Sleep(time.Millisecond * 100)
 			}
 		}
