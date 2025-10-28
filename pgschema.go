@@ -14,8 +14,11 @@ var FunctionStreamID string
 //go:embed assets/funcfindsince.sql
 var FunctionFindSince string
 
-//go:embed assets/procaddnewentry.sql
-var ProcAddNewEntry string
+//go:embed assets/funcensurecert.sql
+var FuncEnsureCert string
+
+//go:embed assets/funcattachmetadata.sql
+var FuncAttachMetadata string
 
 //go:embed assets/selectgaps.sql
 var SelectGaps string

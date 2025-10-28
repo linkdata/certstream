@@ -43,7 +43,7 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     sha256 BYTEA NOT NULL,
     precert BOOLEAN NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx ON CERTDB_cert (commonname, subject, issuer, notbefore DESC);
+  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx ON CERTDB_cert (commonname, subject, issuer, notbefore DESC) INCLUDE (since, notafter);
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
 END IF;
 
@@ -67,8 +67,8 @@ IF to_regclass('CERTDB_domain') IS NULL THEN
     domain TEXT NOT NULL,
     tld TEXT NOT NULL
   );
-  CREATE INDEX CERTDB_domain_cert_idx ON CERTDB_domain (cert);
-  CREATE INDEX CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops);
+  CREATE INDEX IF NOT EXISTS CERTDB_domain_cert_idx ON CERTDB_domain (cert);
+  CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops) WITH (fastupdate = off);
 END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN

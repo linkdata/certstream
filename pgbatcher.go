@@ -2,64 +2,32 @@ package certstream
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const batcherQueueSize = 16 * 1024
 
-func (cdb *PgDB) finishEntry(ctx context.Context, le *LogEntry) {
-	if le == nil {
-		return
-	}
-	ch := le.getSendEntryCh()
-	if ch == nil {
-		return
-	}
-	select {
-	case <-ctx.Done():
-	case ch <- le:
-	}
-}
-
-func isDeadlockError(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.SQLState() == "40P01"
-	}
-	return false
-}
-
-func (cdb *PgDB) runEntry(ctx context.Context, le *LogEntry) (err error) {
-	if le == nil {
-		return nil
-	}
-	defer cdb.finishEntry(ctx, le)
-
-	args := cdb.queueEntry(le)
-	if len(args) == 0 {
-		return nil
-	}
-
-	for attempts := 0; attempts < 2; attempts++ {
+func (cdb *PgDB) insertEntry(ctx context.Context, le *LogEntry) (err error) {
+	var conn *pgxpool.Conn
+	if conn, err = cdb.Acquire(ctx); err == nil {
+		defer conn.Release()
+		args := cdb.entryArguments(le)
 		start := time.Now()
-		_, err = cdb.Exec(ctx, cdb.stmtNewEntry, args...)
+		var certid int64
+		if err = conn.QueryRow(ctx, cdb.stmtEnsureCert, args[:14]...).Scan(&certid); err == nil {
+			args[14] = certid
+			_, err = conn.Exec(ctx, cdb.stmtAttachMetadata, args[14:]...)
+		}
 		elapsed := time.Since(start)
 		cdb.mu.Lock()
 		cdb.newentrycount++
 		cdb.newentrytime += elapsed
 		cdb.mu.Unlock()
-		if err == nil {
-			return nil
-		}
-		if !isDeadlockError(err) || attempts == 1 {
-			return err
-		}
 	}
-	return err
+	return
 }
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
@@ -81,8 +49,12 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 			if !ok {
 				return
 			}
-			if cdb.LogError(cdb.runEntry(ctx, le), "worker") != nil {
+			if cdb.LogError(cdb.insertEntry(ctx, le), "worker") != nil {
 				return
+			}
+			select {
+			case <-ctx.Done():
+			case le.getSendEntryCh() <- le:
 			}
 		default:
 			if idlecount > 0 {

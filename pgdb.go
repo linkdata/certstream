@@ -30,7 +30,8 @@ type PgDB struct {
 	funcStreamID          string
 	funcEnsureIdent       string
 	funcFindSince         string
-	stmtNewEntry          string
+	stmtEnsureCert        string
+	stmtAttachMetadata    string
 	stmtSelectGaps        string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
@@ -49,7 +50,9 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 		if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
 			if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
 				if _, err = db.Exec(ctx, pfx(FunctionFindSince)); err == nil {
-					_, err = db.Exec(ctx, pfx(ProcAddNewEntry))
+					if _, err = db.Exec(ctx, pfx(FuncEnsureCert)); err == nil {
+						_, err = db.Exec(ctx, pfx(FuncAttachMetadata))
+					}
 				}
 			}
 		}
@@ -62,7 +65,8 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
 	const callFindSince = `SELECT CERTDB_find_since($1,$2,$3,$4);`
-	const callNewEntry = `CALL CERTDB_add_new_entry($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18);`
+	const callEnsureCert = `SELECT CERTDB_ensure_cert($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14);`
+	const callAttachMetadata = `SELECT CERTDB_attach_metadata($1,$2,$3,$4,$5);`
 
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
@@ -72,6 +76,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 		}
 		var poolcfg *pgxpool.Config
 		if poolcfg, err = pgxpool.ParseConfig(dsn); err == nil {
+			poolcfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 			var pool *pgxpool.Pool
 			if pool, err = pgxpool.NewWithConfig(ctx, poolcfg); err == nil {
 				if err = pool.Ping(ctx); err == nil {
@@ -90,7 +95,8 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcStreamID:          pfx(callStreamID),
 							funcEnsureIdent:       pfx(`SELECT CERTDB_ensure_ident($1,$2,$3);`),
 							funcFindSince:         pfx(callFindSince),
-							stmtNewEntry:          pfx(callNewEntry),
+							stmtEnsureCert:        pfx(callEnsureCert),
+							stmtAttachMetadata:    pfx(callAttachMetadata),
 							stmtSelectGaps:        pfx(SelectGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
@@ -160,54 +166,57 @@ func (cdb *PgDB) ensureStream(ctx context.Context, ls *LogStream) (err error) {
 	return
 }
 
-func (cdb *PgDB) queueEntry(le *LogEntry) (args []any) {
-	if cert := le.Cert(); cert != nil {
-		logindex := le.Index()
+func (cdb *PgDB) entryArguments(le *LogEntry) (args []any) {
+	if le != nil {
+		if cert := le.Cert(); cert != nil {
+			logindex := le.Index()
 
-		var dnsnames []string
-		for _, dnsname := range cert.DNSNames {
-			dnsname = strings.ToLower(dnsname)
-			if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
-				dnsnames = append(dnsnames, uniname)
-			} else {
-				dnsnames = append(dnsnames, dnsname)
+			var dnsnames []string
+			for _, dnsname := range cert.DNSNames {
+				dnsname = strings.ToLower(dnsname)
+				if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
+					dnsnames = append(dnsnames, uniname)
+				} else {
+					dnsnames = append(dnsnames, dnsname)
+				}
 			}
-		}
 
-		var ipaddrs []string
-		for _, ip := range cert.IPAddresses {
-			ipaddrs = append(ipaddrs, ip.String())
-		}
+			var ipaddrs []string
+			for _, ip := range cert.IPAddresses {
+				ipaddrs = append(ipaddrs, ip.String())
+			}
 
-		var emails []string
-		for _, email := range cert.EmailAddresses {
-			emails = append(emails, strings.ReplaceAll(email, " ", "_"))
-		}
+			var emails []string
+			for _, email := range cert.EmailAddresses {
+				emails = append(emails, strings.ReplaceAll(email, " ", "_"))
+			}
 
-		var uris []string
-		for _, uri := range cert.URIs {
-			uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
-		}
+			var uris []string
+			for _, uri := range cert.URIs {
+				uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
+			}
 
-		args = []any{
-			cert.Seen,
-			le.LogStream.Id,
-			logindex,
-			cert.PreCert,
-			cert.Signature,
-			strings.Join(cert.Issuer.Organization, ","),
-			strings.Join(cert.Issuer.Province, ","),
-			strings.Join(cert.Issuer.Country, ","),
-			strings.Join(cert.Subject.Organization, ","),
-			strings.Join(cert.Subject.Province, ","),
-			strings.Join(cert.Subject.Country, ","),
-			cert.NotBefore,
-			cert.NotAfter,
-			cert.GetCommonName(),
-			strings.Join(dnsnames, " "),
-			strings.Join(ipaddrs, " "),
-			strings.Join(emails, " "),
-			strings.Join(uris, " "),
+			args = []any{
+				strings.Join(cert.Issuer.Organization, ","),
+				strings.Join(cert.Issuer.Province, ","),
+				strings.Join(cert.Issuer.Country, ","),
+				strings.Join(cert.Subject.Organization, ","),
+				strings.Join(cert.Subject.Province, ","),
+				strings.Join(cert.Subject.Country, ","),
+				cert.NotBefore,
+				cert.NotAfter,
+				cert.GetCommonName(),
+				cert.Signature,
+				cert.PreCert,
+				cert.Seen,
+				le.LogStream.Id,
+				logindex,
+				int64(-123), // cert ID placeholder
+				strings.Join(dnsnames, " "),
+				strings.Join(ipaddrs, " "),
+				strings.Join(emails, " "),
+				strings.Join(uris, " "),
+			}
 		}
 	}
 	return
