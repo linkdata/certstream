@@ -126,7 +126,9 @@ func (cdb *PgDB) Close() {
 }
 
 func (cdb *PgDB) QueueUsage() (pct int) {
-	pct = len(cdb.getBatchCh()) * 100 / batcherQueueSize
+	if ch := cdb.getBatchCh(); ch != nil {
+		pct = len(ch) * 100 / cap(ch)
+	}
 	return
 }
 
