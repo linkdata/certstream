@@ -4,9 +4,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   -- Lower commit latency for high-throughput ingest (acceptable risk window)
-  PERFORM set_config('synchronous_commit','off', true);
-  -- If you keep any GIN elsewhere, this smooths pending-list merges
-  PERFORM set_config('gin_pending_list_limit','64MB', true);
+  -- PERFORM set_config('synchronous_commit','off', true);
 
   -- 1) Stage payload into a TEMP table (drops at commit)
   CREATE TEMP TABLE tmp_ingest ON COMMIT DROP AS
@@ -30,10 +28,6 @@ BEGIN
     coalesce(x->>'emails','')   AS emails,
     coalesce(x->>'uris','')     AS uris
   FROM jsonb_array_elements(_rows) AS x;
-
-  -- keep only sane rows
-  DELETE FROM tmp_ingest
-  WHERE sha256 IS NULL OR notbefore IS NULL OR notafter IS NULL;
 
   -- 2) Ensure idents (issuer & subject), set-wise
   WITH d AS (
@@ -129,7 +123,6 @@ BEGIN
   WHERE t.emails <> '' AND t.cert_id IS NOT NULL
   ORDER BY t.cert_id, 2
   ON CONFLICT (cert, email) DO NOTHING;
-
 
   -- IPs
   INSERT INTO CERTDB_ipaddress (cert, addr)
