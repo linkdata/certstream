@@ -64,8 +64,12 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		select {
 		case <-ctx.Done():
 			idlecount = 0
-		case le := <-cdb.batchCh:
-			queued = append(queued, le)
+		case le, ok := <-cdb.getBatchCh():
+			if ok {
+				queued = append(queued, le)
+			} else {
+				idlecount = 0
+			}
 		default:
 			isIdle = true
 		}

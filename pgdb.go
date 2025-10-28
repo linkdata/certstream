@@ -101,7 +101,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
 							stmtSelectIDSince:     pfx(SelectIDSince),
-							batchCh:               make(chan *LogEntry, batcherQueueSize),
+							batchCh:               make(chan *LogEntry, 4*1024),
 							estimates: map[string]float64{
 								"cert":   0,
 								"domain": 0,
