@@ -52,8 +52,10 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 
 func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
 	cdb.Workers.Add(1)
+	cdb.LogInfo("worker start", "count", cdb.Workers.Load(), "queue%", cdb.QueueUsage())
 	defer func() {
 		cdb.Workers.Add(-1)
+		cdb.LogInfo("worker stop", "count", cdb.Workers.Load(), "queue%", cdb.QueueUsage())
 		wg.Done()
 	}()
 	var queued []*LogEntry
