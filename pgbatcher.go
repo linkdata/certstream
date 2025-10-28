@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -46,13 +47,13 @@ func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err 
 }
 
 func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
-	now := time.Now()
+	// now := time.Now()
 	err = cdb.SendBatch(ctx, batch).Close()
-	elapsed := time.Since(now)
-	cdb.mu.Lock()
+	// elapsed := time.Since(now)
+	/*cdb.mu.Lock()
 	cdb.newentrycount += int64(len(batch.QueuedQueries))
 	cdb.newentrytime += elapsed
-	cdb.mu.Unlock()
+	cdb.mu.Unlock()*/
 	return
 }
 
@@ -62,8 +63,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		cdb.Workers.Add(-1)
 		wg.Done()
 	}()
-
-	batch := &pgx.Batch{}
+	var metabatch [][]any
 	for idlecount != 0 {
 		select {
 		case <-ctx.Done():
@@ -71,7 +71,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		case le, ok := <-cdb.batchCh:
 			if ok {
 				if args, err := cdb.insertCert(ctx, le); err == nil {
-					batch.Queue(cdb.stmtAttachMetadata, args...)
+					metabatch = append(metabatch, args)
 					select {
 					case <-ctx.Done():
 						idlecount = 0
@@ -91,11 +91,24 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 				time.Sleep(time.Millisecond * 100)
 			}
 		}
-		if l := len(batch.QueuedQueries); l > 0 && (l >= BatchSize || idlecount == 0) {
+		if l := len(metabatch); l > 0 && (l >= BatchSize || idlecount == 0) {
+			slices.SortFunc(metabatch, func(a, b []any) int {
+				diff := a[0].(int64) - b[0].(int64)
+				if diff < 0 {
+					return -1
+				}
+				if diff > 0 {
+					return 1
+				}
+				return 0
+			})
+			batch := &pgx.Batch{}
+			for _, args := range metabatch {
+				batch.Queue(cdb.stmtAttachMetadata, args...)
+			}
 			if cdb.LogError(cdb.runBatch(ctx, batch), "runBatch") != nil {
 				idlecount = 0
 			}
-			batch = &pgx.Batch{}
 		}
 	}
 	/*
