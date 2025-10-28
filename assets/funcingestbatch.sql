@@ -4,7 +4,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   -- Lower commit latency for high-throughput ingest (acceptable risk window)
-  -- PERFORM set_config('synchronous_commit','off', true);
+  PERFORM set_config('synchronous_commit','off', true);
 
   -- 1) Stage payload into a TEMP table (drops at commit)
   CREATE TEMP TABLE tmp_ingest ON COMMIT DROP AS

@@ -171,11 +171,13 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 			cdb.mu.Unlock()
 
 			if cdb.QueueUsage() > 30 {
-				loaded++
-				if loaded > 10 {
-					loaded /= 2
-					wg.Add(1)
-					go cdb.worker(ctx, wg, 10)
+				if cdb.Workers.Load() < 40 {
+					loaded++
+					if loaded > 10 {
+						loaded /= 2
+						wg.Add(1)
+						go cdb.worker(ctx, wg, 10)
+					}
 				}
 			} else {
 				loaded = 0
