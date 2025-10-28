@@ -14,6 +14,9 @@ var FunctionStreamID string
 //go:embed assets/funcfindsince.sql
 var FunctionFindSince string
 
+//go:embed assets/funcingestbatch.sql
+var FuncIngestBatch string
+
 //go:embed assets/funcensurecert.sql
 var FuncEnsureCert string
 

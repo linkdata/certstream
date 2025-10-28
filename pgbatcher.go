@@ -2,38 +2,15 @@ package certstream
 
 import (
 	"context"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"golang.org/x/net/idna"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const batcherQueueSize = 16 * 1024
+const batcherQueueSize = 1
 
-/*func (cdb *PgDB) insertEntry(ctx context.Context, le *LogEntry) (err error) {
-	var conn *pgxpool.Conn
-	if conn, err = cdb.Acquire(ctx); err == nil {
-		defer conn.Release()
-		args := cdb.insertCertArgs(le)
-		start := time.Now()
-		var certid int64
-		if err = conn.QueryRow(ctx, cdb.stmtEnsureCert, args[:14]...).Scan(&certid); err == nil {
-			args[14] = certid
-			_, err = conn.Exec(ctx, cdb.stmtAttachMetadata, args[14:]...)
-		}
-		elapsed := time.Since(start)
-		cdb.mu.Lock()
-		cdb.newentrycount++
-		cdb.newentrytime += elapsed
-		cdb.mu.Unlock()
-	}
-	return
-}*/
-
-func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err error) {
+/*func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err error) {
 	args = cdb.insertCertArgs(le)
 	start := time.Now()
 	err = cdb.QueryRow(ctx, cdb.stmtEnsureCert, args[:14]...).Scan(&args[14])
@@ -44,16 +21,31 @@ func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err 
 	cdb.newentrytime += elapsed
 	cdb.mu.Unlock()
 	return
-}
+}*/
 
-func (cdb *PgDB) runBatch(ctx context.Context, batch *pgx.Batch) (err error) {
-	// now := time.Now()
-	err = cdb.SendBatch(ctx, batch).Close()
-	// elapsed := time.Since(now)
-	/*cdb.mu.Lock()
-	cdb.newentrycount += int64(len(batch.QueuedQueries))
+func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
+	var b []byte
+	b = append(b, `[`...)
+	for i, le := range queued {
+		if i > 0 {
+			b = append(b, `,`...)
+		}
+		b = le.appendJSON(b)
+	}
+	b = append(b, `]`...)
+	now := time.Now()
+	if _, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b)); err != nil {
+		if pe, ok := err.(*pgconn.PgError); ok {
+			if pe.SQLState() == "22P02" {
+				cdb.LogInfo("generated invalid JSON data", "json", string(b))
+			}
+		}
+	}
+	elapsed := time.Since(now)
+	cdb.mu.Lock()
+	cdb.newentrycount += int64(len(queued))
 	cdb.newentrytime += elapsed
-	cdb.mu.Unlock()*/
+	cdb.mu.Unlock()
 	return
 }
 
@@ -63,51 +55,36 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		cdb.Workers.Add(-1)
 		wg.Done()
 	}()
-	var metabatch [][]any
+	var queued []*LogEntry
 	for idlecount != 0 {
+		var isIdle bool
 		select {
 		case <-ctx.Done():
 			idlecount = 0
-		case le, ok := <-cdb.batchCh:
-			if ok {
-				if args, err := cdb.insertCert(ctx, le); err == nil {
-					metabatch = append(metabatch, args)
+		case le := <-cdb.batchCh:
+			queued = append(queued, le)
+		default:
+			isIdle = true
+		}
+		if l := len(queued); l > 0 && (l >= BatchSize || isIdle || idlecount == 0) {
+			if cdb.LogError(cdb.runBatch(ctx, queued), "runBatch") != nil {
+				idlecount = 0
+			} else {
+				for _, le := range queued {
 					select {
 					case <-ctx.Done():
 						idlecount = 0
-					case le.getSendEntryCh() <- le:
+					case cdb.getSendEntryCh() <- le:
 					}
-				} else {
-					_ = cdb.LogError(err, "insertCert")
-					ok = false
 				}
 			}
-			if !ok {
-				idlecount = 0
-			}
-		default:
+			clear(queued)
+			queued = queued[:0]
+		}
+		if isIdle {
 			if idlecount > 0 {
 				idlecount--
 				time.Sleep(time.Millisecond * 100)
-			}
-		}
-		if l := len(metabatch); l > 0 && (l >= BatchSize || idlecount == 0) {
-			slices.SortFunc(metabatch, func(a, b []any) int {
-				diff := a[0].(int64) - b[0].(int64)
-				if diff < 0 {
-					return -1
-				}
-				if diff > 0 {
-					return 1
-				}
-				return 0
-			})
-			batch := &pgx.Batch{}
-			for _, args := range metabatch {
-				batch.Queue(cdb.stmtAttachMetadata, args...)
-			}
-			if cdb.LogError(cdb.runBatch(ctx, batch), "runBatch") != nil {
-				idlecount = 0
 			}
 		}
 	}
@@ -199,58 +176,59 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 		}
 	}
 }
-func (cdb *PgDB) insertCertArgs(le *LogEntry) (args []any) {
-	if le != nil {
-		if cert := le.Cert(); cert != nil {
-			logindex := le.Index()
 
-			var dnsnames []string
-			for _, dnsname := range cert.DNSNames {
-				dnsname = strings.ToLower(dnsname)
-				if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
-					dnsnames = append(dnsnames, uniname)
-				} else {
-					dnsnames = append(dnsnames, dnsname)
-				}
-			}
+/*func (cdb *PgDB) insertCertArgs(le *LogEntry) (args []any) {
+	if cert := le.Cert(); cert != nil {
+		logindex := le.Index()
 
-			var ipaddrs []string
-			for _, ip := range cert.IPAddresses {
-				ipaddrs = append(ipaddrs, ip.String())
-			}
-
-			var emails []string
-			for _, email := range cert.EmailAddresses {
-				emails = append(emails, strings.ReplaceAll(email, " ", "_"))
-			}
-
-			var uris []string
-			for _, uri := range cert.URIs {
-				uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
-			}
-
-			args = []any{
-				strings.Join(cert.Issuer.Organization, ","),
-				strings.Join(cert.Issuer.Province, ","),
-				strings.Join(cert.Issuer.Country, ","),
-				strings.Join(cert.Subject.Organization, ","),
-				strings.Join(cert.Subject.Province, ","),
-				strings.Join(cert.Subject.Country, ","),
-				cert.NotBefore,
-				cert.NotAfter,
-				cert.GetCommonName(),
-				cert.Signature,
-				cert.PreCert,
-				cert.Seen,
-				le.LogStream.Id,
-				logindex,
-				int64(-123), // cert ID placeholder
-				strings.Join(dnsnames, " "),
-				strings.Join(ipaddrs, " "),
-				strings.Join(emails, " "),
-				strings.Join(uris, " "),
+		var dnsnames []string
+		for _, dnsname := range cert.DNSNames {
+			dnsname = strings.ToLower(dnsname)
+			if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
+				dnsnames = append(dnsnames, uniname)
+			} else {
+				dnsnames = append(dnsnames, dnsname)
 			}
 		}
+
+		var ipaddrs []string
+		for _, ip := range cert.IPAddresses {
+			ipaddrs = append(ipaddrs, ip.String())
+		}
+
+		var emails []string
+		for _, email := range cert.EmailAddresses {
+			emails = append(emails, strings.ReplaceAll(email, " ", "_"))
+		}
+
+		var uris []string
+		for _, uri := range cert.URIs {
+			uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
+		}
+
+		args = []any{
+			strings.Join(cert.Issuer.Organization, ","),
+			strings.Join(cert.Issuer.Province, ","),
+			strings.Join(cert.Issuer.Country, ","),
+			strings.Join(cert.Subject.Organization, ","),
+			strings.Join(cert.Subject.Province, ","),
+			strings.Join(cert.Subject.Country, ","),
+			cert.NotBefore,
+			cert.NotAfter,
+			cert.GetCommonName(),
+			cert.Signature,
+			cert.PreCert,
+			cert.Seen,
+			le.LogStream.Id,
+			logindex,
+			int64(-123), // cert ID placeholder
+			strings.Join(dnsnames, " "),
+			strings.Join(ipaddrs, " "),
+			strings.Join(emails, " "),
+			strings.Join(uris, " "),
+		}
+	} else {
+
 	}
 	return
-}
+}*/

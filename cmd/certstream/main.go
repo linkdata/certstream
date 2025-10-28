@@ -96,7 +96,7 @@ func main() {
 		for le := range cs.C {
 			n++
 			fmt.Printf("%5d %q %v %v\n", n, le.Domain, le.Historical, le.Cert().DNSNames)
-			if n >= *flagMaxEntries {
+			if n >= *flagMaxEntries && *flagMaxEntries > 0 {
 				stop()
 				break
 			}

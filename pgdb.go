@@ -29,6 +29,7 @@ type PgDB struct {
 	funcStreamID          string
 	funcEnsureIdent       string
 	funcFindSince         string
+	funcIngestBatch       string
 	stmtEnsureCert        string
 	stmtAttachMetadata    string
 	stmtSelectGaps        string
@@ -49,9 +50,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 		if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
 			if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
 				if _, err = db.Exec(ctx, pfx(FunctionFindSince)); err == nil {
-					if _, err = db.Exec(ctx, pfx(FuncEnsureCert)); err == nil {
-						_, err = db.Exec(ctx, pfx(FuncAttachMetadata))
-					}
+					_, err = db.Exec(ctx, pfx(FuncIngestBatch))
 				}
 			}
 		}
@@ -94,6 +93,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcStreamID:          pfx(callStreamID),
 							funcEnsureIdent:       pfx(`SELECT CERTDB_ensure_ident($1,$2,$3);`),
 							funcFindSince:         pfx(callFindSince),
+							funcIngestBatch:       pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
 							stmtEnsureCert:        pfx(callEnsureCert),
 							stmtAttachMetadata:    pfx(callAttachMetadata),
 							stmtSelectGaps:        pfx(SelectGaps),
