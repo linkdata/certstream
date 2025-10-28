@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const batcherQueueSize = 1
+const batcherQueueSize = 100
 
 /*func (cdb *PgDB) insertCert(ctx context.Context, le *LogEntry) (args []any, err error) {
 	args = cdb.insertCertArgs(le)
