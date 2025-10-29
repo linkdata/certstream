@@ -91,7 +91,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 						workerCount := 1 << workerBits
 						batchChans := make([]chan *LogEntry, workerCount)
 						for i := range batchChans {
-							batchChans[i] = make(chan *LogEntry, DbBatchSize*2)
+							batchChans[i] = make(chan *LogEntry, DbBatchSize*4)
 						}
 						cdb = &PgDB{
 							CertStream:            cs,
