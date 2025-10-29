@@ -308,8 +308,14 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 				return
 			}
 		}
-		for historical && ctx.Err() == nil && ls.DB() != nil && ls.DB().QueueUsage() > 50 {
-			time.Sleep(time.Millisecond * 100)
+		for historical && ctx.Err() == nil {
+			if db := ls.DB(); db != nil {
+				if qu := db.QueueUsage(); qu > 50 {
+					sleep(ctx, time.Millisecond*time.Duration((qu-50)*10))
+					continue
+				}
+			}
+			break
 		}
 	}
 	return
