@@ -40,15 +40,9 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 	if batchCh := cdb.getBatchCh(workerID); batchCh != nil {
 		cdb.Workers.Add(1)
 		defer cdb.Workers.Add(-1)
-		// have the worker tickers start at intervals
-		staggerInterval := time.Second / time.Duration(cdb.workerCount)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.NewTimer(staggerInterval * time.Duration(workerID)).C:
-		}
-		tckr := time.NewTicker(time.Second * 10)
-		defer tckr.Stop()
+		const tickerInterval = time.Second * 10
+		staggerInterval := tickerInterval / time.Duration(cdb.workerCount)
+		tckr := time.NewTicker(staggerInterval)
 		stop := false
 		var queued []*LogEntry
 		for !stop {
@@ -58,6 +52,12 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 				stop = true
 			case <-tckr.C:
 				ticked = true
+				if staggerInterval != 0 {
+					staggerInterval = 0
+					tckr.Stop()
+					tckr = time.NewTicker(tickerInterval)
+					defer tckr.Stop()
+				}
 			case le := <-batchCh:
 				queued = append(queued, le)
 			}
@@ -65,10 +65,12 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
 				for _, le := range queued {
 					if !stop {
-						select {
-						case <-ctx.Done():
-							stop = true
-						case cdb.getSendEntryCh() <- le:
+						if ch := cdb.getSendEntryCh(); ch != nil {
+							select {
+							case <-ctx.Done():
+								stop = true
+							case ch <- le:
+							}
 						}
 					}
 				}
