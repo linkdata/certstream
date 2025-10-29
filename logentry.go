@@ -28,10 +28,15 @@ func (le *LogEntry) appendJSON(b []byte) []byte {
 		for _, dnsname := range cert.DNSNames {
 			dnsname = strings.ToLower(dnsname)
 			if uniname, err := idna.ToUnicode(dnsname); err == nil && uniname != dnsname {
-				dnsnames = append(dnsnames, uniname)
-			} else {
-				dnsnames = append(dnsnames, dnsname)
+				ok := true
+				for _, r := range uniname {
+					ok = ok && strconv.IsPrint(r)
+				}
+				if ok {
+					dnsname = uniname
+				}
 			}
+			dnsnames = append(dnsnames, dnsname)
 		}
 
 		var ipaddrs []string
