@@ -38,7 +38,10 @@ type PgDB struct {
 	stmtSelectDnsnameLike string
 	stmtSelectIDSince     string
 	mu                    sync.Mutex // protects following
-	batchCh               chan *LogEntry
+	batchCh               []chan *LogEntry
+	workerBits            int
+	workerMask            uint32
+	workerCount           int
 	estimates             map[string]float64 // row count estimates
 	newentrytime          time.Duration
 	newentrycount         int64
@@ -85,6 +88,31 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 						if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&pgversion), "postgres version") == nil {
 							cs.LogInfo("postgres", "version", pgversion)
 						}
+						workerBits := cs.Config.PgWorkerBits
+						if workerBits < 0 {
+							workerBits = 0
+						}
+						const maxWorkerBits = 8
+						if workerBits > maxWorkerBits {
+							workerBits = maxWorkerBits
+						}
+						workerCount := 1 << workerBits
+						if workerCount == 0 {
+							workerCount = 1
+						}
+						queueCap := 16 * 1024
+						perWorkerCap := queueCap / workerCount
+						if perWorkerCap < 1 {
+							perWorkerCap = 1
+						}
+						batchChans := make([]chan *LogEntry, workerCount)
+						for i := range batchChans {
+							batchChans[i] = make(chan *LogEntry, perWorkerCap)
+						}
+						var workerMask uint32
+						if workerBits > 0 {
+							workerMask = uint32((1 << workerBits) - 1)
+						}
 						cdb = &PgDB{
 							CertStream:            cs,
 							Pool:                  pool,
@@ -101,7 +129,10 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
 							stmtSelectIDSince:     pfx(SelectIDSince),
-							batchCh:               make(chan *LogEntry, 16*1024),
+							batchCh:               batchChans,
+							workerBits:            workerBits,
+							workerMask:            workerMask,
+							workerCount:           workerCount,
 							estimates: map[string]float64{
 								"cert":   0,
 								"domain": 0,
@@ -114,38 +145,91 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 			}
 		}
 	}
+	if cdb != nil {
+		cs.LogInfo("database workers", "count", cdb.workerCount, "bits", cdb.workerBits)
+	}
 	return
 }
 
 func (cdb *PgDB) Close() {
 	cdb.mu.Lock()
-	if cdb.batchCh != nil {
-		close(cdb.batchCh)
-		cdb.batchCh = nil
-	}
+	chans := cdb.batchCh
+	cdb.batchCh = nil
 	cdb.mu.Unlock()
+	for _, ch := range chans {
+		if ch != nil {
+			close(ch)
+		}
+	}
 	cdb.Pool.Close()
 }
 
 func (cdb *PgDB) QueueUsage() (pct int) {
-	if ch := cdb.getBatchCh(); ch != nil {
-		pct = len(ch) * 100 / cap(ch)
+	cdb.mu.Lock()
+	chans := cdb.batchCh
+	cdb.mu.Unlock()
+	totalLen := 0
+	totalCap := 0
+	for _, ch := range chans {
+		if ch != nil {
+			totalLen += len(ch)
+			totalCap += cap(ch)
+		}
+	}
+	if totalCap > 0 {
+		pct = totalLen * 100 / totalCap
 	}
 	return
 }
 
-func (cdb *PgDB) getBatchCh() (ch chan *LogEntry) {
+func (cdb *PgDB) getBatchCh(idx int) (ch chan *LogEntry) {
 	cdb.mu.Lock()
-	ch = cdb.batchCh
+	if idx >= 0 && idx < len(cdb.batchCh) {
+		ch = cdb.batchCh[idx]
+	}
 	cdb.mu.Unlock()
 	return
 }
 
+func (cdb *PgDB) workerIndexFor(le *LogEntry) (idx int) {
+	if cdb == nil || le == nil || cdb.workerBits == 0 {
+		return 0
+	}
+	cert := le.Cert()
+	if cert == nil || len(cert.Signature) == 0 {
+		return 0
+	}
+	byteCount := (cdb.workerBits + 7) / 8
+	if byteCount > len(cert.Signature) {
+		byteCount = len(cert.Signature)
+	}
+	var prefix uint32
+	for i := 0; i < byteCount; i++ {
+		prefix = (prefix << 8) | uint32(cert.Signature[i])
+	}
+	shift := uint(byteCount*8 - cdb.workerBits)
+	if shift > 32 {
+		shift = 32
+	}
+	idx = int((prefix >> shift) & cdb.workerMask)
+	if idx < 0 || idx >= cdb.workerCount {
+		idx = 0
+	}
+	return
+}
+
 func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
-	if le != nil && ctx.Err() == nil {
+	if le == nil || ctx.Err() != nil {
+		return
+	}
+	target := 0
+	if cdb.workerCount > 1 {
+		target = cdb.workerIndexFor(le)
+	}
+	if ch := cdb.getBatchCh(target); ch != nil {
 		select {
 		case <-ctx.Done():
-		case cdb.getBatchCh() <- le:
+		case ch <- le:
 		}
 	}
 }
