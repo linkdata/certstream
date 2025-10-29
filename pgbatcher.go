@@ -40,7 +40,14 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 	if batchCh := cdb.getBatchCh(workerID); batchCh != nil {
 		cdb.Workers.Add(1)
 		defer cdb.Workers.Add(-1)
-		tckr := time.NewTicker(time.Second)
+		// have the worker tickers start at intervals
+		staggerInterval := time.Second / time.Duration(cdb.workerCount)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.NewTimer(staggerInterval * time.Duration(workerID)).C:
+		}
+		tckr := time.NewTicker(time.Second * 10)
 		defer tckr.Stop()
 		stop := false
 		var queued []*LogEntry
@@ -92,7 +99,7 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 
 	ticks := 0
 	ticker := time.NewTicker(interval)
-	avgentrytimes := make([]time.Duration, time.Second*10/interval)
+	avgentrytimes := make([]time.Duration, time.Minute/interval)
 	defer ticker.Stop()
 	for {
 		select {
