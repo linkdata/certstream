@@ -26,10 +26,12 @@ func (cs *CertStream) ensureOperatorAndLog(ctx context.Context, op *loglist3.Ope
 			streams:    make(map[string]*LogStream),
 		}
 		sort.Strings(op.Email)
-		if err = cs.DB.ensureOperator(ctx, logop); err == nil {
-			cs.mu.Lock()
-			cs.operators[opDom] = logop
-			cs.mu.Unlock()
+		if db := cs.DB(); db != nil {
+			if err = db.ensureOperator(ctx, logop); err == nil {
+				cs.mu.Lock()
+				cs.operators[opDom] = logop
+				cs.mu.Unlock()
+			}
 		}
 	}
 

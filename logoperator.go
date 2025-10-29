@@ -95,12 +95,14 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 	lo.mu.Unlock()
 	if ls == nil {
 		if ls, err = lo.makeStream(log); err == nil {
-			if err = lo.DB.ensureStream(ctx, ls); err == nil {
-				lo.mu.Lock()
-				lo.streams[log.URL] = ls
-				lo.mu.Unlock()
-				wg.Add(1)
-				go ls.run(ctx, wg)
+			if db := lo.DB(); db != nil {
+				if err = db.ensureStream(ctx, ls); err == nil {
+					lo.mu.Lock()
+					lo.streams[log.URL] = ls
+					lo.mu.Unlock()
+					wg.Add(1)
+					go ls.run(ctx, wg)
+				}
 			}
 		}
 	}

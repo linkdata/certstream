@@ -88,7 +88,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 
 	start := end
-	if cdb := ls.DB; cdb != nil {
+	if cdb := ls.DB(); cdb != nil {
 		if ls.CertStream.Config.TailDialer != nil {
 			wg2.Add(1)
 			go cdb.backfillStream(ctx, ls, &wg2)
@@ -176,8 +176,8 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int6
 		if ctx.Err() == nil {
 			ls.Count.Add(1)
 			ls.LogOperator.Count.Add(1)
-			if ls.DB != nil {
-				ls.DB.sendToBatcher(ctx, le)
+			if db := ls.DB(); db != nil {
+				db.sendToBatcher(ctx, le)
 			} else {
 				select {
 				case <-ctx.Done():
@@ -225,9 +225,9 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 		client = ls.TailClient
 	}
 
-	parallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))
+	maxparallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))
 	totalEntries := (end - start) + 1
-	if historical || parallelism == 1 || totalEntries <= LogBatchSize || totalEntries < parallelism {
+	if historical || maxparallelism == 1 || totalEntries <= LogBatchSize || totalEntries < maxparallelism {
 		return ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
 	}
 
@@ -236,19 +236,17 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 		end   int64
 	}
 
+	parallelism := min(maxparallelism, totalEntries/LogBatchSize)
 	segments := make([]segment, parallelism)
 	baseSize := totalEntries / parallelism
 	remainder := totalEntries % parallelism
 	segStart := start
-	for i := int64(0); i < parallelism; i++ {
+	for i := range parallelism {
 		size := baseSize
 		if int64(i) < remainder {
 			size++
 		}
-		segEnd := segStart + size - 1
-		if segEnd > end {
-			segEnd = end
-		}
+		segEnd := min(segStart+size-1, end)
 		segments[i] = segment{start: segStart, end: segEnd}
 		segStart = segEnd + 1
 	}
@@ -310,7 +308,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 				return
 			}
 		}
-		for historical && ctx.Err() == nil && ls.DB != nil && ls.DB.QueueUsage() > 50 {
+		for historical && ctx.Err() == nil && ls.DB() != nil && ls.DB().QueueUsage() > 50 {
 			time.Sleep(time.Millisecond * 100)
 		}
 	}
