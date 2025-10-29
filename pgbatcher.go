@@ -35,50 +35,38 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	return
 }
 
-func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int, idlecount int) {
+func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 	defer wg.Done()
-	batchCh := cdb.getBatchCh(workerID)
-	if batchCh == nil {
-		return
-	}
-	cdb.Workers.Add(1)
-	defer cdb.Workers.Add(-1)
-	var queued []*LogEntry
-	for idlecount != 0 {
-		var isIdle bool
-		select {
-		case <-ctx.Done():
-			idlecount = 0
-		case le, ok := <-batchCh:
-			if ok {
+	if batchCh := cdb.getBatchCh(workerID); batchCh != nil {
+		cdb.Workers.Add(1)
+		defer cdb.Workers.Add(-1)
+		tckr := time.NewTicker(time.Second)
+		defer tckr.Stop()
+		stop := false
+		var queued []*LogEntry
+		for !stop {
+			ticked := false
+			select {
+			case <-ctx.Done():
+				stop = true
+			case <-tckr.C:
+				ticked = true
+			case le := <-batchCh:
 				queued = append(queued, le)
-			} else {
-				idlecount = 0
 			}
-		default:
-			isIdle = true
-		}
-		if l := len(queued); l > 0 && (l >= DbBatchSize || isIdle || idlecount == 0) {
-			if cdb.LogError(cdb.runBatch(ctx, queued), "runBatch") != nil {
-				idlecount = 0
-			} else {
+			if l := len(queued); l > 0 && (l >= DbBatchSize || ticked || stop) {
+				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
 				for _, le := range queued {
-					select {
-					case <-ctx.Done():
-						idlecount = 0
-					case cdb.getSendEntryCh() <- le:
+					if !stop {
+						select {
+						case <-ctx.Done():
+							stop = true
+						case cdb.getSendEntryCh() <- le:
+						}
 					}
 				}
-			}
-			clear(queued)
-			queued = queued[:0]
-		}
-		if isIdle {
-			if idlecount > 0 {
-				idlecount--
-			}
-			if idlecount != 0 {
-				time.Sleep(time.Millisecond * 100)
+				clear(queued)
+				queued = queued[:0]
 			}
 		}
 	}
@@ -99,7 +87,7 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 
 	wg.Add(cdb.workerCount)
 	for i := 0; i < cdb.workerCount; i++ {
-		go cdb.worker(ctx, wg, i, -1)
+		go cdb.worker(ctx, wg, i)
 	}
 
 	ticks := 0

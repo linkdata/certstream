@@ -40,7 +40,6 @@ type PgDB struct {
 	mu                    sync.Mutex // protects following
 	batchCh               []chan *LogEntry
 	workerBits            int
-	workerMask            uint32
 	workerCount           int
 	estimates             map[string]float64 // row count estimates
 	newentrytime          time.Duration
@@ -90,15 +89,9 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 						}
 						workerBits := min(8, max(1, cs.Config.PgWorkerBits))
 						workerCount := 1 << workerBits
-						workerMask := uint32((1 << workerBits) - 1)
-						queueCap := 16 * 1024
-						perWorkerCap := queueCap / workerCount
-						if perWorkerCap < 1 {
-							perWorkerCap = 1
-						}
 						batchChans := make([]chan *LogEntry, workerCount)
 						for i := range batchChans {
-							batchChans[i] = make(chan *LogEntry, perWorkerCap)
+							batchChans[i] = make(chan *LogEntry, 1024)
 						}
 						cdb = &PgDB{
 							CertStream:            cs,
@@ -118,7 +111,6 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectIDSince:     pfx(SelectIDSince),
 							batchCh:               batchChans,
 							workerBits:            workerBits,
-							workerMask:            workerMask,
 							workerCount:           workerCount,
 							estimates: map[string]float64{
 								"cert":   0,
