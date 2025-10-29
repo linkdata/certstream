@@ -35,48 +35,38 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	return
 }
 
-func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) {
-	cdb.Workers.Add(1)
-	defer func() {
-		cdb.Workers.Add(-1)
-		wg.Done()
-	}()
-	var queued []*LogEntry
-	for idlecount != 0 {
-		var isIdle bool
-		select {
-		case <-ctx.Done():
-			idlecount = 0
-		case le, ok := <-cdb.getBatchCh():
-			if ok {
+func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
+	defer wg.Done()
+	if batchCh := cdb.getBatchCh(workerID); batchCh != nil {
+		cdb.Workers.Add(1)
+		defer cdb.Workers.Add(-1)
+		tckr := time.NewTicker(time.Second)
+		defer tckr.Stop()
+		stop := false
+		var queued []*LogEntry
+		for !stop {
+			ticked := false
+			select {
+			case <-ctx.Done():
+				stop = true
+			case <-tckr.C:
+				ticked = true
+			case le := <-batchCh:
 				queued = append(queued, le)
-			} else {
-				idlecount = 0
 			}
-		default:
-			isIdle = true
-		}
-		if l := len(queued); l > 0 && (l >= DbBatchSize || isIdle || idlecount == 0) {
-			if cdb.LogError(cdb.runBatch(ctx, queued), "runBatch") != nil {
-				idlecount = 0
-			} else {
+			if l := len(queued); l > 0 && (l >= DbBatchSize || ticked || stop) {
+				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
 				for _, le := range queued {
-					select {
-					case <-ctx.Done():
-						idlecount = 0
-					case cdb.getSendEntryCh() <- le:
+					if !stop {
+						select {
+						case <-ctx.Done():
+							stop = true
+						case cdb.getSendEntryCh() <- le:
+						}
 					}
 				}
-			}
-			clear(queued)
-			queued = queued[:0]
-		}
-		if isIdle {
-			if idlecount > 0 {
-				idlecount--
-			}
-			if idlecount != 0 {
-				time.Sleep(time.Millisecond * 100)
+				clear(queued)
+				queued = queued[:0]
 			}
 		}
 	}
@@ -95,10 +85,11 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 		wg.Done()
 	}()
 
-	wg.Add(1)
-	go cdb.worker(ctx, wg, -1)
+	wg.Add(cdb.workerCount)
+	for i := 0; i < cdb.workerCount; i++ {
+		go cdb.worker(ctx, wg, i)
+	}
 
-	loaded := 0
 	ticks := 0
 	ticker := time.NewTicker(interval)
 	avgentrytimes := make([]time.Duration, time.Second*10/interval)
@@ -126,19 +117,6 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 			}
 			cdb.avgentrytime = avgentrytime / time.Duration(cap(avgentrytimes))
 			cdb.mu.Unlock()
-
-			if cdb.QueueUsage() > 30 {
-				if cdb.Workers.Load() < 32 {
-					loaded++
-					if loaded > 10 {
-						loaded /= 2
-						wg.Add(1)
-						go cdb.worker(ctx, wg, 10)
-					}
-				}
-			} else {
-				loaded = 0
-			}
 		}
 	}
 }
