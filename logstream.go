@@ -217,10 +217,60 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 }
 
 func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+	if start > end {
+		return false
+	}
 	client := ls.HeadClient
 	if historical && ls.TailClient != nil {
 		client = ls.TailClient
 	}
+
+	parallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))
+	totalEntries := (end - start) + 1
+	if historical || parallelism == 1 || totalEntries <= LogBatchSize || totalEntries < parallelism {
+		return ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
+	}
+
+	type segment struct {
+		start int64
+		end   int64
+	}
+
+	segments := make([]segment, parallelism)
+	baseSize := totalEntries / parallelism
+	remainder := totalEntries % parallelism
+	segStart := start
+	for i := int64(0); i < parallelism; i++ {
+		size := baseSize
+		if int64(i) < remainder {
+			size++
+		}
+		segEnd := segStart + size - 1
+		if segEnd > end {
+			segEnd = end
+		}
+		segments[i] = segment{start: segStart, end: segEnd}
+		segStart = segEnd + 1
+	}
+
+	var anyWanted atomic.Bool
+	var wg sync.WaitGroup
+	for _, seg := range segments {
+		if seg.start <= seg.end {
+			wg.Add(1)
+			go func(segStart, segEnd int64) {
+				defer wg.Done()
+				if ls.getRawEntriesRange(ctx, client, segStart, segEnd, historical, handleFn, gapcounter) {
+					anyWanted.Store(true)
+				}
+			}(seg.start, seg.end)
+		}
+	}
+	wg.Wait()
+	return anyWanted.Load()
+}
+
+func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogClient, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
 	for start <= end {
 		if ctx.Err() != nil {
 			return
