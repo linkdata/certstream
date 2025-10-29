@@ -88,18 +88,9 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 						if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&pgversion), "postgres version") == nil {
 							cs.LogInfo("postgres", "version", pgversion)
 						}
-						workerBits := cs.Config.PgWorkerBits
-						if workerBits < 0 {
-							workerBits = 0
-						}
-						const maxWorkerBits = 8
-						if workerBits > maxWorkerBits {
-							workerBits = maxWorkerBits
-						}
+						workerBits := min(8, max(1, cs.Config.PgWorkerBits))
 						workerCount := 1 << workerBits
-						if workerCount == 0 {
-							workerCount = 1
-						}
+						workerMask := uint32((1 << workerBits) - 1)
 						queueCap := 16 * 1024
 						perWorkerCap := queueCap / workerCount
 						if perWorkerCap < 1 {
@@ -108,10 +99,6 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 						batchChans := make([]chan *LogEntry, workerCount)
 						for i := range batchChans {
 							batchChans[i] = make(chan *LogEntry, perWorkerCap)
-						}
-						var workerMask uint32
-						if workerBits > 0 {
-							workerMask = uint32((1 << workerBits) - 1)
 						}
 						cdb = &PgDB{
 							CertStream:            cs,
@@ -184,52 +171,27 @@ func (cdb *PgDB) QueueUsage() (pct int) {
 
 func (cdb *PgDB) getBatchCh(idx int) (ch chan *LogEntry) {
 	cdb.mu.Lock()
-	if idx >= 0 && idx < len(cdb.batchCh) {
-		ch = cdb.batchCh[idx]
-	}
+	ch = cdb.batchCh[idx]
 	cdb.mu.Unlock()
 	return
 }
 
 func (cdb *PgDB) workerIndexFor(le *LogEntry) (idx int) {
-	if cdb == nil || le == nil || cdb.workerBits == 0 {
-		return 0
-	}
-	cert := le.Cert()
-	if cert == nil || len(cert.Signature) == 0 {
-		return 0
-	}
-	byteCount := (cdb.workerBits + 7) / 8
-	if byteCount > len(cert.Signature) {
-		byteCount = len(cert.Signature)
-	}
-	var prefix uint32
-	for i := 0; i < byteCount; i++ {
-		prefix = (prefix << 8) | uint32(cert.Signature[i])
-	}
-	shift := uint(byteCount*8 - cdb.workerBits)
-	if shift > 32 {
-		shift = 32
-	}
-	idx = int((prefix >> shift) & cdb.workerMask)
-	if idx < 0 || idx >= cdb.workerCount {
-		idx = 0
+	if cdb != nil && le != nil {
+		if cert := le.Cert(); cert != nil && len(cert.Signature) > 0 {
+			idx = int(cert.Signature[0] >> (8 - cdb.workerBits))
+		}
 	}
 	return
 }
 
 func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
-	if le == nil || ctx.Err() != nil {
-		return
-	}
-	target := 0
-	if cdb.workerCount > 1 {
-		target = cdb.workerIndexFor(le)
-	}
-	if ch := cdb.getBatchCh(target); ch != nil {
-		select {
-		case <-ctx.Done():
-		case ch <- le:
+	if le != nil && ctx.Err() == nil {
+		if ch := cdb.getBatchCh(cdb.workerIndexFor(le)); ch != nil {
+			select {
+			case <-ctx.Done():
+			case ch <- le:
+			}
 		}
 	}
 }

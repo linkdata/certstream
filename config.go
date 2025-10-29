@@ -16,7 +16,7 @@ type Config struct {
 	PgAddr                string              // PostgreSQL address, no default
 	PgPrefix              string              // PostgreSQL naming prefix, default "certdb_"
 	PgConns               int                 // max number of database connections, default 100
-	PgWorkerBits          int                 // number of prefix bits that determine DB workers, default 4 (16 workers)
+	PgWorkerBits          int                 // number of prefix bits that determine DB workers, default 5 (32 workers)
 	PgMaxAge              int                 // maximum age in days to backfill
 	PgNoSSL               bool                // if true, do not use SSL
 	GetEntriesParallelism int                 // number of concurrent GetRawEntries requests per range, default 8
@@ -34,7 +34,7 @@ func NewConfig() *Config {
 		PgAddr:                "",
 		PgPrefix:              "certdb_",
 		PgConns:               100,
-		PgWorkerBits:          4,
+		PgWorkerBits:          5,
 		PgMaxAge:              90,
 		GetEntriesParallelism: 8,
 	}
