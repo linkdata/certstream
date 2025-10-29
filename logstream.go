@@ -99,7 +99,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		if start < end {
 			ls.GetRawEntries(ctx, start, end, false, ls.sendEntry, nil)
 			if end-start <= LogBatchSize/2 {
-				sleep(ctx, time.Second*time.Duration(10+rand.IntN(5) /*#nosec G404*/))
+				sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
 			}
 			start = end
 		}
