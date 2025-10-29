@@ -33,9 +33,9 @@ BEGIN
   FROM jsonb_array_elements(_rows) AS x;
 
   -- Add indexes to speed up subsequent operations
-  CREATE INDEX tmp_ingest_iss_idx ON tmp_ingest(iss_org, iss_prov, iss_country);
-  CREATE INDEX tmp_ingest_sub_idx ON tmp_ingest(sub_org, sub_prov, sub_country);
-  CREATE INDEX tmp_ingest_sha256_idx ON tmp_ingest(sha256);
+  -- CREATE INDEX tmp_ingest_iss_idx ON tmp_ingest(iss_org, iss_prov, iss_country);
+  -- CREATE INDEX tmp_ingest_sub_idx ON tmp_ingest(sub_org, sub_prov, sub_country);
+  -- CREATE INDEX tmp_ingest_sha256_idx ON tmp_ingest(sha256);
 
   -- 2) Ensure all identities exist (combined issuer and subject in single operation)
   WITH all_idents AS (
@@ -120,7 +120,7 @@ BEGIN
   ) overlap ON TRUE;
 
   -- Add index for sha256 lookups
-  CREATE INDEX tmp_certs_sha256_idx ON tmp_certs_with_ids(sha256);
+  -- CREATE INDEX tmp_certs_sha256_idx ON tmp_certs_with_ids(sha256);
 
   -- 4) Insert certificates and capture the mapping in one operation
   CREATE TEMP TABLE cert_mapping ON COMMIT DROP AS
@@ -143,7 +143,7 @@ BEGIN
   );
 
   -- Add index for efficient joins
-  CREATE INDEX cert_mapping_sha256_idx ON cert_mapping(sha256);
+  -- CREATE INDEX cert_mapping_sha256_idx ON cert_mapping(sha256);
 
   -- 5) Insert entries using the cert mapping
   INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
