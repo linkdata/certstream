@@ -42,7 +42,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 		defer cdb.Workers.Add(-1)
 		const tickerInterval = time.Second * 10
 		staggerInterval := tickerInterval / time.Duration(cdb.workerCount)
-		tckr := time.NewTicker(staggerInterval * time.Duration(workerID))
+		tckr := time.NewTicker(1 + (staggerInterval * time.Duration(workerID)))
 		stop := false
 		var queued []*LogEntry
 		for !stop {
