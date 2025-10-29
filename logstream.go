@@ -17,7 +17,8 @@ import (
 	"github.com/google/trillian/client/backoff"
 )
 
-var BatchSize = 1000
+var DbBatchSize = 1000
+var LogBatchSize = int64(1000)
 var MaxErrors = 100
 var IdleCloseTime = time.Hour * 24 * 7
 
@@ -96,7 +97,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	for err == nil {
 		if start < end {
 			ls.GetRawEntries(ctx, start, end, false, ls.sendEntry, nil)
-			if end-start <= int64(BatchSize/2) {
+			if end-start <= LogBatchSize/2 {
 				sleep(ctx, time.Second*15)
 			}
 			start = end
@@ -120,7 +121,7 @@ func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err err
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
-				if lastIndex+int64(BatchSize) < newIndex || time.Since(now) > time.Second*15 {
+				if lastIndex+LogBatchSize < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
 					ls.LastIndex.Store(lastIndex)
 					return nil
@@ -230,7 +231,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 			Jitter: true,
 		}
 		var resp *ct.GetEntriesResponse
-		stop := start + min(int64(BatchSize), end-start)
+		stop := start + min(LogBatchSize, end-start)
 		if err := bo.Retry(ctx, func() error {
 			var err error
 			resp, err = client.GetRawEntries(ctx, start, stop)

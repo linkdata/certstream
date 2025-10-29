@@ -56,7 +56,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, idlecount int) 
 		default:
 			isIdle = true
 		}
-		if l := len(queued); l > 0 && (l >= BatchSize || isIdle || idlecount == 0) {
+		if l := len(queued); l > 0 && (l >= DbBatchSize || isIdle || idlecount == 0) {
 			if cdb.LogError(cdb.runBatch(ctx, queued), "runBatch") != nil {
 				idlecount = 0
 			} else {
