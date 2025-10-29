@@ -310,8 +310,8 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 		}
 		for historical && ctx.Err() == nil {
 			if db := ls.DB(); db != nil {
-				if qu := db.QueueUsage(); qu > 40 {
-					sleep(ctx, time.Millisecond*time.Duration(qu-40))
+				if qu := db.QueueUsage(); qu > 50 {
+					sleep(ctx, time.Millisecond*time.Duration(qu-50))
 					continue
 				}
 			}
