@@ -80,6 +80,7 @@ func main() {
 	defer func() {
 		slog.Info("waiting for certstream to stop")
 		wg.Wait()
+		cs.Close()
 	}()
 
 	if err != nil {

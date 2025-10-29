@@ -91,7 +91,9 @@ func (cdb *PgDB) AverageNewEntryTime() (d time.Duration) {
 
 func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) {
 	const interval = time.Millisecond * 100
-	defer wg.Done()
+	defer func() {
+		wg.Done()
+	}()
 
 	wg.Add(1)
 	go cdb.worker(ctx, wg, -1)

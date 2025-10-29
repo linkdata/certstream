@@ -53,7 +53,10 @@ func testIntegrationMain(t *testing.T, hostPort string) {
 
 	var wg sync.WaitGroup
 	cs, err := certstream.Start(ctx, &wg, cfg)
-	defer wg.Wait()
+	defer func() {
+		wg.Wait()
+		cs.Close()
+	}()
 
 	if err != nil {
 		t.Fatal(err)

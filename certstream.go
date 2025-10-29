@@ -15,7 +15,7 @@ type CertStream struct {
 	C           <-chan *LogEntry // log entry channel
 	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
 	TailClient  *http.Client     // may be nil if not backfilling
-	DB          *PgDB
+	db          *PgDB
 	mu          sync.Mutex // protects following
 	sendEntryCh chan *LogEntry
 	operators   map[string]*LogOperator // operators by operator domain, valid after Start()
@@ -79,15 +79,32 @@ func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) {
 	return
 }
 
+func (cs *CertStream) DB() (db *PgDB) {
+	cs.mu.Lock()
+	db = cs.db
+	cs.mu.Unlock()
+	return
+}
+
 func (cs *CertStream) Close() {
 	cs.mu.Lock()
-	if cs.sendEntryCh != nil {
-		close(cs.sendEntryCh)
-		cs.sendEntryCh = nil
-	}
-	db := cs.DB
-	cs.DB = nil
+	seCh := cs.sendEntryCh
+	cs.sendEntryCh = nil
+	db := cs.db
+	cs.db = nil
 	cs.mu.Unlock()
+	if seCh != nil {
+		// drain
+		ok := true
+		for ok {
+			select {
+			case _, ok = <-seCh:
+			default:
+				ok = false
+			}
+		}
+		close(seCh)
+	}
 	if db != nil {
 		db.Close()
 	}
@@ -104,10 +121,10 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 
 	_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
 
-	if cs.DB != nil {
+	if db := cs.DB(); db != nil {
 		wg.Add(2)
-		go cs.DB.runWorkers(ctx, wg)
-		go cs.DB.estimator(ctx, wg)
+		go db.runWorkers(ctx, wg)
+		go db.estimator(ctx, wg)
 	}
 
 	for {
@@ -141,8 +158,10 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 		}
 	}
 
-	if cs.DB, err = NewPgDB(ctx, cs); err == nil {
+	var db *PgDB
+	if db, err = NewPgDB(ctx, cs); err == nil {
 		cs.mu.Lock()
+		cs.db = db
 		cs.sendEntryCh = make(chan *LogEntry, 1024*8)
 		cs.C = cs.sendEntryCh
 		cs.mu.Unlock()
