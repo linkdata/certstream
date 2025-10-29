@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
@@ -63,11 +61,6 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	go func() {
-		slog.Error(http.ListenAndServe("localhost:6060", nil).Error()) // #nosec G114
-	}()
-	slog.Info("pprof listening on http://localhost:6060/debug/pprof/")
 
 	go func() {
 		<-ctx.Done()
