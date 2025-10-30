@@ -269,6 +269,7 @@ func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, histor
 }
 
 func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogClient, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+
 	for start <= end {
 		if ctx.Err() != nil {
 			return
@@ -282,6 +283,21 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 		var resp *ct.GetEntriesResponse
 		stop := start + min(LogBatchSize, end-start)
 		if err := bo.Retry(ctx, func() error {
+			if historical {
+				if db := ls.DB(); db != nil {
+					if qu := db.QueueUsage(); qu > 50 {
+						readLimit := int64(1) // 1 byte / sec
+						if ls.tailLimiter != nil {
+							// set rate limit according to queue size
+							scaleFactor := int64(50 - (qu - 50))
+							readLimit = ls.tailLimiter.Reads.Limit.Load() * scaleFactor / 50
+						}
+						ls.subLimiter.Reads.Limit.Store(readLimit)
+					} else {
+						ls.subLimiter.Reads.Limit.Store(0)
+					}
+				}
+			}
 			var err error
 			resp, err = client.GetRawEntries(ctx, start, stop)
 			return err
@@ -308,7 +324,8 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 				return
 			}
 		}
-		for historical && ctx.Err() == nil {
+
+		/*for historical && ctx.Err() == nil {
 			if db := ls.DB(); db != nil {
 				if qu := db.QueueUsage(); qu > 50 {
 					sleep(ctx, time.Millisecond*time.Duration(qu-50))
@@ -316,7 +333,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 				}
 			}
 			break
-		}
+		}*/
 	}
 	return
 }

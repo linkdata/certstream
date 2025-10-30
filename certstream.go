@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/linkdata/bwlimit"
 )
 
 type CertStream struct {
@@ -15,8 +17,10 @@ type CertStream struct {
 	C           <-chan *LogEntry // log entry channel
 	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
 	TailClient  *http.Client     // may be nil if not backfilling
+	tailLimiter *bwlimit.Limiter // master tail limiter, if known
+	subLimiter  *bwlimit.Limiter // sub tail limiter
+	mu          sync.Mutex       // protects following
 	db          *PgDB
-	mu          sync.Mutex // protects following
 	sendEntryCh chan *LogEntry
 	operators   map[string]*LogOperator // operators by operator domain, valid after Start()
 }
@@ -138,24 +142,36 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream, err error) {
-	tp := DefaultTransport.Clone()
-	tp.DialContext = cfg.HeadDialer.DialContext
+	tailDialer := cfg.TailDialer
+	if tailDialer == nil {
+		tailDialer = cfg.HeadDialer
+	}
+	subLimiter := bwlimit.NewLimiter()
+	var tailLimiter *bwlimit.Limiter
+	if bwdialer, ok := tailDialer.(*bwlimit.Dialer); ok {
+		tailLimiter = bwdialer.Limiter
+		subLimiter.Reads.Limit.Store(tailLimiter.Reads.Limit.Load())
+	}
+	tailDialer = subLimiter.Wrap(tailDialer)
+
+	tphead := DefaultTransport.Clone()
+	tphead.DialContext = cfg.HeadDialer.DialContext
+	tptail := DefaultTransport.Clone()
+	tptail.DialContext = tailDialer.DialContext
+
 	cs = &CertStream{
 		Config: *cfg,
 		HeadClient: &http.Client{
 			Timeout:   10 * time.Second,
-			Transport: tp,
+			Transport: tphead,
 		},
-		operators: map[string]*LogOperator{},
-	}
-
-	if cs.Config.TailDialer != nil {
-		tp = DefaultTransport.Clone()
-		tp.DialContext = cfg.TailDialer.DialContext
-		cs.TailClient = &http.Client{
+		TailClient: &http.Client{
 			Timeout:   10 * time.Second,
-			Transport: tp,
-		}
+			Transport: tptail,
+		},
+		tailLimiter: tailLimiter,
+		subLimiter:  subLimiter,
+		operators:   map[string]*LogOperator{},
 	}
 
 	var db *PgDB
