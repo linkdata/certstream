@@ -454,7 +454,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 	var query string
 	if cdb.LogError(err, "selectAllGaps.BeginTX") == nil {
 		defer tx.Commit(ctx)
-		cursorName := fmt.Sprintf("certstreamgaps%x", rand.Int64())
+		cursorName := fmt.Sprintf("certstreamgaps%x", rand.Int64() /*#nosec G404*/)
 		query = cdb.Pfx(fmt.Sprintf(`DECLARE %s CURSOR FOR `+cdb.stmtSelectAllGaps, cursorName, string(streamIds)))
 		if _, err = tx.Exec(ctx, query); cdb.LogError(err, "selectAllGaps.DECLARE") == nil {
 			query = fmt.Sprintf(`FETCH 1 IN %s;`, cursorName)
@@ -488,7 +488,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 				}
 			}
 		}
-		tx.Commit(ctx)
+		_ = tx.Commit(ctx)
 
 		remain := len(queue)
 		if remain > 0 {
