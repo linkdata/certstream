@@ -76,6 +76,17 @@ func (cs *CertStream) CountStreams() (n int) {
 	return
 }
 
+func (cs *CertStream) GetLogStreamByID(id int32) (ls *LogStream) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	for _, logop := range cs.operators {
+		if ls = logop.GetStreamByID(id); ls != nil {
+			break
+		}
+	}
+	return
+}
+
 func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) {
 	cs.mu.Lock()
 	ch = cs.sendEntryCh
@@ -126,9 +137,10 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
 
 	if db := cs.DB(); db != nil {
-		wg.Add(2)
+		wg.Add(3)
 		go db.runWorkers(ctx, wg)
 		go db.estimator(ctx, wg)
+		go db.selectAllGaps(ctx, wg)
 	}
 
 	for {

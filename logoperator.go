@@ -69,6 +69,17 @@ func (lo *LogOperator) Streams() (sl []*LogStream) {
 	return
 }
 
+func (lo *LogOperator) GetStreamByID(id int32) (ls *LogStream) {
+	lo.mu.Lock()
+	for _, ls = range lo.streams {
+		if ls.Id == id {
+			break
+		}
+	}
+	lo.mu.Unlock()
+	return
+}
+
 func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) {
 	var headLogClient *client.LogClient
 	if headLogClient, err = client.New(log.URL, lo.HeadClient, jsonclient.Options{}); err == nil {

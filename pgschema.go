@@ -26,6 +26,9 @@ var FuncAttachMetadata string
 //go:embed assets/selectgaps.sql
 var SelectGaps string
 
+//go:embed assets/selectallgaps.sql
+var SelectAllGaps string
+
 //go:embed assets/selectidsince.sql
 var SelectIDSince string
 

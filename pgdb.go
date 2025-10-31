@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,11 @@ import (
 
 type Scanner interface {
 	Scan(dest ...any) error
+}
+
+type gap struct {
+	start int64
+	end   int64
 }
 
 // PgDB integrates with sql.DB to manage certificate stream data for a PostgreSQL database
@@ -33,6 +40,7 @@ type PgDB struct {
 	stmtEnsureCert        string
 	stmtAttachMetadata    string
 	stmtSelectGaps        string
+	stmtSelectAllGaps     string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
 	stmtSelectDnsnameLike string
@@ -105,6 +113,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtEnsureCert:        pfx(callEnsureCert),
 							stmtAttachMetadata:    pfx(callAttachMetadata),
 							stmtSelectGaps:        pfx(SelectGaps),
+							stmtSelectAllGaps:     pfx(SelectAllGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
@@ -399,5 +408,109 @@ func (cdb *PgDB) estimator(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ticker.C:
 			cdb.refreshEstimates(ctx)
 		}
+	}
+}
+
+func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	type queued struct {
+		streamID int32
+		gap      gap
+	}
+	var queue []queued
+	var streamIds []byte
+	streams := make(map[int32]*LogStream)
+
+	cdb.mu.Lock()
+	for _, logop := range cdb.operators {
+		logop.mu.Lock()
+		for _, ls := range logop.streams {
+			ls.gapCh = make(chan gap, 10)
+			streams[ls.Id] = ls
+			if len(streamIds) > 0 {
+				streamIds = append(streamIds, ',')
+			}
+			streamIds = strconv.AppendInt(streamIds, int64(ls.Id), 10)
+		}
+		logop.mu.Unlock()
+	}
+	cdb.mu.Unlock()
+
+	defer func() {
+		for _, ls := range streams {
+			ls.mu.Lock()
+			close(ls.gapCh)
+			ls.gapCh = nil
+			ls.mu.Unlock()
+		}
+	}()
+
+	start := time.Now()
+	cdb.LogInfo("selectAllGaps starts", "streams", len(streams))
+	var totalgaps, totalgapsize int64
+
+	tx, err := cdb.BeginTx(ctx, pgx.TxOptions{})
+	var query string
+	if cdb.LogError(err, "selectAllGaps.BeginTX") == nil {
+		defer tx.Commit(ctx)
+		cursorName := fmt.Sprintf("certstreamgaps%x", rand.Int64())
+		query = cdb.Pfx(fmt.Sprintf(`DECLARE %s CURSOR FOR `+cdb.stmtSelectAllGaps, cursorName, string(streamIds)))
+		if _, err = tx.Exec(ctx, query); cdb.LogError(err, "selectAllGaps.DECLARE") == nil {
+			query = fmt.Sprintf(`FETCH 1 IN %s;`, cursorName)
+			for err == nil {
+				var rows pgx.Rows
+				if rows, err = tx.Query(ctx, query); cdb.LogError(err, "selectAllGaps.Query") == nil {
+					for rows.Next() {
+						var streamID int32
+						var gap_start, gap_end int64
+						if cdb.LogError(rows.Scan(&streamID, &gap_start, &gap_end), "selectAllGaps.Scan") == nil {
+							totalgaps++
+							totalgapsize += (gap_end - gap_start) + 1
+							q := queued{streamID: streamID, gap: gap{start: gap_start, end: gap_end}}
+							if ls := streams[streamID]; ls != nil {
+								gapCh := ls.getGapCh()
+								select {
+								case <-ctx.Done():
+									rows.Close()
+									return
+								case gapCh <- q.gap:
+								default:
+									queue = append(queue, q)
+								}
+							}
+						}
+					}
+					err = cdb.LogError(rows.Err(), "selectAllGaps.rows.Err")
+					if rows.CommandTag().RowsAffected() == 0 {
+						break
+					}
+				}
+			}
+		}
+		tx.Commit(ctx)
+
+		remain := len(queue)
+		if remain > 0 {
+			cdb.LogInfo("selectAllGaps waiting", "totalgapsize", totalgapsize, "totalgaps", totalgaps, "remain", remain, "elapsed", time.Since(start).Round(time.Second))
+			for remain > 0 {
+				for i := range queue {
+					if queue[i].gap.start != -1 {
+						if ls := streams[queue[i].streamID]; ls != nil {
+							select {
+							case <-ctx.Done():
+								return
+							case ls.gapCh <- queue[i].gap:
+								remain--
+								queue[i].gap.start = -1
+							default:
+							}
+						}
+					}
+				}
+				sleep(ctx, time.Second)
+			}
+		}
+		cdb.LogInfo("selectAllGaps completed", "totalgapsize", totalgapsize, "totalgaps", totalgaps, "elapsed", time.Since(start).Round(time.Second))
 	}
 }

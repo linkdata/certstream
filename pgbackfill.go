@@ -10,11 +10,7 @@ import (
 var BulkRange = int64(4096)
 
 func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
-	type gap struct {
-		start int64
-		end   int64
-	}
-	var gaps []gap
+	var lastgap gap
 	if lastindex := ls.LastIndex.Load(); lastindex != -1 {
 		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
 		var nullableMaxIndex sql.NullInt64
@@ -22,12 +18,26 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 			if nullableMaxIndex.Valid {
 				ls.seeIndex(nullableMaxIndex.Int64)
 				if nullableMaxIndex.Int64 < lastindex {
-					gaps = append(gaps, gap{start: nullableMaxIndex.Int64 + 1, end: lastindex})
+					lastgap = gap{start: nullableMaxIndex.Int64 + 1, end: lastindex}
 				}
 			}
 		}
 	}
-	if rows, err := cdb.Query(ctx, cdb.stmtSelectGaps, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
+	if gapCh := ls.getGapCh(); gapCh != nil {
+		for gap := range gapCh {
+			if ctx.Err() == nil {
+				ls.InsideGaps.Add((gap.end - gap.start) + 1)
+				cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
+				ls.GetRawEntries(ctx, gap.start, gap.end, true, ls.sendEntry, &ls.InsideGaps)
+			}
+		}
+		if lastgap.end != 0 && ctx.Err() == nil {
+			cdb.LogInfo("last gap", "url", ls.URL, "stream", ls.Id, "logindex", lastgap.start, "length", (lastgap.end-lastgap.start)+1)
+			ls.GetRawEntries(ctx, lastgap.start, lastgap.end, true, ls.sendEntry, &ls.InsideGaps)
+		}
+	}
+
+	/*if rows, err := cdb.Query(ctx, cdb.stmtSelectGaps, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var gap_start, gap_end int64
@@ -45,7 +55,7 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 			cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
 			ls.GetRawEntries(ctx, gap.start, gap.end, true, ls.sendEntry, &ls.InsideGaps)
 		}
-	}
+	}*/
 }
 
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {

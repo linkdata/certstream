@@ -36,10 +36,18 @@ type LogStream struct {
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
 	Id         int32        // database ID, if available
+	gapCh      chan gap     // protected by LogOperator.mu
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
+}
+
+func (ls *LogStream) getGapCh() (ch chan gap) {
+	ls.mu.Lock()
+	ch = ls.gapCh
+	ls.mu.Unlock()
+	return
 }
 
 func sleep(ctx context.Context, d time.Duration) {
