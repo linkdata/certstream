@@ -28,12 +28,12 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 			if ctx.Err() == nil {
 				ls.InsideGaps.Add((gap.end - gap.start) + 1)
 				cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
-				ls.GetRawEntries(ctx, gap.start, gap.end, true, ls.sendEntry, &ls.InsideGaps)
+				ls.getRawEntries(ctx, gap.start, gap.end, true, ls.sendEntry, &ls.InsideGaps)
 			}
 		}
 		if lastgap.end != 0 && ctx.Err() == nil {
 			cdb.LogInfo("last gap", "url", ls.URL, "stream", ls.Id, "logindex", lastgap.start, "length", (lastgap.end-lastgap.start)+1)
-			ls.GetRawEntries(ctx, lastgap.start, lastgap.end, true, ls.sendEntry, &ls.InsideGaps)
+			ls.getRawEntries(ctx, lastgap.start, lastgap.end, true, ls.sendEntry, &ls.InsideGaps)
 		}
 	}
 
@@ -75,7 +75,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				start := max(0, minIndex-BulkRange)
 				stop := minIndex - 1
 				minIndex = start
-				if !ls.GetRawEntries(ctx, start, stop, true, ls.sendEntry, nil) {
+				if !ls.getRawEntries(ctx, start, stop, true, ls.sendEntry, nil) {
 					cdb.LogInfo("backlog stops", "url", ls.URL, "stream", ls.Id, "logindex", minIndex)
 					ls.addError(ls, fmt.Errorf("log entries are older than %d days", cdb.PgMaxAge))
 					return

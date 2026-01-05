@@ -68,7 +68,7 @@ func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time)
 		}
 		return
 	}
-	ls.GetRawEntries(ctx, end, end, false, fn, nil)
+	ls.getRawEntries(ctx, end, end, false, fn, nil)
 	return
 }
 
@@ -88,7 +88,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		wg.Done()
 	}()
 
-	end, err = ls.NewLastIndex(ctx)
+	end, err = ls.newLastIndex(ctx)
 	if seen := ls.getEndSeen(ctx, end); !seen.IsZero() {
 		if time.Since(seen) > IdleCloseTime {
 			err = errLogIdle{Since: seen}
@@ -106,17 +106,17 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 
 	for err == nil {
 		if start < end {
-			ls.GetRawEntries(ctx, start, end, false, ls.sendEntry, nil)
+			ls.getRawEntries(ctx, start, end, false, ls.sendEntry, nil)
 			if end-start <= LogBatchSize/2 {
 				sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
 			}
 			start = end
 		}
-		end, err = ls.NewLastIndex(ctx)
+		end, err = ls.newLastIndex(ctx)
 	}
 }
 
-func (ls *LogStream) NewLastIndex(ctx context.Context) (lastIndex int64, err error) {
+func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err error) {
 	bo := &backoff.Backoff{
 		Min:    1 * time.Second,
 		Max:    5 * time.Minute,
@@ -252,7 +252,7 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	return true
 }
 
-func (ls *LogStream) GetRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
 	if start > end {
 		return false
 	}
@@ -360,16 +360,6 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 				return
 			}
 		}
-
-		/*for historical && ctx.Err() == nil {
-			if db := ls.DB(); db != nil {
-				if qu := db.QueueUsage(); qu > 50 {
-					sleep(ctx, time.Millisecond*time.Duration(qu-50))
-					continue
-				}
-			}
-			break
-		}*/
 	}
 	return
 }
