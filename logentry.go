@@ -109,7 +109,7 @@ func (le *LogEntry) String() (s string) {
 				b = append(b, ", "...)
 			}
 			if le.Log != nil {
-				b = strconv.AppendQuote(b, le.Log.URL)
+				b = strconv.AppendQuote(b, le.URL())
 				b = append(b, ", "...)
 			}
 		}

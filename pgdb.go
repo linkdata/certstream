@@ -209,7 +209,7 @@ func (cdb *PgDB) ensureStream(ctx context.Context, ls *LogStream) (err error) {
 	if cdb != nil {
 		var b []byte
 		if b, err = json.Marshal(ls.Log); err == nil {
-			row := cdb.QueryRow(ctx, cdb.funcStreamID, ls.URL, ls.LogOperator.Id, string(b))
+			row := cdb.QueryRow(ctx, cdb.funcStreamID, ls.URL(), ls.LogOperator.Id, string(b))
 			err = wrapErr(row.Scan(&ls.Id), cdb.funcStreamID)
 		}
 	}

@@ -28,7 +28,7 @@ type handleEntryFn func(ctx context.Context, now time.Time, logindex int64, entr
 
 type LogStream struct {
 	*LogOperator
-	*loglist3.Log
+	Log        *loglist3.Log
 	HeadClient *client.LogClient
 	TailClient *client.LogClient
 	Count      atomic.Int64 // number of certificates sent to the channel
@@ -40,8 +40,12 @@ type LogStream struct {
 	gapCh      chan gap     // protected by LogOperator.mu
 }
 
+func (ls *LogStream) URL() string {
+	return ls.Log.URL
+}
+
 func (ls *LogStream) String() string {
-	return fmt.Sprintf("LogStream{%q}", ls.Log.URL)
+	return fmt.Sprintf("LogStream{%q}", ls.URL())
 }
 
 func (ls *LogStream) getGapCh() (ch chan gap) {
@@ -81,9 +85,9 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		wg2.Wait()
 		ls.removeStream(ls)
 		if e, ok := err.(errLogIdle); ok {
-			ls.LogInfo("stream stopped", "url", ls.URL, "stream", ls.Id, "idle-since", e.Since)
+			ls.LogInfo("stream stopped", "url", ls.URL(), "stream", ls.Id, "idle-since", e.Since)
 		} else {
-			_ = ls.LogError(err, "stream stopped", "url", ls.URL, "stream", ls.Id)
+			_ = ls.LogError(err, "stream stopped", "url", ls.URL(), "stream", ls.Id)
 		}
 		wg.Done()
 	}()
@@ -340,7 +344,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 		}); err != nil {
 			if ls.handleStreamError(err, "GetRawEntries") {
 				if gapcounter != nil && ctx.Err() == nil {
-					_ = ls.LogError(err, "gap not fillable", "url", ls.URL, "start", start, "end", end)
+					_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
 					gapcounter.Add(start - (end + 1))
 				}
 				return

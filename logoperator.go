@@ -65,7 +65,7 @@ func (lo *LogOperator) Streams() (sl []*LogStream) {
 		sl = append(sl, s)
 	}
 	lo.mu.Unlock()
-	slices.SortFunc(sl, func(a, b *LogStream) int { return strings.Compare(a.URL, b.URL) })
+	slices.SortFunc(sl, func(a, b *LogStream) int { return strings.Compare(a.URL(), b.URL()) })
 	return
 }
 

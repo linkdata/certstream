@@ -68,7 +68,7 @@ func (cs *CertStream) updateStreams(ctx context.Context, wg *sync.WaitGroup) (er
 func (cs *CertStream) removeStream(ls *LogStream) {
 	lo := ls.LogOperator
 	lo.mu.Lock()
-	delete(lo.streams, ls.URL)
+	delete(lo.streams, ls.URL())
 	empty := len(lo.streams) == 0
 	lo.mu.Unlock()
 	if empty {
