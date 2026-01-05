@@ -25,4 +25,5 @@ go.work.sum
 .env
 
 .vscode/
+.gocache/
 AGENTS.md

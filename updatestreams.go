@@ -11,11 +11,9 @@ import (
 	"github.com/google/certificate-transparency-go/loglist3"
 )
 
-func (cs *CertStream) ensureOperatorAndLog(ctx context.Context, op *loglist3.Operator, log *loglist3.Log, wg *sync.WaitGroup) (err error) {
-	opDom := OperatorDomain(log.URL)
-
+func (cs *CertStream) ensureOperator(ctx context.Context, op *loglist3.Operator, opDom string) (logop *LogOperator, err error) {
 	cs.mu.Lock()
-	logop := cs.operators[opDom]
+	logop = cs.operators[opDom]
 	cs.mu.Unlock()
 
 	if logop == nil {
@@ -34,9 +32,26 @@ func (cs *CertStream) ensureOperatorAndLog(ctx context.Context, op *loglist3.Ope
 			}
 		}
 	}
+	return
+}
 
-	if err == nil {
+func (cs *CertStream) ensureOperatorAndLog(ctx context.Context, op *loglist3.Operator, log *loglist3.Log, wg *sync.WaitGroup) (err error) {
+	opDom := OperatorDomain(log.URL)
+
+	var logop *LogOperator
+	if logop, err = cs.ensureOperator(ctx, op, opDom); err == nil {
 		err = logop.ensureStream(ctx, log, wg)
+	}
+
+	return
+}
+
+func (cs *CertStream) ensureOperatorAndTiledLog(ctx context.Context, op *loglist3.Operator, log *loglist3.TiledLog, wg *sync.WaitGroup) (err error) {
+	opDom := OperatorDomain(log.MonitoringURL)
+
+	var logop *LogOperator
+	if logop, err = cs.ensureOperator(ctx, op, opDom); err == nil {
+		err = logop.ensureTiledStream(ctx, log, wg)
 	}
 
 	return
@@ -49,6 +64,13 @@ func (cs *CertStream) updateStreams(ctx context.Context, wg *sync.WaitGroup) (er
 			for _, log := range op.Logs {
 				if log.State.LogStatus() == loglist3.UsableLogStatus {
 					if e := cs.ensureOperatorAndLog(ctx, op, log, wg); e != nil {
+						err = errors.Join(err, e)
+					}
+				}
+			}
+			for _, log := range op.TiledLogs {
+				if log.State.LogStatus() == loglist3.UsableLogStatus {
+					if e := cs.ensureOperatorAndTiledLog(ctx, op, log, wg); e != nil {
 						err = errors.Join(err, e)
 					}
 				}

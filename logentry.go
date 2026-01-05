@@ -108,8 +108,8 @@ func (le *LogEntry) String() (s string) {
 				b = strconv.AppendQuote(b, le.operator.Name)
 				b = append(b, ", "...)
 			}
-			if le.log != nil {
-				b = strconv.AppendQuote(b, le.URL())
+			if url := le.URL(); url != "" {
+				b = strconv.AppendQuote(b, url)
 				b = append(b, ", "...)
 			}
 		}

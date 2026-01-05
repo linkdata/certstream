@@ -12,10 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"filippo.io/sunlight"
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/google/certificate-transparency-go/x509"
 	"github.com/google/trillian/client/backoff"
 )
 
@@ -24,7 +26,7 @@ var LogBatchSize = int64(1000)
 var MaxErrors = 100
 var IdleCloseTime = time.Hour * 24 * 7
 
-type handleEntryFn func(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool)
+type handleLogEntryFn func(ctx context.Context, now time.Time, entry *LogEntry) (wanted bool)
 
 type LogStream struct {
 	*LogOperator
@@ -36,16 +38,59 @@ type LogStream struct {
 	Id         int32        // database ID, if available
 	gapCh      chan gap     // protected by LogOperator.mu
 	log        *loglist3.Log
+	tiledLog   *loglist3.TiledLog
 	headClient *client.LogClient
 	tailClient *client.LogClient
+	headTile   *sunlight.Client
+	tailTile   *sunlight.Client
 }
 
 func (ls *LogStream) URL() string {
-	return ls.log.URL
+	if ls.log != nil {
+		return ls.log.URL
+	}
+	if ls.tiledLog != nil {
+		return ls.tiledLog.MonitoringURL
+	}
+	return ""
 }
 
 func (ls *LogStream) String() string {
 	return fmt.Sprintf("LogStream{%q}", ls.URL())
+}
+
+func (ls *LogStream) logInfo() any {
+	if ls != nil {
+		if ls.log != nil {
+			return ls.log
+		}
+		if ls.tiledLog != nil {
+			return ls.tiledLog
+		}
+	}
+	return nil
+}
+
+func (ls *LogStream) isTiled() bool {
+	return ls != nil && ls.tiledLog != nil
+}
+
+func (ls *LogStream) adjustTailLimiter(historical bool) {
+	if historical {
+		if db := ls.DB(); db != nil {
+			if qu := db.QueueUsage(); qu > 50 {
+				readLimit := int64(1) // 1 byte / sec
+				if ls.tailLimiter != nil {
+					// set rate limit according to queue size
+					scaleFactor := int64(50 - (qu - 50))
+					readLimit = ls.tailLimiter.Reads.Limit.Load() * scaleFactor / 50
+				}
+				ls.subLimiter.Reads.Limit.Store(readLimit)
+			} else {
+				ls.subLimiter.Reads.Limit.Store(0)
+			}
+		}
+	}
 }
 
 func (ls *LogStream) getGapCh() (ch chan gap) {
@@ -65,8 +110,7 @@ func sleep(ctx context.Context, d time.Duration) {
 }
 
 func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time) {
-	fn := func(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool) {
-		le := ls.makeLogEntry(logindex, entry, historical)
+	fn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		if cert := le.Cert(); cert != nil {
 			seen = cert.Seen
 		}
@@ -130,10 +174,28 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 	now := time.Now()
 	lastIndex = ls.LastIndex.Load()
 	err = bo.Retry(ctx, func() error {
-		var sth *ct.SignedTreeHead
-		sth, err = ls.headClient.GetSTH(ctx)
+		var newIndex int64
+		var errFrom string
+		if ls.isTiled() {
+			errFrom = "Checkpoint"
+			if ls.headTile != nil {
+				var checkpoint sunlight.Checkpoint
+				checkpoint, _, err = ls.headTile.Checkpoint(ctx)
+				if err == nil {
+					newIndex = checkpoint.N - 1
+				}
+			} else {
+				err = ErrSunlightClientMissing
+			}
+		} else {
+			errFrom = "GetSTH"
+			var sth *ct.SignedTreeHead
+			sth, err = ls.headClient.GetSTH(ctx)
+			if err == nil {
+				newIndex = int64(sth.TreeSize) - 1 //#nosec G115
+			}
+		}
 		if err == nil {
-			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
 				if lastIndex+LogBatchSize < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
@@ -147,7 +209,7 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 			}
 			return backoff.RetriableError("STH diff too low")
 		}
-		if ls.handleStreamError(err, "GetSTH") {
+		if ls.handleStreamError(err, errFrom) {
 			return err
 		}
 		return backoff.RetriableError(err.Error())
@@ -208,20 +270,63 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 	return le
 }
 
-func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool) {
-	le := ls.makeLogEntry(logindex, entry, historical)
-	if cert := le.Cert(); cert != nil {
-		ls.seeIndex(logindex)
-		wanted = now.Before(cert.NotAfter) || now.Sub(cert.Seen) < time.Hour*24*time.Duration(ls.PgMaxAge)
-		if ctx.Err() == nil {
-			ls.Count.Add(1)
-			ls.LogOperator.Count.Add(1)
-			if db := ls.DB(); db != nil {
-				db.sendToBatcher(ctx, le)
-			} else {
-				select {
-				case <-ctx.Done():
-				case ls.getSendEntryCh() <- le:
+func (ls *LogStream) makeTileLogEntry(logindex int64, entry *sunlight.LogEntry, historical bool) (le *LogEntry) {
+	le = &LogEntry{
+		LogStream:  ls,
+		LogIndex:   logindex,
+		Historical: historical,
+	}
+	if entry != nil {
+		le.Seen = time.UnixMilli(entry.Timestamp).UTC()
+		if entry.IsPrecert {
+			le.PreCert = true
+		}
+		var cert *x509.Certificate
+		var certErr error
+		if entry.IsPrecert {
+			cert, certErr = x509.ParseTBSCertificate(entry.Certificate)
+		} else {
+			cert, certErr = x509.ParseCertificate(entry.Certificate)
+		}
+		if certErr != nil {
+			le.Err = certErr
+		}
+		le.Certificate = cert
+		if entry.IsPrecert && len(entry.PreCertificate) > 0 {
+			shasig := sha256.Sum256(entry.PreCertificate)
+			le.Signature = shasig[:]
+		} else if len(entry.Certificate) > 0 {
+			shasig := sha256.Sum256(entry.Certificate)
+			le.Signature = shasig[:]
+		}
+	}
+	if len(le.Signature) == 0 && le.Certificate != nil {
+		if raw := le.Certificate.Raw; len(raw) > 0 {
+			shasig := sha256.Sum256(raw)
+			le.Signature = shasig[:]
+		} else if raw := le.Certificate.RawTBSCertificate; len(raw) > 0 {
+			shasig := sha256.Sum256(raw)
+			le.Signature = shasig[:]
+		}
+	}
+	return
+}
+
+func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
+	if le != nil {
+		if cert := le.Cert(); cert != nil {
+			ls.seeIndex(le.LogIndex)
+			wanted = now.Before(cert.NotAfter) || now.Sub(cert.Seen) < time.Hour*24*time.Duration(ls.PgMaxAge)
+			if ctx.Err() == nil {
+				ls.Count.Add(1)
+				ls.LogOperator.Count.Add(1)
+				if db := ls.DB(); db != nil {
+					db.sendToBatcher(ctx, le)
+				} else {
+					select {
+					case <-ctx.Done():
+					case ls.getSendEntryCh() <- le:
+					}
 				}
 			}
 		}
@@ -256,60 +361,63 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	return true
 }
 
-func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
-	if start > end {
-		return false
-	}
-	client := ls.headClient
-	if historical && ls.tailClient != nil {
-		client = ls.tailClient
-	}
+func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+	if start <= end {
+		if ls.isTiled() {
+			wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
+		} else {
+			client := ls.headClient
+			if historical && ls.tailClient != nil {
+				client = ls.tailClient
+			}
 
-	maxparallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))
-	totalEntries := (end - start) + 1
-	if historical || maxparallelism == 1 || totalEntries <= LogBatchSize || totalEntries < maxparallelism {
-		return ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
-	}
-
-	type segment struct {
-		start int64
-		end   int64
-	}
-
-	parallelism := min(maxparallelism, totalEntries/LogBatchSize)
-	segments := make([]segment, parallelism)
-	baseSize := totalEntries / parallelism
-	remainder := totalEntries % parallelism
-	segStart := start
-	for i := range parallelism {
-		size := baseSize
-		if int64(i) < remainder {
-			size++
-		}
-		segEnd := min(segStart+size-1, end)
-		segments[i] = segment{start: segStart, end: segEnd}
-		segStart = segEnd + 1
-	}
-
-	var anyWanted atomic.Bool
-	var wg sync.WaitGroup
-	for _, seg := range segments {
-		if seg.start <= seg.end {
-			wg.Add(1)
-			go func(segStart, segEnd int64) {
-				defer wg.Done()
-				if ls.getRawEntriesRange(ctx, client, segStart, segEnd, historical, handleFn, gapcounter) {
-					anyWanted.Store(true)
+			maxparallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))
+			totalEntries := (end - start) + 1
+			if historical || maxparallelism == 1 || totalEntries <= LogBatchSize || totalEntries < maxparallelism {
+				wanted = ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
+			} else {
+				type segment struct {
+					start int64
+					end   int64
 				}
-			}(seg.start, seg.end)
+
+				parallelism := min(maxparallelism, totalEntries/LogBatchSize)
+				segments := make([]segment, parallelism)
+				baseSize := totalEntries / parallelism
+				remainder := totalEntries % parallelism
+				segStart := start
+				for i := range parallelism {
+					size := baseSize
+					if int64(i) < remainder {
+						size++
+					}
+					segEnd := min(segStart+size-1, end)
+					segments[i] = segment{start: segStart, end: segEnd}
+					segStart = segEnd + 1
+				}
+
+				var anyWanted atomic.Bool
+				var wg sync.WaitGroup
+				for _, seg := range segments {
+					if seg.start <= seg.end {
+						wg.Add(1)
+						go func(segStart, segEnd int64) {
+							defer wg.Done()
+							if ls.getRawEntriesRange(ctx, client, segStart, segEnd, historical, handleFn, gapcounter) {
+								anyWanted.Store(true)
+							}
+						}(seg.start, seg.end)
+					}
+				}
+				wg.Wait()
+				wanted = anyWanted.Load()
+			}
 		}
 	}
-	wg.Wait()
-	return anyWanted.Load()
+	return
 }
 
-func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogClient, start, end int64, historical bool, handleFn handleEntryFn, gapcounter *atomic.Int64) (wanted bool) {
-
+func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
 	for start <= end {
 		if ctx.Err() != nil {
 			return
@@ -323,21 +431,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 		var resp *ct.GetEntriesResponse
 		stop := start + min(LogBatchSize, end-start)
 		if err := bo.Retry(ctx, func() error {
-			if historical {
-				if db := ls.DB(); db != nil {
-					if qu := db.QueueUsage(); qu > 50 {
-						readLimit := int64(1) // 1 byte / sec
-						if ls.tailLimiter != nil {
-							// set rate limit according to queue size
-							scaleFactor := int64(50 - (qu - 50))
-							readLimit = ls.tailLimiter.Reads.Limit.Load() * scaleFactor / 50
-						}
-						ls.subLimiter.Reads.Limit.Store(readLimit)
-					} else {
-						ls.subLimiter.Reads.Limit.Store(0)
-					}
-				}
-			}
+			ls.adjustTailLimiter(historical)
 			var err error
 			resp, err = client.GetRawEntries(ctx, start, stop)
 			return err
@@ -352,7 +446,8 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 		} else {
 			now := time.Now()
 			for i := range resp.Entries {
-				if handleFn(ctx, now, start, resp.Entries[i], historical) {
+				le := ls.makeLogEntry(start, resp.Entries[i], historical)
+				if handleFn(ctx, now, le) {
 					wanted = true
 				}
 				start++
@@ -362,6 +457,106 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
 			}
 			if historical && !wanted {
 				return
+			}
+		}
+	}
+	return
+}
+
+func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+	if start <= end {
+		client := ls.headTile
+		if historical && ls.tailTile != nil {
+			client = ls.tailTile
+		}
+		if client != nil {
+			var checkpoint sunlight.Checkpoint
+			bo := &backoff.Backoff{
+				Min:    1 * time.Second,
+				Max:    30 * time.Second,
+				Factor: 2,
+				Jitter: true,
+			}
+			var chkErr error
+			chkErr = bo.Retry(ctx, func() error {
+				ls.adjustTailLimiter(historical)
+				var err error
+				checkpoint, _, err = client.Checkpoint(ctx)
+				if err == nil {
+					return nil
+				}
+				if ls.handleStreamError(err, "Checkpoint") {
+					return err
+				}
+				return backoff.RetriableError(err.Error())
+			})
+			if chkErr == nil {
+				if checkpoint.N > 0 {
+					maxIndex := checkpoint.N - 1
+					if end > maxIndex {
+						end = maxIndex
+					}
+					if start <= end {
+						for start <= end {
+							if ctx.Err() == nil {
+								lastIndex := int64(-1)
+								entryBo := &backoff.Backoff{
+									Min:    1 * time.Second,
+									Max:    30 * time.Second,
+									Factor: 2,
+									Jitter: true,
+								}
+								entryErr := entryBo.Retry(ctx, func() error {
+									lastIndex = -1
+									ls.adjustTailLimiter(historical)
+									now := time.Now()
+									for i, entry := range client.Entries(ctx, checkpoint.Tree, start) {
+										if i > end {
+											break
+										}
+										le := ls.makeTileLogEntry(i, entry, historical)
+										if handleFn(ctx, now, le) {
+											wanted = true
+										}
+										lastIndex = i
+										if gapcounter != nil {
+											gapcounter.Add(-1)
+										}
+									}
+									err := client.Err()
+									if err == nil {
+										return nil
+									}
+									if ls.handleStreamError(err, "Entries") {
+										return err
+									}
+									return backoff.RetriableError(err.Error())
+								})
+								if entryErr == nil {
+									if lastIndex >= start {
+										start = lastIndex + 1
+									} else {
+										start = end + 1
+									}
+								} else if gapcounter != nil && ctx.Err() == nil {
+									if lastIndex >= start {
+										start = lastIndex + 1
+									}
+									_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+									gapcounter.Add(start - (end + 1))
+									start = end + 1
+								} else {
+									start = end + 1
+								}
+							} else {
+								start = end + 1
+							}
+						}
+					}
+				}
+			} else if gapcounter != nil && ctx.Err() == nil {
+				_ = ls.LogError(chkErr, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+				gapcounter.Add(start - (end + 1))
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
@@ -118,6 +119,48 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 				if err = db.ensureStream(ctx, ls); err == nil {
 					lo.mu.Lock()
 					lo.streams[log.URL] = ls
+					lo.mu.Unlock()
+					wg.Add(1)
+					go ls.run(ctx, wg)
+				}
+			}
+		}
+	}
+	return
+}
+
+func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) {
+	var headTile *sunlight.Client
+	if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.GetEntriesParallelism); err == nil {
+		var tailTile *sunlight.Client
+		if lo.TailClient != nil {
+			tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.GetEntriesParallelism)
+		}
+		if err == nil {
+			ls = &LogStream{
+				LogOperator: lo,
+				tiledLog:    log,
+				headTile:    headTile,
+				tailTile:    tailTile,
+			}
+			ls.MinIndex.Store(-1)
+			ls.MaxIndex.Store(-1)
+			ls.LastIndex.Store(-1)
+		}
+	}
+	return
+}
+
+func (lo *LogOperator) ensureTiledStream(ctx context.Context, log *loglist3.TiledLog, wg *sync.WaitGroup) (err error) {
+	lo.mu.Lock()
+	ls := lo.streams[log.MonitoringURL]
+	lo.mu.Unlock()
+	if ls == nil {
+		if ls, err = lo.makeTiledStream(log); err == nil {
+			if db := lo.DB(); db != nil {
+				if err = db.ensureStream(ctx, ls); err == nil {
+					lo.mu.Lock()
+					lo.streams[log.MonitoringURL] = ls
 					lo.mu.Unlock()
 					wg.Add(1)
 					go ls.run(ctx, wg)
