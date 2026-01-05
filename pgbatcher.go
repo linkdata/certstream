@@ -65,12 +65,10 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
 				for _, le := range queued {
 					if !stop {
-						if ch := cdb.getSendEntryCh(); ch != nil {
-							select {
-							case <-ctx.Done():
-								stop = true
-							case ch <- le:
-							}
+						select {
+						case <-ctx.Done():
+							stop = true
+						case cdb.getSendEntryCh() <- le:
 						}
 					}
 				}
