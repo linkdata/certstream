@@ -14,11 +14,11 @@ import (
 
 type LogEntry struct {
 	*LogStream
-	Err          error           // error from RawLogEntryFromLeaf or ToLogEntry, or nil
-	RawLogEntry  *ct.RawLogEntry // may be nil in case of error
-	*ct.LogEntry                 // may be nil in case of error
-	Id           int64           // database id, if available
-	Historical   bool            // true if the entry is from gap or backfilling
+	Err         error           // error from RawLogEntryFromLeaf or ToLogEntry, or nil
+	RawLogEntry *ct.RawLogEntry // may be nil in case of error
+	LogEntry    *ct.LogEntry    // may be nil in case of error
+	Id          int64           // database id, if available
+	Historical  bool            // true if the entry is from gap or backfilling
 }
 
 func (le *LogEntry) appendJSON(b []byte) []byte {
