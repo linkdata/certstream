@@ -57,7 +57,7 @@ type PgDB struct {
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
 	if _, err = db.Exec(ctx, pfx(CreateSchema)); err == nil {
-		if _, err = db.Exec(ctx, pfx(FuncEnsureDomainPK)); err == nil {
+		if _, err = db.Exec(ctx, pfx(FuncDeleteDomainDuplicates)); err == nil {
 			if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
 				if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
 					if _, err = db.Exec(ctx, pfx(FunctionFindSince)); err == nil {

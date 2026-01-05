@@ -5,8 +5,8 @@ import _ "embed"
 //go:embed assets/createschema.sql
 var CreateSchema string
 
-//go:embed assets/funcensuredomainpk.sql
-var FuncEnsureDomainPK string
+//go:embed assets/funcdeletedomainduplicates.sql
+var FuncDeleteDomainDuplicates string
 
 //go:embed assets/funcoperatorid.sql
 var FunctionOperatorID string
