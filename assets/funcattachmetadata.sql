@@ -30,5 +30,6 @@ FROM (
   SELECT CERTDB_split_domain(fqdn) AS s
   FROM unnest(string_to_array(coalesce(_dnsnames, ''), ' ')) AS fqdn
 ) x
-WHERE (s).domain <> '' AND (s).tld <> '';
+WHERE (s).domain <> '' AND (s).tld <> ''
+ON CONFLICT (cert, wild, www, domain, tld) DO NOTHING;
 $$;

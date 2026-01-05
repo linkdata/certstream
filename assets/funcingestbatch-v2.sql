@@ -207,7 +207,8 @@ BEGIN
   SELECT cert_id, wild, www, domain, tld
   FROM parsed_domains
   WHERE domain <> '' AND tld <> ''
-  ORDER BY cert_id;
+  ORDER BY cert_id
+  ON CONFLICT (cert, wild, www, domain, tld) DO NOTHING;
 
 END;
 $$;

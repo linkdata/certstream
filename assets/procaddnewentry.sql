@@ -112,7 +112,8 @@ BEGIN
     LOOP
         INSERT INTO certdb_domain (cert, wild, www, domain, tld)
         SELECT _cert_id, wild, www, domain, tld
-        FROM certdb_split_domain(_fqdn);
+        FROM certdb_split_domain(_fqdn)
+        ON CONFLICT (cert, wild, www, domain, tld) DO NOTHING;
     END LOOP;
 
     /* -------- entry (idempotent) -------- */

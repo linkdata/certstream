@@ -183,7 +183,8 @@ BEGIN
     INSERT INTO CERTDB_domain (cert, wild, www, domain, tld)
     SELECT cert_id, wild, www, domain, tld
     FROM parsed
-    WHERE domain <> '' AND tld <> '';
+    WHERE domain <> '' AND tld <> ''
+    ON CONFLICT (cert, wild, www, domain, tld) DO NOTHING;
 
 END;
 $$;

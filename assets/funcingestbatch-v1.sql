@@ -106,7 +106,7 @@ BEGIN
   ORDER BY stream, logindex
   ON CONFLICT (stream, logindex) DO NOTHING;
 
-  -- 7) Attach metadata (set-wise, idempotent for uri/email/ip; duplicates allowed for domain)
+  -- 7) Attach metadata (set-wise, idempotent for uri/email/ip/domain)
 
   -- URIs
   INSERT INTO CERTDB_uri (cert, uri)
@@ -135,7 +135,7 @@ BEGIN
   ORDER BY x.cert_id, x.addr_txt
   ON CONFLICT (cert, addr) DO NOTHING;
 
-  -- Domains (allow duplicates; DISTINCT trims trivial repeats within the batch)
+  -- Domains (DISTINCT trims trivial repeats within the batch)
   INSERT INTO CERTDB_domain (cert, wild, www, domain, tld)
   SELECT t.cert_id, (d.s).wild, (d.s).www, (d.s).domain, (d.s).tld
   FROM (
@@ -145,6 +145,7 @@ BEGIN
     WHERE dnsnames <> '' AND cert_id IS NOT NULL
   ) d
   JOIN tmp_ingest t ON t.cert_id = d.cert_id
-  WHERE (d.s).domain <> '' AND (d.s).tld <> '';
+  WHERE (d.s).domain <> '' AND (d.s).tld <> ''
+  ON CONFLICT (cert, wild, www, domain, tld) DO NOTHING;
 END;
 $$;
