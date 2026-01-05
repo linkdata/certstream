@@ -27,7 +27,7 @@ func join(l []string) string {
 	return string(b)
 }
 
-func (id *JsonIdentity) Fill(name *pkix.Name) {
+func (id *JsonIdentity) fill(name *pkix.Name) {
 	if name != nil {
 		id.Country = join(name.Country)
 		id.Organization = join(name.Organization)

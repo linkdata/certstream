@@ -22,7 +22,7 @@ func TestGetLogList(t *testing.T) {
 		w.Write([]byte(sampleLogData))
 	}))
 	defer srv.Close()
-	ll, err := GetLogList(context.Background(), http.DefaultClient, srv.URL)
+	ll, err := getLogList(context.Background(), http.DefaultClient, srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

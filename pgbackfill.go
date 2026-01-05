@@ -36,26 +36,6 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 			ls.getRawEntries(ctx, lastgap.start, lastgap.end, true, ls.sendEntry, &ls.InsideGaps)
 		}
 	}
-
-	/*if rows, err := cdb.Query(ctx, cdb.stmtSelectGaps, ls.Id); cdb.LogError(err, "backfillGaps/Query", "url", ls.URL) == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var gap_start, gap_end int64
-			if err = rows.Scan(&gap_start, &gap_end); cdb.LogError(err, "backfillGaps/Scan", "url", ls.URL) == nil {
-				gaps = append(gaps, gap{start: gap_start, end: gap_end})
-			}
-		}
-		rows.Close()
-	}
-	for _, gap := range gaps {
-		ls.InsideGaps.Add((gap.end - gap.start) + 1)
-	}
-	for _, gap := range gaps {
-		if ctx.Err() == nil {
-			cdb.LogInfo("gap", "url", ls.URL, "stream", ls.Id, "logindex", gap.start, "length", (gap.end-gap.start)+1)
-			ls.GetRawEntries(ctx, gap.start, gap.end, true, ls.sendEntry, &ls.InsideGaps)
-		}
-	}*/
 }
 
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {

@@ -14,7 +14,7 @@ func TestJsonIdentityFill(t *testing.T) {
 		Province:     []string{"Stockholm"},
 	}
 	var id JsonIdentity
-	id.Fill(name)
+	id.fill(name)
 
 	if id.CommonName != "Alice" {
 		t.Fatalf("CommonName = %q, want %q", id.CommonName, "Alice")

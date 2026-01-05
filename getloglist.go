@@ -8,9 +8,9 @@ import (
 	"github.com/google/certificate-transparency-go/loglist3"
 )
 
-// GetLogList fetches a CT log list from the given listUrl.
+// getLogList fetches a CT log list from the given listUrl.
 // Usually you would pass loglist3.AllLogListURL for the listUrl.
-func GetLogList(ctx context.Context, httpClient *http.Client, listUrl string) (logList *loglist3.LogList, err error) {
+func getLogList(ctx context.Context, httpClient *http.Client, listUrl string) (logList *loglist3.LogList, err error) {
 	var req *http.Request
 	if req, err = http.NewRequestWithContext(ctx, http.MethodGet, listUrl, nil); err == nil {
 		var resp *http.Response

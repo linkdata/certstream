@@ -40,8 +40,8 @@ func NewJSONCertificate(cert *Certificate) (jsoncert *JsonCertificate) {
 		NotBefore:  cert.NotBefore,
 		NotAfter:   cert.NotAfter,
 	}
-	jsoncert.Issuer.Fill(&cert.Issuer)
-	jsoncert.Subject.Fill(&cert.Subject)
+	jsoncert.Issuer.fill(&cert.Issuer)
+	jsoncert.Subject.fill(&cert.Subject)
 
 	for _, dnsname := range cert.DNSNames {
 		dnsname = strings.ToLower(dnsname)
