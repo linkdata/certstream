@@ -15,14 +15,22 @@ import (
 
 type LogOperator struct {
 	*CertStream
-	*loglist3.Operator
-	Domain   string       // e.g. "letsencrypt.org" or "googleapis.com"
-	Count    atomic.Int64 // atomic; sum of the stream's Count
-	Id       int32        // database ID, if available
-	mu       sync.Mutex   // protects following
+	Domain   string             // e.g. "letsencrypt.org" or "googleapis.com"
+	Count    atomic.Int64       // atomic; sum of the stream's Count
+	Id       int32              // database ID, if available
+	operator *loglist3.Operator // read-only
+	mu       sync.Mutex         // protects following
 	streams  map[string]*LogStream
 	errcount int
 	errors   []*StreamError
+}
+
+func (lo *LogOperator) Name() string {
+	return lo.operator.Name
+}
+
+func (lo *LogOperator) Email() []string {
+	return lo.operator.Email
 }
 
 func (lo *LogOperator) StreamCount() (n int) {
@@ -89,9 +97,9 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 		}
 		ls = &LogStream{
 			LogOperator: lo,
-			Log:         log,
-			HeadClient:  headLogClient,
-			TailClient:  tailLogClient,
+			log:         log,
+			headClient:  headLogClient,
+			tailClient:  tailLogClient,
 		}
 		ls.MinIndex.Store(-1)
 		ls.MaxIndex.Store(-1)

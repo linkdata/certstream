@@ -104,11 +104,11 @@ func (le *LogEntry) String() (s string) {
 	b = append(b, "LogEntry{"...)
 	if le != nil {
 		if le.LogStream != nil {
-			if le.Operator != nil {
-				b = strconv.AppendQuote(b, le.Operator.Name)
+			if le.operator != nil {
+				b = strconv.AppendQuote(b, le.operator.Name)
 				b = append(b, ", "...)
 			}
-			if le.Log != nil {
+			if le.log != nil {
 				b = strconv.AppendQuote(b, le.URL())
 				b = append(b, ", "...)
 			}

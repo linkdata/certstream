@@ -199,7 +199,7 @@ func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 
 func (cdb *PgDB) ensureOperator(ctx context.Context, lo *LogOperator) (err error) {
 	if cdb != nil {
-		row := cdb.QueryRow(ctx, cdb.funcOperatorID, lo.Name, strings.Join(lo.Email, ","))
+		row := cdb.QueryRow(ctx, cdb.funcOperatorID, lo.operator.Name, strings.Join(lo.operator.Email, ","))
 		err = wrapErr(row.Scan(&lo.Id), cdb.funcOperatorID)
 	}
 	return
@@ -208,7 +208,7 @@ func (cdb *PgDB) ensureOperator(ctx context.Context, lo *LogOperator) (err error
 func (cdb *PgDB) ensureStream(ctx context.Context, ls *LogStream) (err error) {
 	if cdb != nil {
 		var b []byte
-		if b, err = json.Marshal(ls.Log); err == nil {
+		if b, err = json.Marshal(ls.log); err == nil {
 			row := cdb.QueryRow(ctx, cdb.funcStreamID, ls.URL(), ls.LogOperator.Id, string(b))
 			err = wrapErr(row.Scan(&ls.Id), cdb.funcStreamID)
 		}

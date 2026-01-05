@@ -28,9 +28,6 @@ type handleEntryFn func(ctx context.Context, now time.Time, logindex int64, entr
 
 type LogStream struct {
 	*LogOperator
-	Log        *loglist3.Log
-	HeadClient *client.LogClient
-	TailClient *client.LogClient
 	Count      atomic.Int64 // number of certificates sent to the channel
 	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
@@ -38,10 +35,13 @@ type LogStream struct {
 	InsideGaps atomic.Int64 // atomic: number of remaining entries inside gaps
 	Id         int32        // database ID, if available
 	gapCh      chan gap     // protected by LogOperator.mu
+	log        *loglist3.Log
+	headClient *client.LogClient
+	tailClient *client.LogClient
 }
 
 func (ls *LogStream) URL() string {
-	return ls.Log.URL
+	return ls.log.URL
 }
 
 func (ls *LogStream) String() string {
@@ -131,7 +131,7 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 	lastIndex = ls.LastIndex.Load()
 	err = bo.Retry(ctx, func() error {
 		var sth *ct.SignedTreeHead
-		sth, err = ls.HeadClient.GetSTH(ctx)
+		sth, err = ls.headClient.GetSTH(ctx)
 		if err == nil {
 			newIndex := int64(sth.TreeSize) - 1 //#nosec G115
 			if lastIndex < newIndex {
@@ -260,9 +260,9 @@ func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, histor
 	if start > end {
 		return false
 	}
-	client := ls.HeadClient
-	if historical && ls.TailClient != nil {
-		client = ls.TailClient
+	client := ls.headClient
+	if historical && ls.tailClient != nil {
+		client = ls.tailClient
 	}
 
 	maxparallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))

@@ -61,7 +61,7 @@ func (cs *CertStream) Operators() (operators []*LogOperator) {
 		operators = append(operators, logop)
 	}
 	cs.mu.Unlock()
-	slices.SortFunc(operators, func(a, b *LogOperator) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(operators, func(a, b *LogOperator) int { return strings.Compare(a.operator.Name, b.operator.Name) })
 	return
 }
 

@@ -21,7 +21,7 @@ func (cs *CertStream) ensureOperatorAndLog(ctx context.Context, op *loglist3.Ope
 	if logop == nil {
 		logop = &LogOperator{
 			CertStream: cs,
-			Operator:   op,
+			operator:   op,
 			Domain:     opDom,
 			streams:    make(map[string]*LogStream),
 		}
