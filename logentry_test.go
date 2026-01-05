@@ -3,8 +3,6 @@ package certstream
 import (
 	"slices"
 	"testing"
-
-	ct "github.com/google/certificate-transparency-go"
 )
 
 func TestLogEntryIndexNilCases(t *testing.T) {
@@ -16,7 +14,7 @@ func TestLogEntryIndexNilCases(t *testing.T) {
 
 func TestLogEntryIndexFromCT(t *testing.T) {
 	le := LogEntry{
-		RawLogEntry: &ct.RawLogEntry{Index: 12345},
+		LogIndex: 12345,
 	}
 	if got := le.Index(); got != 12345 {
 		t.Fatalf("Index() = %d, want 12345", got)
@@ -28,17 +26,17 @@ func TestLogEntryCertNilCases(t *testing.T) {
 	if le.Cert() != nil {
 		t.Fatalf("Cert() on zero LogEntry should be nil")
 	}
-	le = LogEntry{RawLogEntry: &ct.RawLogEntry{}}
+	le = LogEntry{LogIndex: 1}
 	if le.Cert() != nil {
-		t.Fatalf("Cert() with RawLogEntry only should be nil")
+		t.Fatalf("Cert() with LogIndex only should be nil")
 	}
 }
 
 // Smoke test for String() not panicking and containing some key fields.
 func TestLogEntryStringStable(t *testing.T) {
 	le := LogEntry{
-		RawLogEntry: &ct.RawLogEntry{Index: 7},
-		Historical:  true,
+		LogIndex:   7,
+		Historical: true,
 	}
 	s := le.String()
 	if s == "" {

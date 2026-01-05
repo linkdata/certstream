@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -162,18 +163,45 @@ func (ls *LogStream) seeIndex(logindex int64) {
 }
 
 func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry {
-	var ctle *ct.LogEntry
 	ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &entry)
+	var ctle *ct.LogEntry
 	if leaferr == nil {
 		ctle, leaferr = ctrle.ToLogEntry()
 	}
-	return &LogEntry{
-		LogStream:   ls,
-		Err:         leaferr,
-		RawLogEntry: ctrle,
-		LogEntry:    ctle,
-		Historical:  historical,
+	le := &LogEntry{
+		LogStream:  ls,
+		Err:        leaferr,
+		LogIndex:   logindex,
+		Historical: historical,
 	}
+	if ctle != nil {
+		if ctle.X509Cert != nil {
+			le.Certificate = ctle.X509Cert
+		} else if ctle.Precert != nil {
+			le.Precert = true
+			le.Certificate = ctle.Precert.TBSCertificate
+		}
+	}
+	if ctrle != nil {
+		if len(ctrle.Cert.Data) > 0 {
+			shasig := sha256.Sum256(ctrle.Cert.Data)
+			le.signature = shasig[:]
+		}
+		if tse := ctrle.Leaf.TimestampedEntry; tse != nil {
+			ts := int64(tse.Timestamp) //#nosec G115
+			le.seen = time.UnixMilli(ts).UTC()
+		}
+	}
+	if len(le.signature) == 0 && le.Certificate != nil {
+		if raw := le.Certificate.Raw; len(raw) > 0 {
+			shasig := sha256.Sum256(raw)
+			le.signature = shasig[:]
+		} else if raw := le.Certificate.RawTBSCertificate; len(raw) > 0 {
+			shasig := sha256.Sum256(raw)
+			le.signature = shasig[:]
+		}
+	}
+	return le
 }
 
 func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, logindex int64, entry ct.LeafEntry, historical bool) (wanted bool) {
