@@ -178,27 +178,27 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 		if ctle.X509Cert != nil {
 			le.Certificate = ctle.X509Cert
 		} else if ctle.Precert != nil {
-			le.Precert = true
+			le.PreCert = true
 			le.Certificate = ctle.Precert.TBSCertificate
 		}
 	}
 	if ctrle != nil {
 		if len(ctrle.Cert.Data) > 0 {
 			shasig := sha256.Sum256(ctrle.Cert.Data)
-			le.signature = shasig[:]
+			le.Signature = shasig[:]
 		}
 		if tse := ctrle.Leaf.TimestampedEntry; tse != nil {
 			ts := int64(tse.Timestamp) //#nosec G115
-			le.seen = time.UnixMilli(ts).UTC()
+			le.Seen = time.UnixMilli(ts).UTC()
 		}
 	}
-	if len(le.signature) == 0 && le.Certificate != nil {
+	if len(le.Signature) == 0 && le.Certificate != nil {
 		if raw := le.Certificate.Raw; len(raw) > 0 {
 			shasig := sha256.Sum256(raw)
-			le.signature = shasig[:]
+			le.Signature = shasig[:]
 		} else if raw := le.Certificate.RawTBSCertificate; len(raw) > 0 {
 			shasig := sha256.Sum256(raw)
-			le.signature = shasig[:]
+			le.Signature = shasig[:]
 		}
 	}
 	return le

@@ -14,12 +14,12 @@ type LogEntry struct {
 	*LogStream
 	Err         error // error from RawLogEntryFromLeaf or ToLogEntry, or nil
 	LogIndex    int64
-	Precert     bool
+	PreCert     bool
 	Certificate *x509.Certificate
 	Id          int64 // database id, if available
 	Historical  bool  // true if the entry is from gap or backfilling
-	signature   []byte
-	seen        time.Time
+	Signature   []byte
+	Seen        time.Time
 }
 
 func (le *LogEntry) appendJSON(b []byte) []byte {
@@ -127,15 +127,12 @@ func (le *LogEntry) String() (s string) {
 func (le *LogEntry) Cert() (crt *Certificate) {
 	if le != nil && le.Certificate != nil {
 		crt = &Certificate{
-			PreCert:     le.Precert,
+			PreCert:     le.PreCert,
 			Certificate: le.Certificate,
+			Signature:   le.Signature,
+			Seen:        le.Seen,
 		}
-		if len(le.signature) > 0 {
-			crt.Signature = le.signature
-		}
-		if !le.seen.IsZero() {
-			crt.Seen = le.seen
-		} else {
+		if le.Seen.IsZero() {
 			crt.Seen = time.Now().UTC()
 		}
 	}
@@ -146,7 +143,7 @@ func (le *LogEntry) Cert() (crt *Certificate) {
 func (le *LogEntry) Index() (index int64) {
 	index = -1
 	if le != nil {
-		if le.LogIndex != 0 || le.Certificate != nil || le.Precert || le.Err != nil {
+		if le.LogIndex != 0 || le.Certificate != nil || le.PreCert || le.Err != nil {
 			index = le.LogIndex
 		}
 	}
