@@ -72,7 +72,7 @@ IF to_regclass('CERTDB_domain') IS NULL THEN
     domain TEXT NOT NULL,
     tld TEXT NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS CERTDB_domain_cert_idx ON CERTDB_domain (cert);
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_domain_full_idx ON CERTDB_domain (cert, wild, www, tld, domain);
   CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops) WITH (fastupdate = off);
 END IF;
 
