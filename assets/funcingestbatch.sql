@@ -3,7 +3,6 @@ RETURNS void
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_batch_size integer;
 BEGIN
     PERFORM set_config('synchronous_commit', 'off', true);
 
@@ -39,12 +38,6 @@ BEGIN
     INSERT INTO CERTDB_ident(organization, province, country)
     SELECT n.organization, n.province, n.country 
     FROM needed_idents n
-    WHERE NOT EXISTS (
-        SELECT 1 FROM CERTDB_ident i 
-        WHERE i.organization = n.organization 
-          AND i.province = n.province 
-          AND i.country = n.country
-    )
     ORDER BY organization, province, country
     ON CONFLICT (organization, province, country) DO NOTHING;
 
@@ -136,8 +129,6 @@ BEGIN
     SELECT ci.id AS cert_id, uc.sha256, uc.uris, uc.emails, uc.ipaddrs, uc.dnsnames
     FROM cert_inserts ci
     INNER JOIN unique_certs uc ON uc.sha256 = ci.sha256;
-
-    SELECT COUNT(*) INTO v_batch_size FROM tmp_new_certs;
 
     INSERT INTO CERTDB_uri (cert, uri)
     SELECT DISTINCT tnc.cert_id, trim(u.uri)
