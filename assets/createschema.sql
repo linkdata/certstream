@@ -103,66 +103,87 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
-CREATE OR REPLACE FUNCTION CERTDB_fqdn(
-  _wild BOOLEAN,
-  _www SMALLINT,
-  _domain TEXT,
-  _tld TEXT
-)
-RETURNS TEXT
-LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
-AS $fqdn_fn$
-DECLARE
-  _ary TEXT[];
-BEGIN
-  IF _wild THEN
-    _ary := _ary || '*'::text;
-  END IF;
-  _ary := ARRAY_CAT(_ary, ARRAY_FILL('www'::text, ARRAY[_www]));
-  IF _domain <> '' THEN
-    _ary := _ary || _domain;
-  END IF;
-  IF _tld <> '' THEN
-    _ary := _ary || _tld;
-  END IF;
-  RETURN ARRAY_TO_STRING(_ary, '.');
-END;
-$fqdn_fn$
-;
 
-CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn TEXT)
-  RETURNS TABLE(wild BOOL, www SMALLINT, domain TEXT, tld TEXT)
-  LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS
-$split_fn$
-DECLARE
-  _wild BOOL NOT NULL DEFAULT FALSE;
-  _www SMALLINT NOT NULL DEFAULT 0;
-  _domain TEXT NOT NULL DEFAULT '';
-  _tld TEXT NOT NULL DEFAULT '';
-  _pos INTEGER NOT NULL DEFAULT 1;
-  _ary TEXT[];
-  _len INTEGER;
-BEGIN
-  _ary := STRING_TO_ARRAY(_fqdn, '.');
-  _len := ARRAY_LENGTH(_ary, 1);
-  IF _len > 0 THEN
-    IF _ary[_pos] = '*' THEN
-      _wild := TRUE;
-      _pos := _pos + 1;
-    END IF;
-    WHILE _pos + 1 < _len AND _ary[_pos] = 'www' LOOP
-      _www := _www + 1;
-      _pos := _pos + 1;
-    END LOOP;
-    IF _pos < _len OR _pos > 1 AND _pos <= _len THEN
-      _tld := _ary[_len];
-      _len := _len - 1;
-    END IF;
-    _domain := ARRAY_TO_STRING(_ary[_pos:_len], '.');
-  END IF;
-  RETURN QUERY SELECT _wild, _www, _domain, _tld;
-END;
-$split_fn$;
+CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
+RETURNS TABLE(wild boolean, www smallint, domain text, tld text)
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+WITH a AS (
+  SELECT string_to_array(_fqdn, '.') AS ary
+),
+b AS (
+  SELECT
+    ary,
+    COALESCE(array_length(ary, 1), 0) AS len
+  FROM a
+),
+c AS (
+  SELECT
+    ary,
+    len,
+    (len > 0 AND ary[1] = '*') AS wild,
+    CASE WHEN len > 0 AND ary[1] = '*' THEN 2 ELSE 1 END AS start_pos,
+    (len - 2) AS www_limit_pos   -- loop condition: _pos + 1 < _len  => _pos <= _len-2
+  FROM b
+),
+d AS (
+  SELECT
+    ary,
+    len,
+    wild,
+    start_pos,
+    CASE
+      WHEN len = 0 OR www_limit_pos < start_pos THEN 0
+      ELSE (
+        WITH gs AS (
+          SELECT i
+          FROM generate_series(start_pos, www_limit_pos) AS g(i)
+        ),
+        first_non AS (
+          SELECT min(i) AS i
+          FROM gs
+          WHERE ary[i] <> 'www'
+        )
+        SELECT
+          CASE
+            WHEN (SELECT i FROM first_non) IS NULL THEN (www_limit_pos - start_pos + 1)
+            ELSE ((SELECT i FROM first_non) - start_pos)
+          END
+      )
+    END::smallint AS www
+  FROM c
+)
+SELECT
+  wild,
+  www,
+  COALESCE(array_to_string(ary[(start_pos + www) : (len - 1)], '.'), '') AS domain,
+  COALESCE(ary[len], '') AS tld
+FROM d;
+$$;
+
+
+CREATE OR REPLACE FUNCTION CERTDB_fqdn(
+  _wild boolean,
+  _www smallint,
+  _domain text,
+  _tld text
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+SELECT array_to_string(
+  (CASE WHEN _wild THEN ARRAY['*']::text[] ELSE ARRAY[]::text[] END) ||
+  array_fill('www'::text, ARRAY[_www]) ||
+  (CASE WHEN _domain <> '' THEN ARRAY[_domain] ELSE ARRAY[]::text[] END) ||
+  (CASE WHEN _tld    <> '' THEN ARRAY[_tld]    ELSE ARRAY[]::text[] END),
+  '.'
+);
+$$;
+
 
 IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
