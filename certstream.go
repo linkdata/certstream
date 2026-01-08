@@ -125,22 +125,25 @@ func (cs *CertStream) Close() {
 	}
 }
 
-func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
+func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
+	var wg sync.WaitGroup
 	ticker := time.NewTicker(time.Hour * 24)
 
 	defer func() {
 		ticker.Stop()
-		wg.Done()
+		wg.Wait()
 		cs.Close()
+		pwg.Done()
 	}()
 
-	_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@1")
+	wg.Add(1)
+	_ = cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@1")
 
 	if db := cs.DB(); db != nil {
 		wg.Add(3)
-		go db.runWorkers(ctx, wg)
-		go db.estimator(ctx, wg)
-		go db.selectAllGaps(ctx, wg)
+		go db.runWorkers(ctx, &wg)
+		go db.estimator(ctx, &wg)
+		go db.selectAllGaps(ctx, &wg)
 	}
 
 	for {
@@ -148,7 +151,8 @@ func (cs *CertStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			_ = cs.LogError(cs.updateStreams(ctx, wg), "CertStream:run@2")
+			wg.Add(1)
+			_ = cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@2")
 		}
 	}
 }

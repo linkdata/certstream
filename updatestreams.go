@@ -58,6 +58,7 @@ func (cs *CertStream) ensureOperatorAndTiledLog(ctx context.Context, op *loglist
 }
 
 func (cs *CertStream) updateStreams(ctx context.Context, wg *sync.WaitGroup) (err error) {
+	defer wg.Done()
 	var logList *loglist3.LogList
 	if logList, err = getLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
 		for _, op := range logList.Operators {
