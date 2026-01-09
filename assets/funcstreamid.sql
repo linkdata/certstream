@@ -1,23 +1,26 @@
 CREATE OR REPLACE FUNCTION CERTDB_stream_id(
-  IN s_url TEXT,
-  IN s_operator INTEGER,
-  IN s_json TEXT
+  s_url      text,
+  s_operator integer,
+  s_json     text
 )
-RETURNS INTEGER
-LANGUAGE plpgsql
+RETURNS integer
+LANGUAGE sql
 AS $$
-DECLARE
-  _id INTEGER;
-BEGIN
-  SELECT id FROM CERTDB_stream INTO _id WHERE url=s_url;
-  IF _id IS NULL THEN
-    INSERT INTO CERTDB_stream (url, operator, json) VALUES (s_url, s_operator, s_json)
-      ON CONFLICT DO NOTHING RETURNING id INTO _id;
-    IF _id IS NULL THEN
-      SELECT id FROM CERTDB_stream INTO _id WHERE url=s_url;
-    END IF;
-  END IF;
-  RETURN _id;
-END;
-$$
-;
+WITH existing AS (
+  SELECT id
+  FROM CERTDB_stream
+  WHERE url = $1
+),
+upsert AS (
+  INSERT INTO CERTDB_stream (url, operator, json)
+  SELECT $1, $2, $3
+  WHERE NOT EXISTS (SELECT 1 FROM existing)
+  ON CONFLICT (url) DO UPDATE
+    SET url = EXCLUDED.url
+  RETURNING id
+)
+SELECT id FROM upsert
+UNION ALL
+SELECT id FROM existing
+LIMIT 1;
+$$;

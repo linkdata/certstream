@@ -1,22 +1,25 @@
 CREATE OR REPLACE FUNCTION CERTDB_operator_id(
-  IN s_name TEXT,
-  IN s_email TEXT
+  s_name  text,
+  s_email text
 )
-RETURNS INTEGER
-LANGUAGE plpgsql
+RETURNS integer
+LANGUAGE sql
 AS $$
-DECLARE
-  _id INTEGER;
-BEGIN
-  SELECT id FROM CERTDB_operator INTO _id WHERE name=s_name AND email=s_email;
-  IF _id IS NULL THEN
-    INSERT INTO CERTDB_operator (name, email) VALUES (s_name, s_email)
-      ON CONFLICT DO NOTHING RETURNING id INTO _id;
-    IF _id IS NULL THEN
-      SELECT id FROM CERTDB_operator INTO _id WHERE name=s_name AND email=s_email;
-    END IF;
-  END IF;
-  RETURN _id;
-END;
-$$
-;
+WITH existing AS (
+  SELECT id
+  FROM CERTDB_operator
+  WHERE name = $1 AND email = $2
+),
+upsert AS (
+  INSERT INTO CERTDB_operator (name, email)
+  SELECT $1, $2
+  WHERE NOT EXISTS (SELECT 1 FROM existing)
+  ON CONFLICT (name, email) DO UPDATE
+    SET name = EXCLUDED.name  -- no-op update so RETURNING always works
+  RETURNING id
+)
+SELECT id FROM upsert
+UNION ALL
+SELECT id FROM existing
+LIMIT 1;
+$$;
