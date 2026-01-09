@@ -5,23 +5,14 @@ import _ "embed"
 //go:embed assets/createschema.sql
 var CreateSchema string
 
-//go:embed assets/funcdeletedomainduplicates.sql
-var FuncDeleteDomainDuplicates string
-
 //go:embed assets/funcoperatorid.sql
 var FunctionOperatorID string
 
 //go:embed assets/funcstreamid.sql
 var FunctionStreamID string
 
-//go:embed assets/funcfindsince.sql
-var FunctionFindSince string
-
 //go:embed assets/funcingestbatch.sql
 var FuncIngestBatch string
-
-//go:embed assets/funcensurecert.sql
-var FuncEnsureCert string
 
 //go:embed assets/selectgaps.sql
 var SelectGaps string

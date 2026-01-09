@@ -34,10 +34,7 @@ type PgDB struct {
 	Workers               atomic.Int32
 	funcOperatorID        string
 	funcStreamID          string
-	funcEnsureIdent       string
-	funcFindSince         string
 	funcIngestBatch       string
-	stmtEnsureCert        string
 	stmtSelectGaps        string
 	stmtSelectAllGaps     string
 	stmtSelectMinIdx      string
@@ -56,13 +53,9 @@ type PgDB struct {
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
 	if _, err = db.Exec(ctx, pfx(CreateSchema)); err == nil {
-		if _, err = db.Exec(ctx, pfx(FuncDeleteDomainDuplicates)); err == nil {
-			if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
-				if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
-					if _, err = db.Exec(ctx, pfx(FunctionFindSince)); err == nil {
-						_, err = db.Exec(ctx, pfx(FuncIngestBatch))
-					}
-				}
+		if _, err = db.Exec(ctx, pfx(FunctionOperatorID)); err == nil {
+			if _, err = db.Exec(ctx, pfx(FunctionStreamID)); err == nil {
+				_, err = db.Exec(ctx, pfx(FuncIngestBatch))
 			}
 		}
 	}
@@ -73,8 +66,6 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
-	const callFindSince = `SELECT CERTDB_find_since($1,$2,$3,$4);`
-	const callEnsureCert = `SELECT CERTDB_ensure_cert($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14);`
 
 	if cs.Config.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
@@ -107,10 +98,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							Pfx:                   pfx,
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
-							funcEnsureIdent:       pfx(`SELECT CERTDB_ensure_ident($1,$2,$3);`),
-							funcFindSince:         pfx(callFindSince),
 							funcIngestBatch:       pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
-							stmtEnsureCert:        pfx(callEnsureCert),
 							stmtSelectGaps:        pfx(SelectGaps),
 							stmtSelectAllGaps:     pfx(SelectAllGaps),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
