@@ -43,9 +43,9 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     sha256 BYTEA NOT NULL,
     precert BOOLEAN NOT NULL
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
-  CREATE INDEX IF NOT EXISTS CERTDB_cert_notafter_idx ON CERTDB_cert (notafter);
-  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx 
+  CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256); -- same hash as crt.sh uses
+  CREATE INDEX IF NOT EXISTS CERTDB_cert_notafter_idx ON CERTDB_cert (notafter); -- used when pruning old certs
+  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx -- used when computing 'since'
     ON CERTDB_cert (commonname, subject, issuer, notbefore DESC)
     INCLUDE (since, notafter);
   CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_empty_idx 
