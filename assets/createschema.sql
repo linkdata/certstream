@@ -188,7 +188,7 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
     cert,
     CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld) as fqdn,
     cc.notbefore AS notbefore,
-    cd.domain !~ '^[[:ascii:]]+$'::text AS idna,
+    (cd.domain ~ '[^\x00-\x7F]') AS idna,
     NOW() between cc.notbefore and cc.notafter as valid,
     cc.precert AS precert,
     iss.organization as issuer,
