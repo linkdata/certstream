@@ -44,6 +44,7 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     precert BOOLEAN NOT NULL
   );
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_cert_sha256_idx ON CERTDB_cert (sha256);
+  CREATE INDEX IF NOT EXISTS CERTDB_cert_notafter_idx ON CERTDB_cert (notafter);
   CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notbefore_idx 
     ON CERTDB_cert (commonname, subject, issuer, notbefore DESC)
     INCLUDE (since, notafter);
@@ -101,7 +102,6 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   );
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
-
 
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
 RETURNS TABLE(wild boolean, www smallint, domain text, tld text)
@@ -162,7 +162,6 @@ SELECT
 FROM d;
 $$;
 
-
 CREATE OR REPLACE FUNCTION CERTDB_fqdn(
   _wild boolean,
   _www smallint,
@@ -182,7 +181,6 @@ SELECT array_to_string(
   '.'
 );
 $$;
-
 
 IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_dnsnames AS
