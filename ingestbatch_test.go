@@ -334,3 +334,43 @@ func TestIngestBatch_SplitDomainOncePerFQDN(t *testing.T) {
 		}
 	}
 }
+
+func TestIngestBatch_DebugLogging(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if _, err := conn.Exec(ctx, "SET certstream.debug = 'on';"); err != nil {
+		t.Fatalf("set certstream.debug failed: %v", err)
+	} else {
+		if _, err = conn.Exec(ctx, "DROP TABLE IF EXISTS CERTDB_ingest_log;"); err != nil {
+			t.Fatalf("drop ingest log failed: %v", err)
+		} else {
+			seen := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+			if err = callIngestBatch(ctx, conn, ingestRow(streamID, 1, "example.com", seen)); err != nil {
+				t.Fatalf("ingest batch failed: %v", err)
+			} else {
+				var logCount int
+				if err = conn.QueryRow(ctx, "SELECT COUNT(*) FROM CERTDB_ingest_log;").Scan(&logCount); err != nil {
+					t.Fatalf("count ingest log failed: %v", err)
+				} else if logCount == 0 {
+					t.Fatalf("ingest log count = 0, want > 0")
+				} else {
+					var statementName string
+					var duration float64
+					var explain string
+					if err = conn.QueryRow(ctx,
+						"SELECT statement_name, duration_ms, explain FROM CERTDB_ingest_log ORDER BY id LIMIT 1;").
+						Scan(&statementName, &duration, &explain); err != nil {
+						t.Fatalf("select ingest log failed: %v", err)
+					} else if statementName == "" {
+						t.Fatalf("ingest log statement name is empty")
+					} else if duration < 0 {
+						t.Fatalf("ingest log duration = %f, want >= 0", duration)
+					} else if explain == "" {
+						t.Fatalf("ingest log explain is empty")
+					}
+				}
+			}
+		}
+	}
+}

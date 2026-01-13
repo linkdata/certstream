@@ -103,6 +103,18 @@ IF to_regclass('CERTDB_uri') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_uri_uri_idx ON CERTDB_uri (uri);
 END IF;
 
+IF to_regclass('CERTDB_ingest_log') IS NULL THEN
+  CREATE TABLE IF NOT EXISTS CERTDB_ingest_log (
+    id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    logged_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
+    statement_name TEXT NOT NULL,
+    statement_sql TEXT NOT NULL,
+    duration_ms DOUBLE PRECISION NOT NULL,
+    explain TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS CERTDB_ingest_log_logged_at_idx ON CERTDB_ingest_log (logged_at);
+END IF;
+
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
 RETURNS TABLE(wild boolean, www smallint, domain text, tld text)
 LANGUAGE sql
