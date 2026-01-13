@@ -377,7 +377,7 @@ WHERE CERTDB_cert.id = target.id;
 	return
 }
 
-func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int, batchSize int) (rowsDeleted int, err error) {
+func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int, err error) {
 	if cdb != nil {
 		if batchSize > 0 {
 			query := cdb.Pfx(`

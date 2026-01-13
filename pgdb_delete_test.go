@@ -54,7 +54,7 @@ RETURNING id;`),
 	return
 }
 
-func insertTestEntry(ctx context.Context, q execQueryer, pfx func(string) string, certID int64, logIndex int64, streamID int, seen time.Time) (err error) {
+func insertTestEntry(ctx context.Context, q execQueryer, pfx func(string) string, certID int64, logIndex int64, streamID int32, seen time.Time) (err error) {
 	seen = seen.UTC()
 	_, err = q.Exec(ctx, pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream) VALUES ($1, $2, $3, $4);`),
 		seen, certID, logIndex, streamID,
@@ -62,7 +62,7 @@ func insertTestEntry(ctx context.Context, q execQueryer, pfx func(string) string
 	return
 }
 
-func insertTestCertWithEntry(ctx context.Context, db *certstream.PgDB, streamID int, identID int, logIndex int64, notBefore time.Time, notAfter time.Time, shaHex string) (certID int64, err error) {
+func insertTestCertWithEntry(ctx context.Context, db *certstream.PgDB, streamID int32, identID int, logIndex int64, notBefore time.Time, notAfter time.Time, shaHex string) (certID int64, err error) {
 	if certID, err = insertTestCert(ctx, db, db.Pfx, identID, notBefore, notAfter, shaHex); err == nil {
 		err = insertTestEntry(ctx, db, db.Pfx, certID, logIndex, streamID, notAfter)
 	}
@@ -81,14 +81,14 @@ func countRows(ctx context.Context, db *certstream.PgDB, query string, args ...a
 	return
 }
 
-func streamEntryCounts(ctx context.Context, db *certstream.PgDB, streamID int) (streamCount int, entryCount int, err error) {
+func streamEntryCounts(ctx context.Context, db *certstream.PgDB, streamID int32) (streamCount int, entryCount int, err error) {
 	if streamCount, err = countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_stream WHERE id=$1;`, streamID); err == nil {
 		entryCount, err = countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_entry WHERE stream=$1;`, streamID)
 	}
 	return
 }
 
-func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int) (indices []int64, err error) {
+func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int32) (indices []int64, err error) {
 	var rows pgx.Rows
 	if rows, err = db.Query(ctx, db.Pfx(`SELECT logindex FROM CERTDB_entry WHERE stream=$1 ORDER BY logindex ASC;`), streamID); err == nil {
 		defer rows.Close()

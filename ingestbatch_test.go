@@ -19,7 +19,7 @@ var (
 	ingestNotAfter  = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
-func ingestRow(streamID int, logIndex int64, dnsnames string, seen time.Time) map[string]any {
+func ingestRow(streamID int32, logIndex int64, dnsnames string, seen time.Time) map[string]any {
 	return map[string]any{
 		"iss_org":     "Issuer Org",
 		"iss_prov":    "CA",
@@ -63,7 +63,7 @@ func ingestCounts(ctx context.Context, conn *pgx.Conn) (certCount, entryCount, d
 	return
 }
 
-func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, streamID int) {
+func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, streamID int32) {
 	t.Helper()
 
 	if _, err := exec.LookPath("docker"); err != nil {
