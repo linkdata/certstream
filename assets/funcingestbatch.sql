@@ -170,13 +170,22 @@ BEGIN
         CROSS JOIN LATERAL unnest(string_to_array(tnc.dnsnames, ' ')) AS d(fqdn)
         WHERE tnc.dnsnames <> '' AND trim(d.fqdn) <> ''
     ),
-    parsed AS (
-        SELECT DISTINCT cert_id, (CERTDB_split_domain(fqdn)).*
+    unique_fqdns AS (
+        SELECT DISTINCT fqdn
         FROM expanded
+    ),
+    parsed AS (
+        SELECT uf.fqdn, (CERTDB_split_domain(uf.fqdn)).*
+        FROM unique_fqdns uf
+    ),
+    cert_domains AS (
+        SELECT e.cert_id, p.wild, p.www, p.domain, p.tld
+        FROM expanded e
+        INNER JOIN parsed p ON p.fqdn = e.fqdn
     )
     INSERT INTO CERTDB_domain (cert, wild, www, domain, tld)
-    SELECT cert_id, wild, www, domain, tld
-    FROM parsed
+    SELECT DISTINCT cert_id, wild, www, domain, tld
+    FROM cert_domains
     WHERE domain <> '' AND tld <> '';
 
 END;
