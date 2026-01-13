@@ -6,6 +6,12 @@ DECLARE
 BEGIN
     PERFORM set_config('synchronous_commit', 'off', true);
 
+    -- Each unique certificate must be processed only once.
+    -- A certificate may be present in the database already,
+    -- and it may appear multiple times in the indata.
+    -- Even if a certificate is duplicated or already present
+    -- in the database, CERTDB_entry must still be inserted into.
+
     CREATE TEMP TABLE tmp_ingest ON COMMIT DROP AS
     SELECT
         (x->>'iss_org')::text      AS iss_org,
