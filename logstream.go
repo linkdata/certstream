@@ -21,7 +21,7 @@ import (
 	"github.com/google/trillian/client/backoff"
 )
 
-var DbBatchSize = 1000
+var DbBatchSize = 100
 var LogBatchSize = int64(1000)
 var MaxErrors = 100
 var IdleCloseTime = time.Hour * 24 * 7
