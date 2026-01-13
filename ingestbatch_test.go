@@ -106,7 +106,7 @@ func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, st
 						if _, err = conn.Exec(ctx, certstream.FuncIngestBatch); err != nil {
 							t.Fatalf("FuncIngestBatch failed: %v", err)
 						} else {
-							var operatorID int
+							var operatorID int32
 							if err = conn.QueryRow(ctx,
 								"INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id",
 								"op", "op@example.com").Scan(&operatorID); err != nil {
