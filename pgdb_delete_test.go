@@ -128,6 +128,7 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 			t.Fatalf("default ident lookup failed: %v", err)
 		} else {
 			now := time.Now().UTC()
+			cutoff := now.Add(-24 * time.Hour)
 			notBefore := now.Add(-120 * time.Hour)
 			type certFixture struct {
 				name     string
@@ -153,7 +154,7 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("insert test cert failed: %v", err)
 			} else {
-				if rowsDeleted, err := db.DeleteExpiredCertificates(ctx, 24*time.Hour, 1); err != nil {
+				if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
 					t.Fatalf("DeleteExpiredCert failed: %v", err)
 				} else {
 					if rowsDeleted != 1 {
@@ -180,7 +181,7 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 							}
 						}
 
-						if rowsDeleted, err = db.DeleteExpiredCertificates(ctx, 24*time.Hour, 10); err != nil {
+						if rowsDeleted, err = db.DeleteCertificates(ctx, cutoff, 10); err != nil {
 							t.Fatalf("second DeleteExpiredCert failed: %v", err)
 						} else {
 							if rowsDeleted != 1 {
@@ -201,7 +202,7 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 									}
 								}
 
-								if rowsDeleted, err = db.DeleteExpiredCertificates(ctx, 24*time.Hour, 10); err != nil {
+								if rowsDeleted, err = db.DeleteCertificates(ctx, cutoff, 10); err != nil {
 									t.Fatalf("third DeleteExpiredCert failed: %v", err)
 								} else if rowsDeleted != 0 {
 									t.Fatalf("rows deleted third call = %d, want 0", rowsDeleted)
