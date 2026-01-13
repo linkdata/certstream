@@ -349,7 +349,7 @@ func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCe
 	return
 }
 
-func (cdb *PgDB) DeleteExpiredCertificates(ctx context.Context, expiredFor time.Duration, batchSize int) (rowsDeleted int64, err error) {
+func (cdb *PgDB) DeleteExpiredCertificates(ctx context.Context, expiredFor time.Duration, batchSize int) (rowsDeleted int, err error) {
 	if cdb != nil {
 		if batchSize > 0 {
 			if expiredFor < 0 {
@@ -370,7 +370,7 @@ WHERE CERTDB_cert.id = target.id;
 `)
 			var tag pgconn.CommandTag
 			if tag, err = cdb.Exec(ctx, query, cutoff, batchSize); err == nil {
-				rowsDeleted = tag.RowsAffected()
+				rowsDeleted = int(tag.RowsAffected())
 			}
 		}
 	}
