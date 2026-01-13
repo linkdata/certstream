@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -366,6 +367,8 @@ func TestIngestBatch_DebugLogging(t *testing.T) {
 						t.Fatalf("ingest log duration = %f, want >= 0", duration)
 					} else if explain == "" {
 						t.Fatalf("ingest log explain is empty")
+					} else if !strings.Contains(explain, "Execution Time") {
+						t.Fatalf("ingest log explain missing execution time")
 					}
 				}
 			}

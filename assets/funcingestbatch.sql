@@ -14,8 +14,9 @@ DECLARE
     finished_at timestamptz;
 BEGIN
     IF _debug THEN
+        started_at = clock_timestamp();
         IF _arg IS NULL THEN
-            FOR plan_line IN EXECUTE format('EXPLAIN (FORMAT TEXT) %s', _statement_sql) LOOP
+            FOR plan_line IN EXECUTE format('EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) %s', _statement_sql) LOOP
                 IF plan_text = '' THEN
                     plan_text = plan_line;
                 ELSE
@@ -23,7 +24,7 @@ BEGIN
                 END IF;
             END LOOP;
         ELSE
-            FOR plan_line IN EXECUTE format('EXPLAIN (FORMAT TEXT) %s', _statement_sql) USING _arg LOOP
+            FOR plan_line IN EXECUTE format('EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) %s', _statement_sql) USING _arg LOOP
                 IF plan_text = '' THEN
                     plan_text = plan_line;
                 ELSE
@@ -31,15 +32,16 @@ BEGIN
                 END IF;
             END LOOP;
         END IF;
-    END IF;
-
-    started_at = clock_timestamp();
-    IF _arg IS NULL THEN
-        EXECUTE _statement_sql;
+        finished_at = clock_timestamp();
     ELSE
-        EXECUTE _statement_sql USING _arg;
+        started_at = clock_timestamp();
+        IF _arg IS NULL THEN
+            EXECUTE _statement_sql;
+        ELSE
+            EXECUTE _statement_sql USING _arg;
+        END IF;
+        finished_at = clock_timestamp();
     END IF;
-    finished_at = clock_timestamp();
 
     IF _debug THEN
         INSERT INTO CERTDB_ingest_log (
