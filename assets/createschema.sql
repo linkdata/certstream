@@ -55,7 +55,7 @@ END IF;
 
 IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_entry (
-    seen TIMESTAMP NOT NULL DEFAULT NOW(),
+    seen TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
     cert BIGINT NOT NULL, -- do not reference CERTDB_cert since we have no index on this column
     logindex BIGINT NOT NULL,
     stream INTEGER NOT NULL REFERENCES CERTDB_stream (id) ON DELETE CASCADE,
@@ -189,7 +189,7 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
     CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld) as fqdn,
     cc.notbefore AS notbefore,
     (cd.domain ~ '[^\x00-\x7F]') AS idna,
-    NOW() between cc.notbefore and cc.notafter as valid,
+    (NOW() AT TIME ZONE 'UTC') between cc.notbefore and cc.notafter as valid,
     cc.precert AS precert,
     iss.organization as issuer,
     subj.organization as subject,

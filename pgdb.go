@@ -284,7 +284,7 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate
 			jcert.CommonName,
 			jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
 			jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
-			jcert.NotBefore,
+			jcert.NotBefore.UTC(),
 		)
 		var id int64
 		var subject, issuer int
@@ -355,7 +355,7 @@ func (cdb *PgDB) DeleteExpiredCert(ctx context.Context, expiredFor time.Duration
 			if expiredFor < 0 {
 				expiredFor = 0
 			}
-			cutoff := time.Now().Add(-expiredFor)
+			cutoff := time.Now().UTC().Add(-expiredFor)
 			query := cdb.Pfx(`
 WITH target AS (
   SELECT id

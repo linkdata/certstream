@@ -9,8 +9,18 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/linkdata/certstream"
 )
+
+type queryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+type execQueryer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 func newPgDBFromConn(ctx context.Context, conn *pgx.Conn) (db *certstream.PgDB, err error) {
 	if conn != nil {
@@ -28,21 +38,33 @@ func newPgDBFromConn(ctx context.Context, conn *pgx.Conn) (db *certstream.PgDB, 
 	return
 }
 
-func defaultIdentID(ctx context.Context, db *certstream.PgDB) (id int, err error) {
-	err = db.QueryRow(ctx, db.Pfx(`SELECT id FROM CERTDB_ident WHERE organization='' AND province='' AND country='';`)).Scan(&id)
+func defaultIdentID(ctx context.Context, q queryer, pfx func(string) string) (id int, err error) {
+	err = q.QueryRow(ctx, pfx(`SELECT id FROM CERTDB_ident WHERE organization='' AND province='' AND country='';`)).Scan(&id)
 	return
 }
 
-func insertTestCertWithEntry(ctx context.Context, db *certstream.PgDB, streamID int, identID int, logIndex int64, notBefore time.Time, notAfter time.Time, shaHex string) (certID int64, err error) {
-	err = db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+func insertTestCert(ctx context.Context, q execQueryer, pfx func(string) string, identID int, notBefore time.Time, notAfter time.Time, shaHex string) (certID int64, err error) {
+	notBefore = notBefore.UTC()
+	notAfter = notAfter.UTC()
+	err = q.QueryRow(ctx, pfx(`INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
 VALUES ($1, $2, $3, $4, $5, $6, decode($7,'hex'), $8)
 RETURNING id;`),
 		notBefore, notAfter, notBefore, "example.com", identID, identID, shaHex, false,
 	).Scan(&certID)
-	if err == nil {
-		_, err = db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream) VALUES ($1, $2, $3, $4);`),
-			notAfter, certID, logIndex, streamID,
-		)
+	return
+}
+
+func insertTestEntry(ctx context.Context, q execQueryer, pfx func(string) string, certID int64, logIndex int64, streamID int, seen time.Time) (err error) {
+	seen = seen.UTC()
+	_, err = q.Exec(ctx, pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream) VALUES ($1, $2, $3, $4);`),
+		seen, certID, logIndex, streamID,
+	)
+	return
+}
+
+func insertTestCertWithEntry(ctx context.Context, db *certstream.PgDB, streamID int, identID int, logIndex int64, notBefore time.Time, notAfter time.Time, shaHex string) (certID int64, err error) {
+	if certID, err = insertTestCert(ctx, db, db.Pfx, identID, notBefore, notAfter, shaHex); err == nil {
+		err = insertTestEntry(ctx, db, db.Pfx, certID, logIndex, streamID, notAfter)
 	}
 	return
 }
@@ -76,10 +98,10 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 			db.Close()
 		})
 
-		if identID, err := defaultIdentID(ctx, db); err != nil {
+		if identID, err := defaultIdentID(ctx, db, db.Pfx); err != nil {
 			t.Fatalf("default ident lookup failed: %v", err)
 		} else {
-			now := time.Now()
+			now := time.Now().UTC()
 			notBefore := now.Add(-120 * time.Hour)
 			type certFixture struct {
 				name     string
@@ -159,6 +181,50 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 									t.Fatalf("rows deleted third call = %d, want 0", rowsDeleted)
 								}
 							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPgDB_TimestampsUseUTC(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	pfx := func(s string) string { return s }
+	if _, err := conn.Exec(ctx, "SET TIME ZONE INTERVAL '-07:00';"); err != nil {
+		t.Fatalf("set time zone failed: %v", err)
+	} else {
+		if identID, err := defaultIdentID(ctx, conn, pfx); err != nil {
+			t.Fatalf("default ident lookup failed: %v", err)
+		} else {
+			now := time.Now().UTC()
+			notBefore := now.Add(-24 * time.Hour)
+			notAfter := now.Add(24 * time.Hour)
+			if certID, err := insertTestCert(ctx, conn, pfx, identID, notBefore, notAfter, testSHA256Hex(5)); err != nil {
+				t.Fatalf("insert test cert failed: %v", err)
+			} else {
+				if _, err = conn.Exec(ctx, pfx(`INSERT INTO CERTDB_domain (cert, wild, www, domain, tld) VALUES ($1, $2, $3, $4, $5);`),
+					certID, false, 0, "example", "com",
+				); err != nil {
+					t.Fatalf("insert domain failed: %v", err)
+				} else {
+					var valid bool
+					if err = conn.QueryRow(ctx, pfx(`SELECT valid FROM CERTDB_dnsnames WHERE cert=$1 LIMIT 1;`), certID).Scan(&valid); err != nil {
+						t.Fatalf("select valid failed: %v", err)
+					} else if !valid {
+						t.Fatalf("valid = false, want true")
+					} else {
+						var delta float64
+						if err = conn.QueryRow(ctx, pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream) VALUES ($1, $2, $3)
+RETURNING ABS(EXTRACT(EPOCH FROM seen AT TIME ZONE 'UTC') - EXTRACT(EPOCH FROM NOW() AT TIME ZONE 'UTC'));`),
+							certID, int64(1), streamID,
+						).Scan(&delta); err != nil {
+							t.Fatalf("insert entry failed: %v", err)
+						} else if delta > 2 {
+							t.Fatalf("UTC delta = %.2f, want <= 2", delta)
 						}
 					}
 				}
