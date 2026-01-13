@@ -222,18 +222,20 @@ INNER JOIN unique_certs uc ON uc.sha256 = ci.sha256
 $sql$;
     insert_uri_sql text := $sql$
 INSERT INTO CERTDB_uri (cert, uri)
-SELECT DISTINCT tnc.cert_id, trim(u.uri)
+-- uris are pre-trimmed in input; only filter empties
+SELECT DISTINCT tnc.cert_id, u.uri
 FROM tmp_new_certs tnc
 CROSS JOIN LATERAL unnest(string_to_array(tnc.uris, ' ')) AS u(uri)
-WHERE tnc.uris <> '' AND trim(u.uri) <> ''
+WHERE tnc.uris <> '' AND u.uri <> ''
 ON CONFLICT (cert, uri) DO NOTHING
 $sql$;
     insert_email_sql text := $sql$
 INSERT INTO CERTDB_email (cert, email)
-SELECT DISTINCT tnc.cert_id, trim(e.email)
+-- emails are pre-trimmed in input; only filter empties
+SELECT DISTINCT tnc.cert_id, e.email
 FROM tmp_new_certs tnc
 CROSS JOIN LATERAL unnest(string_to_array(tnc.emails, ' ')) AS e(email)
-WHERE tnc.emails <> '' AND trim(e.email) <> ''
+WHERE tnc.emails <> '' AND e.email <> ''
 ON CONFLICT (cert, email) DO NOTHING
 $sql$;
     insert_ip_sql text := $sql$
@@ -250,10 +252,11 @@ ON CONFLICT (cert, addr) DO NOTHING
 $sql$;
     insert_domain_sql text := $sql$
 WITH expanded AS MATERIALIZED (
-    SELECT tnc.cert_id, btrim(d.fqdn) AS fqdn
+    -- dnsnames are pre-trimmed in input; split on space
+    SELECT tnc.cert_id, d.fqdn AS fqdn
     FROM tmp_new_certs tnc
-    CROSS JOIN LATERAL regexp_split_to_table(tnc.dnsnames, '\s+') AS d(fqdn)
-    WHERE tnc.dnsnames <> '' AND btrim(d.fqdn) <> ''
+    CROSS JOIN LATERAL unnest(string_to_array(tnc.dnsnames, ' ')) AS d(fqdn)
+    WHERE tnc.dnsnames <> '' AND d.fqdn <> ''
 ),
 unique_fqdns AS MATERIALIZED (
     SELECT DISTINCT fqdn
