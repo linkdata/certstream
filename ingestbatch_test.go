@@ -15,6 +15,7 @@ import (
 const (
 	ingestSha256Hex    = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	ingestSha256HexAlt = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	ingestTimestampFmt = "2006-01-02 15:04:05"
 )
 
 var (
@@ -66,6 +67,15 @@ func ingestCounts(ctx context.Context, conn *pgx.Conn) (certCount, entryCount, d
 				err = conn.QueryRow(ctx, "SELECT COUNT(*) FROM CERTDB_domain;").Scan(&domainCount)
 			}
 		}
+	}
+	return
+}
+
+func certSince(ctx context.Context, conn *pgx.Conn, sha256Hex string) (since time.Time, err error) {
+	if conn != nil {
+		err = conn.QueryRow(ctx,
+			"SELECT since FROM CERTDB_cert WHERE sha256 = decode($1, 'hex');",
+			sha256Hex).Scan(&since)
 	}
 	return
 }
@@ -251,6 +261,46 @@ func TestIngestBatch_DedupCertificateWithinBatch(t *testing.T) {
 				t.Fatalf("entry count after ingest = %d, want 2", entryCount)
 			} else if domainCount != 1 {
 				t.Fatalf("domain count after ingest = %d, want 1", domainCount)
+			}
+		}
+	}
+}
+
+func TestIngestBatch_SinceTracksOverlaps(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	firstSeen := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	secondSeen := firstSeen.Add(2 * time.Hour)
+	firstNotBefore := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	firstNotAfter := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	secondNotBefore := time.Date(2021, 6, 1, 0, 0, 0, 0, time.UTC)
+	secondNotAfter := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	firstRow := ingestRowWithSHA(streamID, 1, "example.com", firstSeen, ingestSha256Hex)
+	firstRow["notbefore"] = firstNotBefore
+	firstRow["notafter"] = firstNotAfter
+
+	secondRow := ingestRowWithSHA(streamID, 2, "example.com", secondSeen, ingestSha256HexAlt)
+	secondRow["notbefore"] = secondNotBefore
+	secondRow["notafter"] = secondNotAfter
+
+	if err := callIngestBatch(ctx, conn, firstRow); err != nil {
+		t.Fatalf("first ingest batch failed: %v", err)
+	} else {
+		var sinceFirst time.Time
+		if sinceFirst, err = certSince(ctx, conn, ingestSha256Hex); err != nil {
+			t.Fatalf("fetch first cert since failed: %v", err)
+		} else if sinceFirst.Format(ingestTimestampFmt) != firstNotBefore.Format(ingestTimestampFmt) {
+			t.Fatalf("first cert since = %s, want %s", sinceFirst.Format(ingestTimestampFmt), firstNotBefore.Format(ingestTimestampFmt))
+		} else if err = callIngestBatch(ctx, conn, secondRow); err != nil {
+			t.Fatalf("second ingest batch failed: %v", err)
+		} else {
+			var sinceSecond time.Time
+			if sinceSecond, err = certSince(ctx, conn, ingestSha256HexAlt); err != nil {
+				t.Fatalf("fetch second cert since failed: %v", err)
+			} else if sinceSecond.Format(ingestTimestampFmt) != firstNotBefore.Format(ingestTimestampFmt) {
+				t.Fatalf("second cert since = %s, want %s", sinceSecond.Format(ingestTimestampFmt), firstNotBefore.Format(ingestTimestampFmt))
 			}
 		}
 	}

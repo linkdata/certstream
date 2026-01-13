@@ -44,7 +44,6 @@ BEGIN
     INSERT INTO CERTDB_ident(organization, province, country)
     SELECT n.organization, n.province, n.country 
     FROM needed_idents n
-    ORDER BY organization, province, country
     ON CONFLICT (organization, province, country) DO NOTHING;
 
     CREATE TEMP TABLE tmp_new_certs ON COMMIT DROP AS
@@ -79,7 +78,16 @@ BEGIN
             emails,
             uris
         FROM mapped_data
-        ORDER BY sha256, stream, logindex
+        ORDER BY sha256
+    ),
+    new_certs AS (
+        SELECT u.*
+        FROM unique_certs u
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM CERTDB_cert c
+            WHERE c.sha256 = u.sha256
+        )
     ),
     certs_with_since AS (
         SELECT
@@ -91,7 +99,7 @@ BEGIN
             u.subject,
             u.issuer,
             u.precert
-        FROM unique_certs u
+        FROM new_certs u
         LEFT JOIN LATERAL (
             SELECT c.since
             FROM CERTDB_cert c
@@ -108,7 +116,6 @@ BEGIN
         INSERT INTO CERTDB_cert(notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
         SELECT notbefore, notafter, since, commonname, subject, issuer, sha256, precert
         FROM certs_with_since
-        ORDER BY sha256
         ON CONFLICT (sha256) DO NOTHING
         RETURNING id, sha256
     ),
@@ -128,7 +135,6 @@ BEGIN
         SELECT md.seen, md.logindex, ac.cert_id, md.stream
         FROM mapped_data md
         INNER JOIN all_cert_ids ac ON ac.sha256 = md.sha256
-        ORDER BY stream, logindex
         ON CONFLICT (stream, logindex) DO NOTHING
         RETURNING cert
     )
@@ -141,7 +147,6 @@ BEGIN
     FROM tmp_new_certs tnc
     CROSS JOIN LATERAL unnest(string_to_array(tnc.uris, ' ')) AS u(uri)
     WHERE tnc.uris <> '' AND trim(u.uri) <> ''
-    ORDER BY tnc.cert_id, 2
     ON CONFLICT (cert, uri) DO NOTHING;
 
     INSERT INTO CERTDB_email (cert, email)
@@ -149,7 +154,6 @@ BEGIN
     FROM tmp_new_certs tnc
     CROSS JOIN LATERAL unnest(string_to_array(tnc.emails, ' ')) AS e(email)
     WHERE tnc.emails <> '' AND trim(e.email) <> ''
-    ORDER BY tnc.cert_id, 2
     ON CONFLICT (cert, email) DO NOTHING;
 
     WITH ip_data AS (
@@ -161,7 +165,6 @@ BEGIN
     INSERT INTO CERTDB_ipaddress (cert, addr)
     SELECT cert_id, inet(addr_txt)
     FROM ip_data
-    ORDER BY cert_id, 2
     ON CONFLICT (cert, addr) DO NOTHING;
 
     WITH expanded AS (
