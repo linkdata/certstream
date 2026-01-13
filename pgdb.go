@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -344,6 +345,34 @@ func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCe
 	var dbcert PgCertificate
 	if err = ScanCertificate(row, &dbcert); err == nil {
 		cert, err = cdb.getCertificate(ctx, &dbcert)
+	}
+	return
+}
+
+func (cdb *PgDB) DeleteExpiredCert(ctx context.Context, expiredFor time.Duration, batchSize int) (rowsDeleted int64, err error) {
+	if cdb != nil {
+		if batchSize > 0 {
+			if expiredFor < 0 {
+				expiredFor = 0
+			}
+			cutoff := time.Now().Add(-expiredFor)
+			query := cdb.Pfx(`
+WITH target AS (
+  SELECT id
+  FROM CERTDB_cert
+  WHERE notafter <= $1
+  ORDER BY notafter ASC
+  LIMIT $2
+)
+DELETE FROM CERTDB_cert
+USING target
+WHERE CERTDB_cert.id = target.id;
+`)
+			var tag pgconn.CommandTag
+			if tag, err = cdb.Exec(ctx, query, cutoff, batchSize); err == nil {
+				rowsDeleted = tag.RowsAffected()
+			}
+		}
 	}
 	return
 }
