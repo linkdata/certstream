@@ -158,15 +158,6 @@ unique_certs AS (
     FROM mapped_data
     ORDER BY sha256
 ),
-new_certs AS (
-    SELECT u.*
-    FROM unique_certs u
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM CERTDB_cert c
-        WHERE c.sha256 = u.sha256
-    )
-),
 certs_with_since AS (
     SELECT
         u.sha256,
@@ -177,7 +168,7 @@ certs_with_since AS (
         u.subject,
         u.issuer,
         u.precert
-    FROM new_certs u
+    FROM unique_certs u
     LEFT JOIN LATERAL (
         SELECT c.since
         FROM CERTDB_cert c
@@ -203,10 +194,7 @@ all_cert_ids AS (
     UNION
     SELECT c.id, c.sha256
     FROM CERTDB_cert c
-    INNER JOIN (
-        SELECT DISTINCT sha256
-        FROM mapped_data
-    ) md ON c.sha256 = md.sha256
+    INNER JOIN unique_certs uc ON c.sha256 = uc.sha256
 ),
 entry_inserts AS (
     INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
