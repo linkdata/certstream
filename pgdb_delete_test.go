@@ -81,6 +81,32 @@ func countRows(ctx context.Context, db *certstream.PgDB, query string, args ...a
 	return
 }
 
+func streamEntryCounts(ctx context.Context, db *certstream.PgDB, streamID int32) (streamCount int, entryCount int, err error) {
+	if streamCount, err = countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_stream WHERE id=$1;`, streamID); err == nil {
+		entryCount, err = countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_entry WHERE stream=$1;`, streamID)
+	}
+	return
+}
+
+func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int32) (indices []int64, err error) {
+	var rows pgx.Rows
+	if rows, err = db.Query(ctx, db.Pfx(`SELECT logindex FROM CERTDB_entry WHERE stream=$1 ORDER BY logindex ASC;`), streamID); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var logIndex int64
+			if err = rows.Scan(&logIndex); err == nil {
+				indices = append(indices, logIndex)
+			} else {
+				break
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+	}
+	return
+}
+
 func testSHA256Hex(seed byte) string {
 	buf := make([]byte, 32)
 	buf[len(buf)-1] = seed
@@ -182,6 +208,144 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 								}
 							}
 						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPgDB_DeleteStream_BatchOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if db, err := newPgDBFromConn(ctx, conn); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		t.Cleanup(func() {
+			db.Close()
+		})
+
+		if identID, err := defaultIdentID(ctx, db, db.Pfx); err != nil {
+			t.Fatalf("default ident lookup failed: %v", err)
+		} else {
+			now := time.Now().UTC()
+			notBefore := now.Add(-24 * time.Hour)
+			notAfter := now.Add(24 * time.Hour)
+			type fixture struct {
+				logIndex int64
+				shaSeed  byte
+			}
+			fixtures := []fixture{
+				{logIndex: 5, shaSeed: 1},
+				{logIndex: 2, shaSeed: 2},
+				{logIndex: 9, shaSeed: 3},
+			}
+			var err error
+			for _, fixture := range fixtures {
+				if err == nil {
+					_, err = insertTestCertWithEntry(ctx, db, streamID, identID, fixture.logIndex, notBefore, notAfter, testSHA256Hex(fixture.shaSeed))
+				}
+			}
+			if err != nil {
+				t.Fatalf("insert test cert failed: %v", err)
+			} else {
+				if rowsDeleted, err := db.DeleteStream(ctx, int32(streamID), 2); err != nil {
+					t.Fatalf("DeleteStream failed: %v", err)
+				} else {
+					if rowsDeleted != 2 {
+						t.Fatalf("rows deleted = %d, want 2", rowsDeleted)
+					} else {
+						if indices, err := streamLogIndices(ctx, db, int32(streamID)); err != nil {
+							t.Fatalf("log index lookup failed: %v", err)
+						} else {
+							expect := []int64{9}
+							if len(indices) != len(expect) {
+								t.Fatalf("remaining logindex count = %d, want %d", len(indices), len(expect))
+							} else {
+								for i := range expect {
+									if indices[i] != expect[i] {
+										t.Fatalf("remaining logindex[%d] = %d, want %d", i, indices[i], expect[i])
+									}
+								}
+								if streamCount, entryCount, err := streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+									t.Fatalf("count after first delete failed: %v", err)
+								} else if streamCount != 1 {
+									t.Fatalf("stream count after first delete = %d, want 1", streamCount)
+								} else if entryCount != 1 {
+									t.Fatalf("entry count after first delete = %d, want 1", entryCount)
+								} else {
+									if rowsDeleted, err = db.DeleteStream(ctx, int32(streamID), 2); err != nil {
+										t.Fatalf("second DeleteStream failed: %v", err)
+									} else {
+										if rowsDeleted != 1 {
+											t.Fatalf("rows deleted second call = %d, want 1", rowsDeleted)
+										} else {
+											if streamCount, entryCount, err = streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+												t.Fatalf("count after second delete failed: %v", err)
+											} else if streamCount != 1 {
+												t.Fatalf("stream count after second delete = %d, want 1", streamCount)
+											} else if entryCount != 0 {
+												t.Fatalf("entry count after second delete = %d, want 0", entryCount)
+											} else {
+												if rowsDeleted, err = db.DeleteStream(ctx, int32(streamID), 2); err != nil {
+													t.Fatalf("third DeleteStream failed: %v", err)
+												} else {
+													if rowsDeleted != 1 {
+														t.Fatalf("rows deleted third call = %d, want 1", rowsDeleted)
+													} else {
+														if streamCount, entryCount, err = streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+															t.Fatalf("count after third delete failed: %v", err)
+														} else if streamCount != 0 {
+															t.Fatalf("stream count after third delete = %d, want 0", streamCount)
+														} else if entryCount != 0 {
+															t.Fatalf("entry count after third delete = %d, want 0", entryCount)
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPgDB_DeleteStream_NoEntriesDeletesStream(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if db, err := newPgDBFromConn(ctx, conn); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		t.Cleanup(func() {
+			db.Close()
+		})
+
+		if streamCount, entryCount, err := streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+			t.Fatalf("initial count failed: %v", err)
+		} else if streamCount != 1 {
+			t.Fatalf("initial stream count = %d, want 1", streamCount)
+		} else if entryCount != 0 {
+			t.Fatalf("initial entry count = %d, want 0", entryCount)
+		} else {
+			if rowsDeleted, err := db.DeleteStream(ctx, int32(streamID), 3); err != nil {
+				t.Fatalf("DeleteStream failed: %v", err)
+			} else {
+				if rowsDeleted != 1 {
+					t.Fatalf("rows deleted = %d, want 1", rowsDeleted)
+				} else {
+					if streamCount, entryCount, err = streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+						t.Fatalf("final count failed: %v", err)
+					} else if streamCount != 0 {
+						t.Fatalf("final stream count = %d, want 0", streamCount)
+					} else if entryCount != 0 {
+						t.Fatalf("final entry count = %d, want 0", entryCount)
 					}
 				}
 			}

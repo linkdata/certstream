@@ -377,6 +377,36 @@ WHERE CERTDB_cert.id = target.id;
 	return
 }
 
+func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
+	if cdb != nil {
+		if batchSize > 0 {
+			query := cdb.Pfx(`
+WITH target AS (
+  SELECT logindex
+  FROM CERTDB_entry
+  WHERE stream = $1
+  ORDER BY logindex ASC
+  LIMIT $2
+)
+DELETE FROM CERTDB_entry
+USING target
+WHERE CERTDB_entry.stream = $1
+  AND CERTDB_entry.logindex = target.logindex;
+`)
+			var tag pgconn.CommandTag
+			if tag, err = cdb.Exec(ctx, query, streamId, batchSize); err == nil {
+				rowsDeleted = tag.RowsAffected()
+				if rowsDeleted == 0 {
+					if tag, err = cdb.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
+						rowsDeleted = tag.RowsAffected()
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
 func (cdb *PgDB) Estimate(table string) (f float64) {
 	table = strings.TrimPrefix(table, "CERTDB_")
 	table = strings.TrimPrefix(table, cdb.CertStream.Config.PgPrefix)
