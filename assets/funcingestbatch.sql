@@ -163,7 +163,10 @@ certs_with_since AS (
         u.sha256,
         u.notbefore,
         u.notafter,
-        COALESCE(overlap.since, u.notbefore) AS since,
+        CASE
+            WHEN u.commonname = '' THEN u.notbefore
+            ELSE COALESCE(overlap.since, u.notbefore)
+        END AS since,
         u.commonname,
         u.subject,
         u.issuer,
@@ -172,7 +175,8 @@ certs_with_since AS (
     LEFT JOIN LATERAL (
         SELECT c.since
         FROM CERTDB_cert c
-        WHERE c.subject = u.subject
+        WHERE u.commonname <> ''
+          AND c.subject = u.subject
           AND c.issuer = u.issuer
           AND c.commonname = u.commonname
           AND c.notbefore < u.notbefore
