@@ -90,7 +90,7 @@ CREATE TEMP TABLE certdb_split_domain_calls (
 			if _, err = conn.Exec(ctx, "ALTER FUNCTION CERTDB_split_domain(text) RENAME TO CERTDB_split_domain_impl;"); err == nil {
 				_, err = conn.Exec(ctx, `
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
-RETURNS TABLE(wild boolean, www smallint, domain text, tld text)
+RETURNS CERTDB_split_domain_result
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -99,9 +99,7 @@ BEGIN
 	ON CONFLICT (fqdn) DO UPDATE
 	SET calls = certdb_split_domain_calls.calls + 1;
 
-	RETURN QUERY
-	SELECT s.wild, s.www, s.domain, s.tld
-	FROM CERTDB_split_domain_impl(_fqdn) AS s;
+	RETURN CERTDB_split_domain_impl(_fqdn);
 END;
 $$;`)
 			}

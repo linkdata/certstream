@@ -115,8 +115,17 @@ IF to_regclass('CERTDB_ingest_log') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_ingest_log_logged_at_idx ON CERTDB_ingest_log (logged_at);
 END IF;
 
+IF to_regtype('CERTDB_split_domain_result') IS NULL THEN
+  CREATE TYPE CERTDB_split_domain_result AS (
+    wild boolean,
+    www smallint,
+    domain text,
+    tld text
+  );
+END IF;
+
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
-RETURNS TABLE(wild boolean, www smallint, domain text, tld text)
+RETURNS CERTDB_split_domain_result
 LANGUAGE sql
 IMMUTABLE
 PARALLEL SAFE

@@ -258,8 +258,11 @@ unique_fqdns AS (
     FROM expanded
 ),
 parsed AS (
-    SELECT uf.fqdn, (CERTDB_split_domain(uf.fqdn)).*
+    SELECT uf.fqdn, (p.parts).wild, (p.parts).www, (p.parts).domain, (p.parts).tld
     FROM unique_fqdns uf
+    CROSS JOIN LATERAL (
+        SELECT CERTDB_split_domain(uf.fqdn) AS parts
+    ) AS p
 ),
 cert_domains AS (
     SELECT e.cert_id, p.wild, p.www, p.domain, p.tld
