@@ -14,25 +14,44 @@ BEGIN
 
     CREATE TEMP TABLE tmp_ingest ON COMMIT DROP AS
     SELECT
-        (x->>'iss_org')::text      AS iss_org,
-        (x->>'iss_prov')::text     AS iss_prov,
-        (x->>'iss_country')::text  AS iss_country,
-        (x->>'sub_org')::text      AS sub_org,
-        (x->>'sub_prov')::text     AS sub_prov,
-        (x->>'sub_country')::text  AS sub_country,
-        (x->>'commonname')::text   AS commonname,
-        (x->>'notbefore')::timestamptz AT TIME ZONE 'UTC' AS notbefore,
-        (x->>'notafter') ::timestamptz AT TIME ZONE 'UTC' AS notafter,
-        decode(x->>'sha256_hex','hex')::bytea          AS sha256,
-        (x->>'precert')::boolean   AS precert,
-        (x->>'seen')   ::timestamptz AT TIME ZONE 'UTC' AS seen,
-        (x->>'stream') ::integer    AS stream,
-        (x->>'logindex')::bigint    AS logindex,
-        coalesce(x->>'dnsnames','') AS dnsnames,
-        coalesce(x->>'ipaddrs','')  AS ipaddrs,
-        coalesce(x->>'emails','')   AS emails,
-        coalesce(x->>'uris','')     AS uris
-    FROM jsonb_array_elements(_rows) AS x;
+        x.iss_org AS iss_org,
+        x.iss_prov AS iss_prov,
+        x.iss_country AS iss_country,
+        x.sub_org AS sub_org,
+        x.sub_prov AS sub_prov,
+        x.sub_country AS sub_country,
+        x.commonname AS commonname,
+        x.notbefore AT TIME ZONE 'UTC' AS notbefore,
+        x.notafter AT TIME ZONE 'UTC' AS notafter,
+        decode(x.sha256_hex, 'hex')::bytea AS sha256,
+        x.precert AS precert,
+        x.seen AT TIME ZONE 'UTC' AS seen,
+        x.stream AS stream,
+        x.logindex AS logindex,
+        coalesce(x.dnsnames, '') AS dnsnames,
+        coalesce(x.ipaddrs, '') AS ipaddrs,
+        coalesce(x.emails, '') AS emails,
+        coalesce(x.uris, '') AS uris
+    FROM jsonb_to_recordset(_rows) AS x(
+        iss_org text,
+        iss_prov text,
+        iss_country text,
+        sub_org text,
+        sub_prov text,
+        sub_country text,
+        commonname text,
+        notbefore timestamptz,
+        notafter timestamptz,
+        sha256_hex text,
+        precert boolean,
+        seen timestamptz,
+        stream integer,
+        logindex bigint,
+        dnsnames text,
+        ipaddrs text,
+        emails text,
+        uris text
+    );
     
     WITH needed_idents AS (
         SELECT DISTINCT iss_org AS organization, iss_prov AS province, iss_country AS country
