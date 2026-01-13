@@ -247,22 +247,26 @@ FROM ip_data
 ON CONFLICT (cert, addr) DO NOTHING
 $sql$;
     insert_domain_sql text := $sql$
-WITH expanded AS (
-    SELECT tnc.cert_id, trim(d.fqdn) AS fqdn
+WITH expanded AS MATERIALIZED (
+    SELECT tnc.cert_id, btrim(d.fqdn) AS fqdn
     FROM tmp_new_certs tnc
-    CROSS JOIN LATERAL unnest(string_to_array(tnc.dnsnames, ' ')) AS d(fqdn)
-    WHERE tnc.dnsnames <> '' AND trim(d.fqdn) <> ''
+    CROSS JOIN LATERAL regexp_split_to_table(tnc.dnsnames, '\s+') AS d(fqdn)
+    WHERE tnc.dnsnames <> '' AND btrim(d.fqdn) <> ''
 ),
-unique_fqdns AS (
+unique_fqdns AS MATERIALIZED (
     SELECT DISTINCT fqdn
     FROM expanded
 ),
-parsed AS (
-    SELECT uf.fqdn, (p.parts).wild, (p.parts).www, (p.parts).domain, (p.parts).tld
+parsed AS MATERIALIZED (
+    SELECT
+        uf.fqdn,
+        (parts).wild AS wild,
+        (parts).www AS www,
+        (parts).domain AS domain,
+        (parts).tld AS tld
     FROM unique_fqdns uf
-    CROSS JOIN LATERAL (
-        SELECT CERTDB_split_domain(uf.fqdn) AS parts
-    ) AS p
+    CROSS JOIN LATERAL CERTDB_split_domain(uf.fqdn) AS parts
+    WHERE (parts).domain <> '' AND (parts).tld <> ''
 ),
 cert_domains AS (
     SELECT e.cert_id, p.wild, p.www, p.domain, p.tld
@@ -272,7 +276,6 @@ cert_domains AS (
 INSERT INTO CERTDB_domain (cert, wild, www, domain, tld)
 SELECT DISTINCT cert_id, wild, www, domain, tld
 FROM cert_domains
-WHERE domain <> '' AND tld <> ''
 $sql$;
 BEGIN
     PERFORM set_config('synchronous_commit', 'off', true);
