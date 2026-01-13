@@ -274,17 +274,6 @@ BEGIN
     PERFORM set_config('synchronous_commit', 'off', true);
 
     debug_enabled = COALESCE(current_setting('certstream.debug', true), '') = 'on';
-    IF debug_enabled THEN
-        CREATE TABLE IF NOT EXISTS CERTDB_ingest_log (
-            id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-            logged_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
-            statement_name TEXT NOT NULL,
-            statement_sql TEXT NOT NULL,
-            duration_ms DOUBLE PRECISION NOT NULL,
-            explain TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS CERTDB_ingest_log_logged_at_idx ON CERTDB_ingest_log (logged_at);
-    END IF;
 
     -- Each unique certificate must be processed only once.
     -- A certificate may be present in the database already,
