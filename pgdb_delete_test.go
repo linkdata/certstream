@@ -81,14 +81,14 @@ func countRows(ctx context.Context, db *certstream.PgDB, query string, args ...a
 	return
 }
 
-func streamEntryCounts(ctx context.Context, db *certstream.PgDB, streamID int32) (streamCount int, entryCount int, err error) {
+func streamEntryCounts(ctx context.Context, db *certstream.PgDB, streamID int) (streamCount int, entryCount int, err error) {
 	if streamCount, err = countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_stream WHERE id=$1;`, streamID); err == nil {
 		entryCount, err = countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_entry WHERE stream=$1;`, streamID)
 	}
 	return
 }
 
-func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int32) (indices []int64, err error) {
+func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int) (indices []int64, err error) {
 	var rows pgx.Rows
 	if rows, err = db.Query(ctx, db.Pfx(`SELECT logindex FROM CERTDB_entry WHERE stream=$1 ORDER BY logindex ASC;`), streamID); err == nil {
 		defer rows.Close()
@@ -250,13 +250,13 @@ func TestPgDB_DeleteStream_BatchOrder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("insert test cert failed: %v", err)
 			} else {
-				if rowsDeleted, err := db.DeleteStream(ctx, int32(streamID), 2); err != nil {
+				if rowsDeleted, err := db.DeleteStream(ctx, streamID, 2); err != nil {
 					t.Fatalf("DeleteStream failed: %v", err)
 				} else {
 					if rowsDeleted != 2 {
 						t.Fatalf("rows deleted = %d, want 2", rowsDeleted)
 					} else {
-						if indices, err := streamLogIndices(ctx, db, int32(streamID)); err != nil {
+						if indices, err := streamLogIndices(ctx, db, streamID); err != nil {
 							t.Fatalf("log index lookup failed: %v", err)
 						} else {
 							expect := []int64{9}
@@ -268,33 +268,33 @@ func TestPgDB_DeleteStream_BatchOrder(t *testing.T) {
 										t.Fatalf("remaining logindex[%d] = %d, want %d", i, indices[i], expect[i])
 									}
 								}
-								if streamCount, entryCount, err := streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+								if streamCount, entryCount, err := streamEntryCounts(ctx, db, streamID); err != nil {
 									t.Fatalf("count after first delete failed: %v", err)
 								} else if streamCount != 1 {
 									t.Fatalf("stream count after first delete = %d, want 1", streamCount)
 								} else if entryCount != 1 {
 									t.Fatalf("entry count after first delete = %d, want 1", entryCount)
 								} else {
-									if rowsDeleted, err = db.DeleteStream(ctx, int32(streamID), 2); err != nil {
+									if rowsDeleted, err = db.DeleteStream(ctx, streamID, 2); err != nil {
 										t.Fatalf("second DeleteStream failed: %v", err)
 									} else {
 										if rowsDeleted != 1 {
 											t.Fatalf("rows deleted second call = %d, want 1", rowsDeleted)
 										} else {
-											if streamCount, entryCount, err = streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+											if streamCount, entryCount, err = streamEntryCounts(ctx, db, streamID); err != nil {
 												t.Fatalf("count after second delete failed: %v", err)
 											} else if streamCount != 1 {
 												t.Fatalf("stream count after second delete = %d, want 1", streamCount)
 											} else if entryCount != 0 {
 												t.Fatalf("entry count after second delete = %d, want 0", entryCount)
 											} else {
-												if rowsDeleted, err = db.DeleteStream(ctx, int32(streamID), 2); err != nil {
+												if rowsDeleted, err = db.DeleteStream(ctx, streamID, 2); err != nil {
 													t.Fatalf("third DeleteStream failed: %v", err)
 												} else {
 													if rowsDeleted != 1 {
 														t.Fatalf("rows deleted third call = %d, want 1", rowsDeleted)
 													} else {
-														if streamCount, entryCount, err = streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+														if streamCount, entryCount, err = streamEntryCounts(ctx, db, streamID); err != nil {
 															t.Fatalf("count after third delete failed: %v", err)
 														} else if streamCount != 0 {
 															t.Fatalf("stream count after third delete = %d, want 0", streamCount)
@@ -327,20 +327,20 @@ func TestPgDB_DeleteStream_NoEntriesDeletesStream(t *testing.T) {
 			db.Close()
 		})
 
-		if streamCount, entryCount, err := streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+		if streamCount, entryCount, err := streamEntryCounts(ctx, db, streamID); err != nil {
 			t.Fatalf("initial count failed: %v", err)
 		} else if streamCount != 1 {
 			t.Fatalf("initial stream count = %d, want 1", streamCount)
 		} else if entryCount != 0 {
 			t.Fatalf("initial entry count = %d, want 0", entryCount)
 		} else {
-			if rowsDeleted, err := db.DeleteStream(ctx, int32(streamID), 3); err != nil {
+			if rowsDeleted, err := db.DeleteStream(ctx, streamID, 3); err != nil {
 				t.Fatalf("DeleteStream failed: %v", err)
 			} else {
 				if rowsDeleted != 1 {
 					t.Fatalf("rows deleted = %d, want 1", rowsDeleted)
 				} else {
-					if streamCount, entryCount, err = streamEntryCounts(ctx, db, int32(streamID)); err != nil {
+					if streamCount, entryCount, err = streamEntryCounts(ctx, db, streamID); err != nil {
 						t.Fatalf("final count failed: %v", err)
 					} else if streamCount != 0 {
 						t.Fatalf("final stream count = %d, want 0", streamCount)

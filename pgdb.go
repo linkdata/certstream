@@ -377,7 +377,7 @@ WHERE CERTDB_cert.id = target.id;
 	return
 }
 
-func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
+func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int, batchSize int) (rowsDeleted int, err error) {
 	if cdb != nil {
 		if batchSize > 0 {
 			query := cdb.Pfx(`
@@ -395,10 +395,10 @@ WHERE CERTDB_entry.stream = $1
 `)
 			var tag pgconn.CommandTag
 			if tag, err = cdb.Exec(ctx, query, streamId, batchSize); err == nil {
-				rowsDeleted = tag.RowsAffected()
+				rowsDeleted = int(tag.RowsAffected())
 				if rowsDeleted == 0 {
 					if tag, err = cdb.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
-						rowsDeleted = tag.RowsAffected()
+						rowsDeleted = int(tag.RowsAffected())
 					}
 				}
 			}
