@@ -126,61 +126,59 @@ END IF;
 
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
 RETURNS CERTDB_split_domain_result
-LANGUAGE sql
+LANGUAGE plpgsql
 IMMUTABLE
 PARALLEL SAFE
 AS $$
-WITH a AS (
-  SELECT string_to_array(_fqdn, '.') AS ary
-),
-b AS (
-  SELECT
-    ary,
-    COALESCE(array_length(ary, 1), 0) AS len
-  FROM a
-),
-c AS (
-  SELECT
-    ary,
-    len,
-    (len > 0 AND ary[1] = '*') AS wild,
-    CASE WHEN len > 0 AND ary[1] = '*' THEN 2 ELSE 1 END AS start_pos,
-    (len - 2) AS www_limit_pos   -- loop condition: _pos + 1 < _len  => _pos <= _len-2
-  FROM b
-),
-d AS (
-  SELECT
-    ary,
-    len,
-    wild,
-    start_pos,
-    CASE
-      WHEN len = 0 OR www_limit_pos < start_pos THEN 0
-      ELSE (
-        WITH gs AS (
-          SELECT i
-          FROM generate_series(start_pos, www_limit_pos) AS g(i)
-        ),
-        first_non AS (
-          SELECT min(i) AS i
-          FROM gs
-          WHERE ary[i] <> 'www'
-        )
-        SELECT
-          CASE
-            WHEN (SELECT i FROM first_non) IS NULL THEN (www_limit_pos - start_pos + 1)
-            ELSE ((SELECT i FROM first_non) - start_pos)
-          END
-      )
-    END::smallint AS www
-  FROM c
-)
-SELECT
-  wild,
-  www,
-  COALESCE(array_to_string(ary[(start_pos + www) : (len - 1)], '.'), '') AS domain,
-  COALESCE(ary[len], '') AS tld
-FROM d;
+DECLARE
+  ary text[];
+  len integer;
+  wild boolean;
+  start_pos integer;
+  www_limit_pos integer;
+  www_count integer;
+  idx integer;
+  start_idx integer;
+  end_idx integer;
+  result CERTDB_split_domain_result;
+BEGIN
+  ary := string_to_array(_fqdn, '.');
+  len := COALESCE(array_length(ary, 1), 0);
+  wild := (len > 0 AND ary[1] = '*');
+  IF wild THEN
+    start_pos := 2;
+  ELSE
+    start_pos := 1;
+  END IF;
+
+  www_count := 0;
+  www_limit_pos := len - 2;
+  IF len > 0 AND www_limit_pos >= start_pos THEN
+    idx := start_pos;
+    WHILE idx <= www_limit_pos AND ary[idx] = 'www' LOOP
+      www_count := www_count + 1;
+      idx := idx + 1;
+    END LOOP;
+  END IF;
+
+  start_idx := start_pos + www_count;
+  end_idx := len - 1;
+  IF len = 0 OR end_idx < start_idx THEN
+    result.domain := '';
+  ELSE
+    result.domain := COALESCE(array_to_string(ary[start_idx:end_idx], '.'), '');
+  END IF;
+
+  IF len = 0 THEN
+    result.tld := '';
+  ELSE
+    result.tld := COALESCE(ary[len], '');
+  END IF;
+
+  result.wild := wild;
+  result.www := www_count::smallint;
+  RETURN result;
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION CERTDB_fqdn(
