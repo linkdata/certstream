@@ -41,7 +41,6 @@ type PgDB struct {
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
 	stmtSelectDnsnameLike string
-	stmtSelectIDSince     string
 	mu                    sync.Mutex // protects following
 	batchCh               []chan *LogEntry
 	workerBits            int
@@ -105,7 +104,6 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectDnsnameLike: pfx(SelectDnsnameLike),
-							stmtSelectIDSince:     pfx(SelectIDSince),
 							batchCh:               batchChans,
 							workerBits:            workerBits,
 							workerCount:           workerCount,
@@ -274,41 +272,6 @@ func RenderSQL(query string, args ...any) string {
 		query = strings.ReplaceAll(query, fmt.Sprintf("$%d", i+1), s)
 	}
 	return query
-}
-
-func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate) (since time.Time, err error) {
-	if jcert.CommonName != "" {
-		ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-		defer cancel()
-		row := cdb.QueryRow(ctx, cdb.stmtSelectIDSince,
-			jcert.CommonName,
-			jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
-			jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
-			jcert.NotBefore.UTC(),
-		)
-		var id int64
-		var subject, issuer int
-		var notbefore time.Time
-		var p_since *time.Time
-		if err = row.Scan(&id, &subject, &issuer, &notbefore, &p_since); err == nil {
-			if p_since != nil {
-				since = *p_since
-			} else {
-				since = notbefore
-			}
-		}
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = nil
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			_ = cdb.LogError(err, "GetCertificateSince", "signature", jcert.Signature, "query", strings.ReplaceAll(RenderSQL(cdb.stmtSelectIDSince,
-				jcert.CommonName,
-				jcert.Subject.Organization, jcert.Subject.Province, jcert.Subject.Country,
-				jcert.Issuer.Organization, jcert.Issuer.Province, jcert.Issuer.Country,
-				jcert.NotBefore), "\n", " "))
-		}
-	}
-	return
 }
 
 func (cdb *PgDB) GetCertificatesByCommonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {

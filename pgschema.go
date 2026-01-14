@@ -20,9 +20,6 @@ var SelectGaps string
 //go:embed assets/selectallgaps.sql
 var SelectAllGaps string
 
-//go:embed assets/selectidsince.sql
-var SelectIDSince string
-
 const SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
 
 const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
