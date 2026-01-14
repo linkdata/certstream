@@ -313,7 +313,7 @@ func (cdb *PgDB) GetCertificateSince(ctx context.Context, jcert *JsonCertificate
 
 func (cdb *PgDB) GetCertificatesByCommonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {
 	var rows pgx.Rows
-	if rows, err = cdb.Query(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE commonname=$1 ORDER BY notbefore DESC;`), commonname); err == nil {
+	if rows, err = cdb.Query(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE commonname=$1 ORDER BY notbefore DESC;`), commonname); err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var dbcert PgCertificate
@@ -332,7 +332,7 @@ func (cdb *PgDB) GetCertificatesByCommonName(ctx context.Context, commonname str
 }
 
 func (cdb *PgDB) GetCertificateByHash(ctx context.Context, hash []byte) (cert *JsonCertificate, err error) {
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE sha256=$1;`), hash)
+	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE sha256=$1;`), hash)
 	var dbcert PgCertificate
 	if err = ScanCertificate(row, &dbcert); err == nil {
 		cert, err = cdb.getCertificate(ctx, &dbcert)
@@ -341,7 +341,7 @@ func (cdb *PgDB) GetCertificateByHash(ctx context.Context, hash []byte) (cert *J
 }
 
 func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCertificate, err error) {
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT * FROM CERTDB_cert WHERE id=$1;`), id)
+	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE id=$1;`), id)
 	var dbcert PgCertificate
 	if err = ScanCertificate(row, &dbcert); err == nil {
 		cert, err = cdb.getCertificate(ctx, &dbcert)
