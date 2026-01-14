@@ -179,8 +179,8 @@ certs_with_since AS (
           AND c.subject = u.subject
           AND c.issuer = u.issuer
           AND c.commonname = u.commonname
-          AND c.notbefore < u.notbefore
           AND c.notafter >= u.notbefore
+          AND c.notbefore < u.notbefore
         ORDER BY c.notbefore DESC
         LIMIT 1
     ) overlap ON TRUE
