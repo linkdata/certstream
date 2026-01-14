@@ -48,9 +48,6 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_subject_issuer_notafter_idx -- used when computing 'since'
     ON CERTDB_cert (commonname, subject, issuer, notafter ASC, notbefore DESC)
     INCLUDE (since);
-  CREATE INDEX IF NOT EXISTS CERTDB_cert_commonname_empty_idx 
-    ON CERTDB_cert (subject, issuer, notbefore DESC) 
-    INCLUDE (since, notafter) WHERE commonname = '';
 END IF;
 
 IF to_regclass('CERTDB_entry') IS NULL THEN
