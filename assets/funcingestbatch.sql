@@ -246,11 +246,12 @@ ON CONFLICT (cert, email) DO NOTHING
 $sql$;
     insert_ip_sql text := $sql$
 WITH ip_data AS (
-    SELECT DISTINCT tic.cert_id, trim(ip.addr) AS addr_txt
+    -- ipaddrs are pre-trimmed in input; only filter empties
+    SELECT DISTINCT tic.cert_id, ip.addr AS addr_txt
     FROM tmp_inserted_certs tic
     INNER JOIN tmp_new_certs tnc ON tnc.sha256 = tic.sha256
     CROSS JOIN LATERAL unnest(string_to_array(tnc.ipaddrs, ' ')) AS ip(addr)
-    WHERE tnc.ipaddrs <> '' AND trim(ip.addr) <> ''
+    WHERE tnc.ipaddrs <> '' AND ip.addr <> ''
 )
 INSERT INTO CERTDB_ipaddress (cert, addr)
 SELECT cert_id, inet(addr_txt)
