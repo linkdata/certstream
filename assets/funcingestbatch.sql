@@ -111,77 +111,98 @@ FROM jsonb_to_recordset($1) AS x(
     uris text
 )
 $sql$;
+    tmp_new_certs_sql text := $sql$
+CREATE TEMP TABLE tmp_new_certs ON COMMIT DROP AS
+WITH unique_certs AS (
+    SELECT DISTINCT ON (sha256)
+        sha256,
+        notbefore,
+        notafter,
+        commonname,
+        iss_org,
+        iss_prov,
+        iss_country,
+        sub_org,
+        sub_prov,
+        sub_country,
+        precert,
+        dnsnames,
+        ipaddrs,
+        emails,
+        uris
+    FROM tmp_ingest
+    ORDER BY sha256
+),
+new_certs AS (
+    SELECT uc.*
+    FROM unique_certs uc
+    LEFT JOIN CERTDB_cert c ON c.sha256 = uc.sha256
+    WHERE c.id IS NULL
+)
+SELECT
+    nc.*,
+    NULL::integer AS iss_id,
+    NULL::integer AS sub_id
+FROM new_certs nc
+$sql$;
+    update_issuer_id_sql text := $sql$
+UPDATE tmp_new_certs t
+SET iss_id = i.id
+FROM CERTDB_ident i
+WHERE t.iss_id IS NULL
+  AND i.organization = t.iss_org
+  AND i.province = t.iss_prov
+  AND i.country = t.iss_country
+$sql$;
+    update_subject_id_sql text := $sql$
+UPDATE tmp_new_certs t
+SET sub_id = i.id
+FROM CERTDB_ident i
+WHERE t.sub_id IS NULL
+  AND i.organization = t.sub_org
+  AND i.province = t.sub_prov
+  AND i.country = t.sub_country
+$sql$;
     ident_insert_sql text := $sql$
 WITH needed_idents AS (
     SELECT DISTINCT iss_org AS organization, iss_prov AS province, iss_country AS country
-    FROM tmp_ingest
+    FROM tmp_new_certs
+    WHERE iss_id IS NULL
     UNION
     SELECT DISTINCT sub_org AS organization, sub_prov AS province, sub_country AS country
-    FROM tmp_ingest
+    FROM tmp_new_certs
+    WHERE sub_id IS NULL
 )
 INSERT INTO CERTDB_ident(organization, province, country)
 SELECT n.organization, n.province, n.country
 FROM needed_idents n
 ON CONFLICT (organization, province, country) DO NOTHING
 $sql$;
-    tmp_new_certs_sql text := $sql$
-CREATE TEMP TABLE tmp_new_certs ON COMMIT DROP AS
-WITH mapped_data AS (
-    SELECT 
-        t.*,
-        iss.id AS iss_id,
-        sub.id AS sub_id
-    FROM tmp_ingest t
-    INNER JOIN CERTDB_ident iss ON (
-        iss.organization = t.iss_org 
-        AND iss.province = t.iss_prov 
-        AND iss.country = t.iss_country
-    )
-    INNER JOIN CERTDB_ident sub ON (
-        sub.organization = t.sub_org 
-        AND sub.province = t.sub_prov 
-        AND sub.country = t.sub_country
-    )
-),
-unique_certs AS (
-    SELECT DISTINCT ON (sha256)
-        sha256,
-        notbefore,
-        notafter,
-        commonname,
-        sub_id AS subject,
-        iss_id AS issuer,
-        precert,
-        dnsnames,
-        ipaddrs,
-        emails,
-        uris
-    FROM mapped_data
-    ORDER BY sha256
-),
-certs_with_since AS (
+    insert_certs_sql text := $sql$
+CREATE TEMP TABLE tmp_inserted_certs ON COMMIT DROP AS
+WITH certs_with_since AS (
     SELECT
-        u.sha256,
-        u.notbefore,
-        u.notafter,
+        t.sha256,
+        t.notbefore,
+        t.notafter,
         CASE
-            WHEN u.commonname = '' THEN u.notbefore
-            ELSE COALESCE(overlap.since, u.notbefore)
+            WHEN t.commonname = '' THEN t.notbefore
+            ELSE COALESCE(overlap.since, t.notbefore)
         END AS since,
-        u.commonname,
-        u.subject,
-        u.issuer,
-        u.precert
-    FROM unique_certs u
+        t.commonname,
+        t.sub_id AS subject,
+        t.iss_id AS issuer,
+        t.precert
+    FROM tmp_new_certs t
     LEFT JOIN LATERAL (
         SELECT c.since
         FROM CERTDB_cert c
-        WHERE u.commonname <> ''
-          AND c.subject = u.subject
-          AND c.issuer = u.issuer
-          AND c.commonname = u.commonname
-          AND c.notafter >= u.notbefore
-          AND c.notbefore < u.notbefore
+        WHERE t.commonname <> ''
+          AND c.subject = t.sub_id
+          AND c.issuer = t.iss_id
+          AND c.commonname = t.commonname
+          AND c.notafter >= t.notbefore
+          AND c.notbefore < t.notbefore
         ORDER BY c.notbefore DESC
         LIMIT 1
     ) overlap ON TRUE
@@ -192,32 +213,23 @@ cert_inserts AS (
     FROM certs_with_since
     ON CONFLICT (sha256) DO NOTHING
     RETURNING id, sha256
-),
-all_cert_ids AS (
-    SELECT ci.id AS cert_id, ci.sha256
-    FROM cert_inserts ci
-    UNION
-    SELECT c.id, c.sha256
-    FROM CERTDB_cert c
-    INNER JOIN unique_certs uc ON c.sha256 = uc.sha256
-),
-entry_inserts AS (
-    INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
-    SELECT md.seen, md.logindex, ac.cert_id, md.stream
-    FROM mapped_data md
-    INNER JOIN all_cert_ids ac ON ac.sha256 = md.sha256
-    ON CONFLICT (stream, logindex) DO NOTHING
-    RETURNING cert
 )
-SELECT ci.id AS cert_id, uc.sha256, uc.uris, uc.emails, uc.ipaddrs, uc.dnsnames
-FROM cert_inserts ci
-INNER JOIN unique_certs uc ON uc.sha256 = ci.sha256
+SELECT id AS cert_id, sha256
+FROM cert_inserts
+$sql$;
+    insert_entry_sql text := $sql$
+INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
+SELECT ti.seen, ti.logindex, c.id, ti.stream
+FROM tmp_ingest ti
+INNER JOIN CERTDB_cert c ON c.sha256 = ti.sha256
+ON CONFLICT (stream, logindex) DO NOTHING
 $sql$;
     insert_uri_sql text := $sql$
 INSERT INTO CERTDB_uri (cert, uri)
 -- uris are pre-trimmed in input; only filter empties
-SELECT DISTINCT tnc.cert_id, u.uri
-FROM tmp_new_certs tnc
+SELECT DISTINCT tic.cert_id, u.uri
+FROM tmp_inserted_certs tic
+INNER JOIN tmp_new_certs tnc ON tnc.sha256 = tic.sha256
 CROSS JOIN LATERAL unnest(string_to_array(tnc.uris, ' ')) AS u(uri)
 WHERE tnc.uris <> '' AND u.uri <> ''
 ON CONFLICT (cert, uri) DO NOTHING
@@ -225,16 +237,18 @@ $sql$;
     insert_email_sql text := $sql$
 INSERT INTO CERTDB_email (cert, email)
 -- emails are pre-trimmed in input; only filter empties
-SELECT DISTINCT tnc.cert_id, e.email
-FROM tmp_new_certs tnc
+SELECT DISTINCT tic.cert_id, e.email
+FROM tmp_inserted_certs tic
+INNER JOIN tmp_new_certs tnc ON tnc.sha256 = tic.sha256
 CROSS JOIN LATERAL unnest(string_to_array(tnc.emails, ' ')) AS e(email)
 WHERE tnc.emails <> '' AND e.email <> ''
 ON CONFLICT (cert, email) DO NOTHING
 $sql$;
     insert_ip_sql text := $sql$
 WITH ip_data AS (
-    SELECT DISTINCT tnc.cert_id, trim(ip.addr) AS addr_txt
-    FROM tmp_new_certs tnc
+    SELECT DISTINCT tic.cert_id, trim(ip.addr) AS addr_txt
+    FROM tmp_inserted_certs tic
+    INNER JOIN tmp_new_certs tnc ON tnc.sha256 = tic.sha256
     CROSS JOIN LATERAL unnest(string_to_array(tnc.ipaddrs, ' ')) AS ip(addr)
     WHERE tnc.ipaddrs <> '' AND trim(ip.addr) <> ''
 )
@@ -246,8 +260,9 @@ $sql$;
     insert_domain_sql text := $sql$
 WITH expanded AS MATERIALIZED (
     -- dnsnames are pre-trimmed in input; split on space
-    SELECT tnc.cert_id, d.fqdn AS fqdn
-    FROM tmp_new_certs tnc
+    SELECT tic.cert_id, d.fqdn AS fqdn
+    FROM tmp_inserted_certs tic
+    INNER JOIN tmp_new_certs tnc ON tnc.sha256 = tic.sha256
     CROSS JOIN LATERAL unnest(string_to_array(tnc.dnsnames, ' ')) AS d(fqdn)
     WHERE tnc.dnsnames <> '' AND d.fqdn <> ''
 ),
@@ -287,33 +302,36 @@ BEGIN
     -- in the database, CERTDB_entry must still be inserted into.
 
     PERFORM CERTDB_ingest_exec(debug_enabled, 'tmp_ingest', tmp_ingest_sql, _rows);
+    PERFORM CERTDB_ingest_exec(debug_enabled, 'tmp_new_certs', tmp_new_certs_sql, NULL);
+
+    PERFORM CERTDB_ingest_exec(debug_enabled, 'update_issuer_ids', update_issuer_id_sql, NULL);
+    PERFORM CERTDB_ingest_exec(debug_enabled, 'update_subject_ids', update_subject_id_sql, NULL);
 
     SELECT EXISTS (
         SELECT 1
         FROM (
             SELECT iss_org AS organization, iss_prov AS province, iss_country AS country
-            FROM tmp_ingest
+            FROM tmp_new_certs
+            WHERE iss_id IS NULL
             UNION ALL
             SELECT sub_org AS organization, sub_prov AS province, sub_country AS country
-            FROM tmp_ingest
+            FROM tmp_new_certs
+            WHERE sub_id IS NULL
         ) n
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM CERTDB_ident i
-            WHERE i.organization = n.organization
-            AND i.province = n.province
-            AND i.country = n.country
-        )
         LIMIT 1
     ) INTO has_missing_idents;
     IF has_missing_idents THEN
         PERFORM CERTDB_ingest_exec(debug_enabled, 'ident_insert', ident_insert_sql, NULL);
+        PERFORM CERTDB_ingest_exec(debug_enabled, 'update_issuer_ids', update_issuer_id_sql, NULL);
+        PERFORM CERTDB_ingest_exec(debug_enabled, 'update_subject_ids', update_subject_id_sql, NULL);
     END IF;
 
-    PERFORM CERTDB_ingest_exec(debug_enabled, 'tmp_new_certs', tmp_new_certs_sql, NULL);
+    PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_certs', insert_certs_sql, NULL);
     PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_uri', insert_uri_sql, NULL);
     PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_email', insert_email_sql, NULL);
     PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_ip', insert_ip_sql, NULL);
     PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_domain', insert_domain_sql, NULL);
+
+    PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_entries', insert_entry_sql, NULL);
 END;
 $$;
