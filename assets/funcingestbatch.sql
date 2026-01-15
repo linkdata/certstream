@@ -68,6 +68,7 @@ LANGUAGE plpgsql
 AS $$
 DECLARE
     debug_enabled boolean;
+    has_missing_idents boolean;
     tmp_ingest_sql text := $sql$
 CREATE TEMP TABLE tmp_ingest ON COMMIT DROP AS
 SELECT
@@ -286,7 +287,29 @@ BEGIN
     -- in the database, CERTDB_entry must still be inserted into.
 
     PERFORM CERTDB_ingest_exec(debug_enabled, 'tmp_ingest', tmp_ingest_sql, _rows);
-    PERFORM CERTDB_ingest_exec(debug_enabled, 'ident_insert', ident_insert_sql, NULL);
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM (
+            SELECT iss_org AS organization, iss_prov AS province, iss_country AS country
+            FROM tmp_ingest
+            UNION ALL
+            SELECT sub_org AS organization, sub_prov AS province, sub_country AS country
+            FROM tmp_ingest
+        ) n
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM CERTDB_ident i
+            WHERE i.organization = n.organization
+            AND i.province = n.province
+            AND i.country = n.country
+        )
+        LIMIT 1
+    ) INTO has_missing_idents;
+    IF has_missing_idents THEN
+        PERFORM CERTDB_ingest_exec(debug_enabled, 'ident_insert', ident_insert_sql, NULL);
+    END IF;
+
     PERFORM CERTDB_ingest_exec(debug_enabled, 'tmp_new_certs', tmp_new_certs_sql, NULL);
     PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_uri', insert_uri_sql, NULL);
     PERFORM CERTDB_ingest_exec(debug_enabled, 'insert_email', insert_email_sql, NULL);
