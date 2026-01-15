@@ -310,16 +310,8 @@ BEGIN
 
     SELECT EXISTS (
         SELECT 1
-        FROM (
-            SELECT iss_org AS organization, iss_prov AS province, iss_country AS country
-            FROM tmp_new_certs
-            WHERE iss_id IS NULL
-            UNION ALL
-            SELECT sub_org AS organization, sub_prov AS province, sub_country AS country
-            FROM tmp_new_certs
-            WHERE sub_id IS NULL
-        ) n
-        LIMIT 1
+        FROM tmp_new_certs
+        WHERE iss_id IS NULL OR sub_id IS NULL
     ) INTO has_missing_idents;
     IF has_missing_idents THEN
         PERFORM CERTDB_ingest_exec(debug_enabled, 'ident_insert', ident_insert_sql, NULL);
