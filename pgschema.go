@@ -14,9 +14,6 @@ var FunctionStreamID string
 //go:embed assets/funcingestbatch.sql
 var FuncIngestBatch string
 
-//go:embed assets/selectgaps.sql
-var SelectGaps string
-
 //go:embed assets/selectallgaps.sql
 var SelectAllGaps string
 

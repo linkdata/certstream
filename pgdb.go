@@ -36,7 +36,6 @@ type PgDB struct {
 	funcOperatorID    string
 	funcStreamID      string
 	funcIngestBatch   string
-	stmtSelectGaps    string
 	stmtSelectAllGaps string
 	stmtSelectMinIdx  string
 	stmtSelectMaxIdx  string
@@ -98,7 +97,6 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcOperatorID:    pfx(callOperatorID),
 							funcStreamID:      pfx(callStreamID),
 							funcIngestBatch:   pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
-							stmtSelectGaps:    pfx(SelectGaps),
 							stmtSelectAllGaps: pfx(SelectAllGaps),
 							stmtSelectMinIdx:  pfx(SelectMinIndex),
 							stmtSelectMaxIdx:  pfx(SelectMaxIndex),
