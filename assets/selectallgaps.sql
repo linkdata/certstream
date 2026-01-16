@@ -1,24 +1,44 @@
-SELECT
-  stream,
-  gap_start,
-  gap_end
-FROM (
-  SELECT
-    stream,
-    logindex + 1 AS gap_start,
-    next_nr - 1 AS gap_end
-  FROM (
-    SELECT
-      stream,
-      logindex,
-      LEAD(logindex) OVER (PARTITION BY stream ORDER BY logindex) AS next_nr
+WITH seed AS (
+  SELECT $2::bigint AS logindex
+  WHERE $2::bigint >= 0
+),
+base AS (
+  SELECT logindex
+  FROM CERTDB_entry
+  WHERE stream = $1
+    AND logindex > $2::bigint
+    AND logindex <= $3::bigint
+  ORDER BY logindex ASC
+  LIMIT $4
+),
+scan_rows AS (
+  SELECT logindex FROM seed
+  UNION ALL
+  SELECT logindex FROM base
+),
+candidates AS (
+  SELECT s.logindex AS prev_logindex,
+    n.logindex AS next_logindex
+  FROM scan_rows s
+  JOIN LATERAL (
+    SELECT logindex
     FROM CERTDB_entry
-    WHERE stream IN (%s)
-      AND (stream > $1 OR (stream = $1 AND logindex >= $2::bigint - 1))
-  ) t
-  WHERE next_nr IS NOT NULL
-    AND next_nr > logindex + 1
-) gaps
-WHERE (stream > $1 OR (stream = $1 AND gap_start > $2::bigint))
-ORDER BY stream, gap_start
-LIMIT $3;
+    WHERE stream = $1
+      AND logindex > s.logindex
+      AND logindex <= $3::bigint
+    ORDER BY logindex ASC
+    LIMIT 1
+  ) n ON true
+  WHERE n.logindex > s.logindex + 1
+  ORDER BY s.logindex ASC
+  LIMIT 1
+),
+last AS (
+  SELECT MAX(logindex) AS last_logindex FROM base
+)
+SELECT
+  c.prev_logindex + 1 AS gap_start,
+  c.next_logindex - 1 AS gap_end,
+  last.last_logindex
+FROM last
+LEFT JOIN candidates c ON true;
