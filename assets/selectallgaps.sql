@@ -19,6 +19,6 @@ FROM (
   WHERE next_nr IS NOT NULL
     AND next_nr > logindex + 1
 ) gaps
-WHERE (stream > $1::int OR (stream = $1 AND gap_start > $2::bigint))
+WHERE (stream > $1 OR (stream = $1 AND gap_start > $2::bigint))
 ORDER BY stream, gap_start
 LIMIT $3;
