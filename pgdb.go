@@ -332,18 +332,11 @@ LIMIT $5;
 				for err == nil {
 					var rows pgx.Rows
 					if rows, err = cdb.Query(ctx, query, expiresAfter, maxAtStart, lastNotAfter, lastID, pageSize); err == nil {
-						gotRow := false
+						var dbcerts []PgCertificate
 						for rows.Next() && err == nil {
-							gotRow = true
 							var dbcert PgCertificate
 							if err = ScanCertificate(rows, &dbcert); err == nil {
-								var cert *JsonCertificate
-								if cert, err = cdb.getCertificate(ctx, &dbcert); err == nil {
-									if err = callback(ctx, cert); err == nil {
-										lastNotAfter = dbcert.NotAfter
-										lastID = dbcert.Id
-									}
-								}
+								dbcerts = append(dbcerts, dbcert)
 							}
 						}
 						if err == nil {
@@ -351,8 +344,20 @@ LIMIT $5;
 						}
 						rows.Close()
 						if err == nil {
-							if !gotRow {
+							if len(dbcerts) == 0 {
 								break
+							}
+							for i := range dbcerts {
+								if err == nil {
+									dbcert := dbcerts[i]
+									var cert *JsonCertificate
+									if cert, err = cdb.getCertificate(ctx, &dbcert); err == nil {
+										if err = callback(ctx, cert); err == nil {
+											lastNotAfter = dbcert.NotAfter
+											lastID = dbcert.Id
+										}
+									}
+								}
 							}
 						}
 					}

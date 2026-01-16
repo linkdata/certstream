@@ -23,6 +23,11 @@ type execQueryer interface {
 }
 
 func newPgDBFromConn(ctx context.Context, conn *pgx.Conn) (db *certstream.PgDB, err error) {
+	db, err = newPgDBFromConnWithConns(ctx, conn, 0)
+	return
+}
+
+func newPgDBFromConnWithConns(ctx context.Context, conn *pgx.Conn, maxConns int) (db *certstream.PgDB, err error) {
 	if conn != nil {
 		pgCfg := conn.Config()
 		addr := net.JoinHostPort(pgCfg.Host, strconv.Itoa(int(pgCfg.Port)))
@@ -32,6 +37,9 @@ func newPgDBFromConn(ctx context.Context, conn *pgx.Conn) (db *certstream.PgDB, 
 		cfg.PgName = pgCfg.Database
 		cfg.PgAddr = addr
 		cfg.PgNoSSL = true
+		if maxConns > 0 {
+			cfg.PgConns = maxConns
+		}
 		cs := &certstream.CertStream{Config: *cfg}
 		db, err = certstream.NewPgDB(ctx, cs)
 	}
