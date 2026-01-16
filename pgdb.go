@@ -307,6 +307,62 @@ func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCe
 	return
 }
 
+func (cdb *PgDB) GetHistoricalCertificates(ctx context.Context, expiresAfter time.Time, callback func(ctx context.Context, cert *JsonCertificate) (err error)) (err error) {
+	if cdb != nil {
+		expiresAfter = expiresAfter.UTC()
+		var maxNotAfter *time.Time
+		if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT MAX(notafter) FROM CERTDB_cert;`)).Scan(&maxNotAfter); err == nil {
+			if maxNotAfter != nil {
+				maxAtStart := maxNotAfter.UTC()
+				pageSize := DbBatchSize
+				if pageSize < 1 {
+					pageSize = 100
+				}
+				lastNotAfter := expiresAfter
+				lastID := int64(0)
+				query := cdb.Pfx(`
+SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since
+FROM CERTDB_cert
+WHERE notafter > $1
+  AND notafter <= $2
+  AND (notafter > $3 OR (notafter = $3 AND id > $4))
+ORDER BY notafter ASC, id ASC
+LIMIT $5;
+`)
+				for err == nil {
+					var rows pgx.Rows
+					if rows, err = cdb.Query(ctx, query, expiresAfter, maxAtStart, lastNotAfter, lastID, pageSize); err == nil {
+						gotRow := false
+						for rows.Next() && err == nil {
+							gotRow = true
+							var dbcert PgCertificate
+							if err = ScanCertificate(rows, &dbcert); err == nil {
+								var cert *JsonCertificate
+								if cert, err = cdb.getCertificate(ctx, &dbcert); err == nil {
+									if err = callback(ctx, cert); err == nil {
+										lastNotAfter = dbcert.NotAfter
+										lastID = dbcert.Id
+									}
+								}
+							}
+						}
+						if err == nil {
+							err = rows.Err()
+						}
+						rows.Close()
+						if err == nil {
+							if !gotRow {
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
 func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
 		if batchSize > 0 {
