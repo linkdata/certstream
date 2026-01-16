@@ -488,24 +488,75 @@ func (gt *gapTotals) values() (count int64, size int64) {
 	return
 }
 
+func (cdb *PgDB) gapIndexWorkers(total int) (workers int) {
+	workers = 1
+	if cdb != nil {
+		if cdb.CertStream != nil {
+			workers = cdb.CertStream.Config.PgConns / 4
+		}
+		if workers < 1 {
+			workers = 1
+		}
+		if workers > 16 {
+			workers = 16
+		}
+	}
+	if total < workers {
+		workers = total
+	}
+	return
+}
+
 func (cdb *PgDB) selectGapEndIndexes(ctx context.Context, streamIDs []int32) (endIndexes map[int32]int64, err error) {
 	endIndexes = map[int32]int64{}
 	if len(streamIDs) > 0 {
-		query := cdb.Pfx(`SELECT stream, MAX(logindex) AS logindex FROM CERTDB_entry WHERE stream = ANY($1) GROUP BY stream;`)
-		var rows pgx.Rows
-		if rows, err = cdb.Query(ctx, query, streamIDs); err == nil {
-			defer rows.Close()
-			for rows.Next() && err == nil {
-				var streamID int32
-				var maxIndex sql.NullInt64
-				if err = rows.Scan(&streamID, &maxIndex); err == nil {
-					if maxIndex.Valid {
-						endIndexes[streamID] = maxIndex.Int64
+		query := cdb.Pfx(`SELECT logindex FROM CERTDB_entry WHERE stream = $1 ORDER BY logindex DESC LIMIT 1;`)
+		workers := cdb.gapIndexWorkers(len(streamIDs))
+		if workers < 1 {
+			workers = 1
+		}
+		type result struct {
+			streamID int32
+			maxIndex int64
+			ok       bool
+			err      error
+		}
+		sem := make(chan struct{}, workers)
+		results := make(chan result, len(streamIDs))
+		var wg sync.WaitGroup
+		for _, streamID := range streamIDs {
+			if ctx.Err() == nil {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(id int32) {
+					defer wg.Done()
+					defer func() {
+						<-sem
+					}()
+					row := cdb.QueryRow(ctx, query, id)
+					var maxIndex int64
+					e := row.Scan(&maxIndex)
+					if e == nil {
+						results <- result{streamID: id, maxIndex: maxIndex, ok: true}
+					} else if errors.Is(e, pgx.ErrNoRows) {
+						results <- result{streamID: id}
+					} else {
+						results <- result{streamID: id, err: e}
 					}
-				}
+				}(streamID)
 			}
-			if err == nil {
-				err = rows.Err()
+		}
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+		for res := range results {
+			if res.err == nil {
+				if res.ok {
+					endIndexes[res.streamID] = res.maxIndex
+				}
+			} else {
+				err = errors.Join(err, res.err)
 			}
 		}
 	}
