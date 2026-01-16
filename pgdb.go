@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -413,6 +412,11 @@ func (cdb *PgDB) estimator(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
+func (cdb *PgDB) selectAllGapsPageQuery(streamIds []byte) (query string) {
+	query = cdb.Pfx(fmt.Sprintf(cdb.stmtSelectAllGaps, string(streamIds)))
+	return
+}
+
 func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -452,46 +456,53 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 	cdb.LogInfo("selectAllGaps starts", "streams", len(streams))
 	var totalgaps, totalgapsize int64
 
-	tx, err := cdb.BeginTx(ctx, pgx.TxOptions{})
+	var err error
 	var query string
-	if cdb.LogError(err, "selectAllGaps.BeginTX") == nil {
-		defer tx.Commit(ctx)
-		cursorName := fmt.Sprintf("certstreamgaps%x", rand.Int64() /*#nosec G404*/)
-		query = cdb.Pfx(fmt.Sprintf(`DECLARE %s CURSOR FOR `+cdb.stmtSelectAllGaps, cursorName, string(streamIds)))
-		if _, err = tx.Exec(ctx, query); cdb.LogError(err, "selectAllGaps.DECLARE") == nil {
-			query = fmt.Sprintf(`FETCH 1 IN %s;`, cursorName)
-			for err == nil {
-				var rows pgx.Rows
-				if rows, err = tx.Query(ctx, query); cdb.LogError(err, "selectAllGaps.Query") == nil {
-					for rows.Next() {
-						var streamID int32
-						var gap_start, gap_end int64
-						if cdb.LogError(rows.Scan(&streamID, &gap_start, &gap_end), "selectAllGaps.Scan") == nil {
-							totalgaps++
-							totalgapsize += (gap_end - gap_start) + 1
-							q := queued{streamID: streamID, gap: gap{start: gap_start, end: gap_end}}
-							if ls := streams[streamID]; ls != nil {
-								gapCh := ls.getGapCh()
-								select {
-								case <-ctx.Done():
-									rows.Close()
-									return
-								case gapCh <- q.gap:
-								default:
-									queue = append(queue, q)
-								}
+	var lastStream int32 = -1
+	var lastGapStart int64 = -1
+	var cancelled bool
+	if len(streamIds) > 0 {
+		query = cdb.selectAllGapsPageQuery(streamIds)
+		for err == nil && !cancelled {
+			var rows pgx.Rows
+			if rows, err = cdb.Query(ctx, query, lastStream, lastGapStart, 1); cdb.LogError(err, "selectAllGaps.Query") == nil {
+				gotRow := false
+				for rows.Next() && err == nil && !cancelled {
+					gotRow = true
+					var streamID int32
+					var gap_start, gap_end int64
+					if err = cdb.LogError(rows.Scan(&streamID, &gap_start, &gap_end), "selectAllGaps.Scan"); err == nil {
+						totalgaps++
+						totalgapsize += (gap_end - gap_start) + 1
+						lastStream = streamID
+						lastGapStart = gap_start
+						q := queued{streamID: streamID, gap: gap{start: gap_start, end: gap_end}}
+						if ls := streams[streamID]; ls != nil {
+							gapCh := ls.getGapCh()
+							select {
+							case <-ctx.Done():
+								cancelled = true
+							case gapCh <- q.gap:
+							default:
+								queue = append(queue, q)
 							}
 						}
 					}
+				}
+				if err == nil && !cancelled {
 					err = cdb.LogError(rows.Err(), "selectAllGaps.rows.Err")
-					if rows.CommandTag().RowsAffected() == 0 {
+				}
+				rows.Close()
+				if err == nil && !cancelled {
+					if !gotRow {
 						break
 					}
 				}
 			}
 		}
-		_ = tx.Commit(ctx)
+	}
 
+	if !cancelled {
 		remain := len(queue)
 		if remain > 0 {
 			cdb.LogInfo("selectAllGaps waiting", "totalgapsize", totalgapsize, "totalgaps", totalgaps, "remain", remain, "elapsed", time.Since(start).Round(time.Second))
@@ -501,7 +512,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 						if ls := streams[queue[i].streamID]; ls != nil {
 							select {
 							case <-ctx.Done():
-								return
+								cancelled = true
 							case ls.gapCh <- queue[i].gap:
 								remain--
 								queue[i].gap.start = -1
@@ -510,9 +521,16 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 						}
 					}
 				}
-				sleep(ctx, time.Second)
+				if !cancelled {
+					sleep(ctx, time.Second)
+				}
+				if cancelled {
+					break
+				}
 			}
 		}
-		cdb.LogInfo("selectAllGaps completed", "totalgapsize", totalgapsize, "totalgaps", totalgaps, "elapsed", time.Since(start).Round(time.Second))
+		if !cancelled {
+			cdb.LogInfo("selectAllGaps completed", "totalgapsize", totalgapsize, "totalgaps", totalgaps, "elapsed", time.Since(start).Round(time.Second))
+		}
 	}
 }
