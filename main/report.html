@@ -73,7 +73,7 @@
 				
 				<option value="file8">github.com/linkdata/certstream/logoperator.go (74.4%)</option>
 				
-				<option value="file9">github.com/linkdata/certstream/logstream.go (70.5%)</option>
+				<option value="file9">github.com/linkdata/certstream/logstream.go (73.5%)</option>
 				
 				<option value="file10">github.com/linkdata/certstream/operatordomain.go (100.0%)</option>
 				
@@ -99,7 +99,7 @@
 				
 				<option value="file21">github.com/linkdata/certstream/updatestreams.go (95.9%)</option>
 				
-				<option value="file22">github.com/linkdata/certstream/wraperr.go (40.0%)</option>
+				<option value="file22">github.com/linkdata/certstream/wraperr.go (60.0%)</option>
 				
 				</select>
 			</div>
@@ -138,7 +138,7 @@ type Certificate struct {
         *x509.Certificate
 }
 
-func (c *Certificate) GetCommonName() (s string) <span class="cov10" title="592">{
+func (c *Certificate) GetCommonName() (s string) <span class="cov10" title="697">{
         if s = c.Subject.CommonName; s == "" </span><span class="cov5" title="32">{
                 if len(c.DNSNames) &gt; 0 </span><span class="cov5" title="30">{
                         names := slices.Clone(c.DNSNames)
@@ -146,7 +146,7 @@ func (c *Certificate) GetCommonName() (s string) <span class="cov10" title="592"
                         s = c.DNSNames[0]
                 }</span>
         }
-        <span class="cov10" title="592">return</span>
+        <span class="cov10" title="697">return</span>
 }
 </pre>
 		
@@ -192,8 +192,8 @@ func (cs *CertStream) LogInfo(msg string, args ...any) <span class="cov7" title=
         }</span>
 }
 
-func (cs *CertStream) LogError(err error, msg string, args ...any) error <span class="cov9" title="386">{
-        if err != nil &amp;&amp; cs.Config.Logger != nil </span><span class="cov7" title="88">{
+func (cs *CertStream) LogError(err error, msg string, args ...any) error <span class="cov8" title="378">{
+        if err != nil &amp;&amp; cs.Config.Logger != nil </span><span class="cov6" title="86">{
                 if !errors.Is(err, context.Canceled) &amp;&amp; !errors.Is(err, context.DeadlineExceeded) </span><span class="cov0" title="0">{
                         if unwrapper, ok := err.(interface{ Unwrap() []error }); ok </span><span class="cov0" title="0">{
                                 for _, e := range unwrapper.Unwrap() </span><span class="cov0" title="0">{
@@ -204,7 +204,7 @@ func (cs *CertStream) LogError(err error, msg string, args ...any) error <span c
                         }</span>
                 }
         }
-        <span class="cov9" title="386">return err</span>
+        <span class="cov8" title="378">return err</span>
 }
 
 func (cs *CertStream) Operators() (operators []*LogOperator) <span class="cov1" title="1">{
@@ -213,7 +213,7 @@ func (cs *CertStream) Operators() (operators []*LogOperator) <span class="cov1" 
                 operators = append(operators, logop)
         }</span>
         <span class="cov1" title="1">cs.mu.Unlock()
-        slices.SortFunc(operators, func(a, b *LogOperator) int </span><span class="cov5" title="20">{ return strings.Compare(a.operator.Name, b.operator.Name) }</span>)
+        slices.SortFunc(operators, func(a, b *LogOperator) int </span><span class="cov5" title="27">{ return strings.Compare(a.operator.Name, b.operator.Name) }</span>)
         <span class="cov1" title="1">return</span>
 }
 
@@ -239,14 +239,14 @@ func (cs *CertStream) GetLogStreamByID(id int32) (ls *LogStream) <span class="co
         <span class="cov0" title="0">return</span>
 }
 
-func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) <span class="cov7" title="121">{
+func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) <span class="cov7" title="108">{
         cs.mu.Lock()
         ch = cs.sendEntryCh
         cs.mu.Unlock()
         return
 }</span>
 
-func (cs *CertStream) DB() (db *PgDB) <span class="cov10" title="809">{
+func (cs *CertStream) DB() (db *PgDB) <span class="cov10" title="911">{
         cs.mu.Lock()
         db = cs.db
         cs.mu.Unlock()
@@ -263,9 +263,9 @@ func (cs *CertStream) Close() <span class="cov1" title="2">{
         if seCh != nil </span><span class="cov1" title="1">{
                 // drain
                 ok := true
-                for ok </span><span class="cov5" title="22">{
+                for ok </span><span class="cov3" title="9">{
                         select </span>{
-                        case _, ok = &lt;-seCh:<span class="cov5" title="21"></span>
+                        case _, ok = &lt;-seCh:<span class="cov3" title="8"></span>
                         default:<span class="cov1" title="1">
                                 ok = false</span>
                         }
@@ -594,40 +594,40 @@ type LogEntry struct {
         Seen        time.Time
 }
 
-func (le *LogEntry) appendJSON(b []byte) []byte <span class="cov8" title="586">{
-        if cert := le.Cert(); cert != nil </span><span class="cov8" title="586">{
+func (le *LogEntry) appendJSON(b []byte) []byte <span class="cov8" title="691">{
+        if cert := le.Cert(); cert != nil </span><span class="cov8" title="691">{
                 logindex := le.Index()
                 var dnsnames []string
-                for _, dnsname := range cert.DNSNames </span><span class="cov9" title="932">{
+                for _, dnsname := range cert.DNSNames </span><span class="cov9" title="1022">{
                         dnsname = strings.ToLower(dnsname)
-                        if uniname, err := idna.ToUnicode(dnsname); err == nil &amp;&amp; uniname != dnsname </span><span class="cov1" title="1">{
+                        if uniname, err := idna.ToUnicode(dnsname); err == nil &amp;&amp; uniname != dnsname </span><span class="cov5" title="54">{
                                 ok := true
-                                for _, r := range uniname </span><span class="cov5" title="29">{
+                                for _, r := range uniname </span><span class="cov9" title="1629">{
                                         ok = ok &amp;&amp; strconv.IsPrint(r)
                                 }</span>
-                                <span class="cov1" title="1">if ok </span><span class="cov1" title="1">{
+                                <span class="cov5" title="54">if ok </span><span class="cov5" title="54">{
                                         dnsname = uniname
                                 }</span>
                         }
-                        <span class="cov9" title="932">dnsnames = append(dnsnames, dnsname)</span>
+                        <span class="cov9" title="1022">dnsnames = append(dnsnames, dnsname)</span>
                 }
 
-                <span class="cov8" title="586">var ipaddrs []string
+                <span class="cov8" title="691">var ipaddrs []string
                 for _, ip := range cert.IPAddresses </span><span class="cov0" title="0">{
                         ipaddrs = append(ipaddrs, ip.String())
                 }</span>
 
-                <span class="cov8" title="586">var emails []string
+                <span class="cov8" title="691">var emails []string
                 for _, email := range cert.EmailAddresses </span><span class="cov0" title="0">{
                         emails = append(emails, strings.ReplaceAll(email, " ", "_"))
                 }</span>
 
-                <span class="cov8" title="586">var uris []string
+                <span class="cov8" title="691">var uris []string
                 for _, uri := range cert.URIs </span><span class="cov0" title="0">{
                         uris = append(uris, strings.ReplaceAll(uri.String(), " ", "%20"))
                 }</span>
 
-                <span class="cov8" title="586">b = append(b, `{`...)
+                <span class="cov8" title="691">b = append(b, `{`...)
                 b = append(b, `"iss_org":`...)
                 b = strconv.AppendQuote(b, strings.Join(cert.Issuer.Organization, ","))
                 b = append(b, `,"iss_prov":`...)
@@ -668,7 +668,7 @@ func (le *LogEntry) appendJSON(b []byte) []byte <span class="cov8" title="586">{
         } else<span class="cov0" title="0"> {
                 b = append(b, `{}`...)
         }</span>
-        <span class="cov8" title="586">return b</span>
+        <span class="cov8" title="691">return b</span>
 }
 
 func (le *LogEntry) String() (s string) <span class="cov1" title="1">{
@@ -696,8 +696,8 @@ func (le *LogEntry) String() (s string) <span class="cov1" title="1">{
 }
 
 // Cert returns the Certificate given a LogEntry or nil.
-func (le *LogEntry) Cert() (crt *Certificate) <span class="cov10" title="1921">{
-        if le != nil &amp;&amp; le.Certificate != nil </span><span class="cov9" title="1919">{
+func (le *LogEntry) Cert() (crt *Certificate) <span class="cov10" title="2234">{
+        if le != nil &amp;&amp; le.Certificate != nil </span><span class="cov9" title="2232">{
                 crt = &amp;Certificate{
                         PreCert:     le.PreCert,
                         Certificate: le.Certificate,
@@ -708,18 +708,18 @@ func (le *LogEntry) Cert() (crt *Certificate) <span class="cov10" title="1921">{
                         crt.Seen = time.Now().UTC()
                 }</span>
         }
-        <span class="cov10" title="1921">return</span>
+        <span class="cov10" title="2234">return</span>
 }
 
 // Index returns the log index or -1 if none is available.
-func (le *LogEntry) Index() (index int64) <span class="cov8" title="589">{
+func (le *LogEntry) Index() (index int64) <span class="cov8" title="694">{
         index = -1
-        if le != nil </span><span class="cov8" title="589">{
-                if le.LogIndex != 0 || le.Certificate != nil || le.PreCert || le.Err != nil </span><span class="cov8" title="588">{
+        if le != nil </span><span class="cov8" title="694">{
+                if le.LogIndex != 0 || le.Certificate != nil || le.PreCert || le.Err != nil </span><span class="cov8" title="693">{
                         index = le.LogIndex
                 }</span>
         }
-        <span class="cov8" title="589">return</span>
+        <span class="cov8" title="694">return</span>
 }
 </pre>
 		
@@ -780,8 +780,8 @@ func (lo *LogOperator) Errors() (errs []*StreamError) <span class="cov0" title="
         return
 }</span>
 
-func (lo *LogOperator) addError(ls *LogStream, err error) <span class="cov9" title="107">{
-        if err != nil </span><span class="cov9" title="107">{
+func (lo *LogOperator) addError(ls *LogStream, err error) <span class="cov9" title="109">{
+        if err != nil </span><span class="cov9" title="109">{
                 now := time.Now()
                 lo.mu.Lock()
                 defer lo.mu.Unlock()
@@ -789,17 +789,17 @@ func (lo *LogOperator) addError(ls *LogStream, err error) <span class="cov9" tit
                 if len(lo.errors) &gt; MaxErrors </span><span class="cov0" title="0">{
                         lo.errors = slices.Delete(lo.errors, 0, len(lo.errors)-MaxErrors)
                 }</span>
-                <span class="cov9" title="107">ls.errcount++</span>
+                <span class="cov9" title="109">ls.errcount++</span>
         }
 }
 
 func (lo *LogOperator) Streams() (sl []*LogStream) <span class="cov4" title="8">{
         lo.mu.Lock()
-        for _, s := range lo.streams </span><span class="cov8" title="60">{
+        for _, s := range lo.streams </span><span class="cov8" title="61">{
                 sl = append(sl, s)
         }</span>
         <span class="cov4" title="8">lo.mu.Unlock()
-        slices.SortFunc(sl, func(a, b *LogStream) int </span><span class="cov10" title="116">{ return strings.Compare(a.URL(), b.URL()) }</span>)
+        slices.SortFunc(sl, func(a, b *LogStream) int </span><span class="cov10" title="156">{ return strings.Compare(a.URL(), b.URL()) }</span>)
         <span class="cov4" title="8">return</span>
 }
 
@@ -854,14 +854,14 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
         <span class="cov7" title="36">return</span>
 }
 
-func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) <span class="cov7" title="26">{
+func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) <span class="cov6" title="26">{
         var headTile *sunlight.Client
-        if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.GetEntriesParallelism); err == nil </span><span class="cov7" title="26">{
+        if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.GetEntriesParallelism); err == nil </span><span class="cov6" title="26">{
                 var tailTile *sunlight.Client
-                if lo.TailClient != nil </span><span class="cov7" title="26">{
+                if lo.TailClient != nil </span><span class="cov6" title="26">{
                         tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.GetEntriesParallelism)
                 }</span>
-                <span class="cov7" title="26">if err == nil </span><span class="cov7" title="26">{
+                <span class="cov6" title="26">if err == nil </span><span class="cov6" title="26">{
                         ls = &amp;LogStream{
                                 LogOperator: lo,
                                 tiledLog:    log,
@@ -873,17 +873,17 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
                         ls.LastIndex.Store(-1)
                 }</span>
         }
-        <span class="cov7" title="26">return</span>
+        <span class="cov6" title="26">return</span>
 }
 
-func (lo *LogOperator) ensureTiledStream(ctx context.Context, log *loglist3.TiledLog, wg *sync.WaitGroup) (err error) <span class="cov7" title="25">{
+func (lo *LogOperator) ensureTiledStream(ctx context.Context, log *loglist3.TiledLog, wg *sync.WaitGroup) (err error) <span class="cov6" title="25">{
         lo.mu.Lock()
         ls := lo.streams[log.MonitoringURL]
         lo.mu.Unlock()
-        if ls == nil </span><span class="cov7" title="25">{
-                if ls, err = lo.makeTiledStream(log); err == nil </span><span class="cov7" title="25">{
-                        if db := lo.DB(); db != nil </span><span class="cov7" title="25">{
-                                if err = db.ensureStream(ctx, ls); err == nil </span><span class="cov7" title="25">{
+        if ls == nil </span><span class="cov6" title="25">{
+                if ls, err = lo.makeTiledStream(log); err == nil </span><span class="cov6" title="25">{
+                        if db := lo.DB(); db != nil </span><span class="cov6" title="25">{
+                                if err = db.ensureStream(ctx, ls); err == nil </span><span class="cov6" title="25">{
                                         lo.mu.Lock()
                                         lo.streams[log.MonitoringURL] = ls
                                         lo.mu.Unlock()
@@ -893,7 +893,7 @@ func (lo *LogOperator) ensureTiledStream(ctx context.Context, log *loglist3.Tile
                         }
                 }
         }
-        <span class="cov7" title="25">return</span>
+        <span class="cov6" title="25">return</span>
 }
 </pre>
 		
@@ -944,11 +944,11 @@ type LogStream struct {
         tailTile   *sunlight.Client
 }
 
-func (ls *LogStream) URL() string <span class="cov10" title="752">{
-        if ls.log != nil </span><span class="cov9" title="399">{
+func (ls *LogStream) URL() string <span class="cov10" title="832">{
+        if ls.log != nil </span><span class="cov9" title="477">{
                 return ls.log.URL
         }</span>
-        <span class="cov8" title="353">if ls.tiledLog != nil </span><span class="cov8" title="348">{
+        <span class="cov8" title="355">if ls.tiledLog != nil </span><span class="cov8" title="350">{
                 return ls.tiledLog.MonitoringURL
         }</span>
         <span class="cov3" title="5">return ""</span>
@@ -970,13 +970,13 @@ func (ls *LogStream) logInfo() any <span class="cov6" title="61">{
         <span class="cov0" title="0">return nil</span>
 }
 
-func (ls *LogStream) isTiled() bool <span class="cov8" title="345">{
+func (ls *LogStream) isTiled() bool <span class="cov8" title="310">{
         return ls != nil &amp;&amp; ls.tiledLog != nil
 }</span>
 
-func (ls *LogStream) adjustTailLimiter(historical bool) <span class="cov8" title="182">{
-        if historical </span><span class="cov7" title="96">{
-                if db := ls.DB(); db != nil </span><span class="cov7" title="96">{
+func (ls *LogStream) adjustTailLimiter(historical bool) <span class="cov7" title="179">{
+        if historical </span><span class="cov7" title="93">{
+                if db := ls.DB(); db != nil </span><span class="cov7" title="93">{
                         if qu := db.QueueUsage(); qu &gt; 50 </span><span class="cov0" title="0">{
                                 readLimit := int64(1) // 1 byte / sec
                                 if ls.tailLimiter != nil </span><span class="cov0" title="0">{
@@ -985,7 +985,7 @@ func (ls *LogStream) adjustTailLimiter(historical bool) <span class="cov8" title
                                         readLimit = ls.tailLimiter.Reads.Limit.Load() * scaleFactor / 50
                                 }</span>
                                 <span class="cov0" title="0">ls.subLimiter.Reads.Limit.Store(readLimit)</span>
-                        } else<span class="cov7" title="96"> {
+                        } else<span class="cov7" title="93"> {
                                 ls.subLimiter.Reads.Limit.Store(0)
                         }</span>
                 }
@@ -1009,11 +1009,11 @@ func sleep(ctx context.Context, d time.Duration) <span class="cov0" title="0">{
 }
 
 func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time) <span class="cov6" title="61">{
-        fn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) </span><span class="cov6" title="61">{
-                if cert := le.Cert(); cert != nil </span><span class="cov6" title="61">{
+        fn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) </span><span class="cov6" title="59">{
+                if cert := le.Cert(); cert != nil </span><span class="cov6" title="59">{
                         seen = cert.Seen
                 }</span>
-                <span class="cov6" title="61">return</span>
+                <span class="cov6" title="59">return</span>
         }
         <span class="cov6" title="61">ls.getRawEntries(ctx, end, end, false, fn, nil)
         return</span>
@@ -1036,7 +1036,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) <span class="c
         }()
 
         <span class="cov6" title="61">end, err = ls.newLastIndex(ctx)
-        if seen := ls.getEndSeen(ctx, end); !seen.IsZero() </span><span class="cov6" title="61">{
+        if seen := ls.getEndSeen(ctx, end); !seen.IsZero() </span><span class="cov6" title="59">{
                 if time.Since(seen) &gt; IdleCloseTime </span><span class="cov2" title="4">{
                         err = errLogIdle{Since: seen}
                         return
@@ -1072,43 +1072,43 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
         }
         now := time.Now()
         lastIndex = ls.LastIndex.Load()
-        err = bo.Retry(ctx, func() error </span><span class="cov8" title="227">{
+        err = bo.Retry(ctx, func() error </span><span class="cov8" title="192">{
                 var newIndex int64
                 var errFrom string
-                if ls.isTiled() </span><span class="cov7" title="96">{
+                if ls.isTiled() </span><span class="cov6" title="75">{
                         errFrom = "Checkpoint"
-                        if ls.headTile != nil </span><span class="cov7" title="96">{
+                        if ls.headTile != nil </span><span class="cov6" title="75">{
                                 var checkpoint sunlight.Checkpoint
                                 checkpoint, _, err = ls.headTile.Checkpoint(ctx)
-                                if err == nil </span><span class="cov7" title="96">{
+                                if err == nil </span><span class="cov6" title="74">{
                                         newIndex = checkpoint.N - 1
                                 }</span>
                         } else<span class="cov0" title="0"> {
                                 err = ErrSunlightClientMissing
                         }</span>
-                } else<span class="cov7" title="131"> {
+                } else<span class="cov7" title="117"> {
                         errFrom = "GetSTH"
                         var sth *ct.SignedTreeHead
                         sth, err = ls.headClient.GetSTH(ctx)
-                        if err == nil </span><span class="cov7" title="130">{
+                        if err == nil </span><span class="cov7" title="115">{
                                 newIndex = int64(sth.TreeSize) - 1 //#nosec G115
                         }</span>
                 }
-                <span class="cov8" title="227">if err == nil </span><span class="cov8" title="226">{
-                        if lastIndex &lt; newIndex </span><span class="cov7" title="124">{
+                <span class="cov8" title="192">if err == nil </span><span class="cov8" title="189">{
+                        if lastIndex &lt; newIndex </span><span class="cov7" title="112">{
                                 if lastIndex+LogBatchSize &lt; newIndex || time.Since(now) &gt; time.Second*15 </span><span class="cov6" title="61">{
                                         lastIndex = newIndex
                                         ls.LastIndex.Store(lastIndex)
                                         return nil
                                 }</span>
-                        } else<span class="cov7" title="102"> {
+                        } else<span class="cov6" title="77"> {
                                 if time.Since(now) &gt; IdleCloseTime </span><span class="cov0" title="0">{
                                         return errLogIdle{Since: now}
                                 }</span>
                         }
-                        <span class="cov7" title="165">return backoff.RetriableError("STH diff too low")</span>
+                        <span class="cov7" title="128">return backoff.RetriableError("STH diff too low")</span>
                 }
-                <span class="cov1" title="1">if ls.handleStreamError(err, errFrom) </span><span class="cov1" title="1">{
+                <span class="cov2" title="3">if ls.handleStreamError(err, errFrom) </span><span class="cov2" title="3">{
                         return err
                 }</span>
                 <span class="cov0" title="0">return backoff.RetriableError(err.Error())</span>
@@ -1116,48 +1116,48 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
         <span class="cov7" title="118">return</span>
 }
 
-func (ls *LogStream) seeIndex(logindex int64) <span class="cov9" title="643">{
-        if logindex &gt;= 0 </span><span class="cov9" title="643">{
+func (ls *LogStream) seeIndex(logindex int64) <span class="cov9" title="748">{
+        if logindex &gt;= 0 </span><span class="cov9" title="748">{
                 if x := ls.MinIndex.Load(); x &gt; logindex || x == -1 </span><span class="cov6" title="68">{
                         ls.MinIndex.CompareAndSwap(x, logindex)
                 }</span>
-                <span class="cov9" title="643">if x := ls.MaxIndex.Load(); x &lt; logindex || x == -1 </span><span class="cov6" title="57">{
+                <span class="cov9" title="748">if x := ls.MaxIndex.Load(); x &lt; logindex || x == -1 </span><span class="cov6" title="57">{
                         ls.MaxIndex.CompareAndSwap(x, logindex)
                 }</span>
         }
 }
 
-func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry <span class="cov9" title="622">{
+func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical bool) *LogEntry <span class="cov9" title="725">{
         ctrle, leaferr := ct.RawLogEntryFromLeaf(logindex, &amp;entry)
         var ctle *ct.LogEntry
-        if leaferr == nil </span><span class="cov9" title="622">{
+        if leaferr == nil </span><span class="cov9" title="725">{
                 ctle, leaferr = ctrle.ToLogEntry()
         }</span>
-        <span class="cov9" title="622">le := &amp;LogEntry{
+        <span class="cov9" title="725">le := &amp;LogEntry{
                 LogStream:  ls,
                 Err:        leaferr,
                 LogIndex:   logindex,
                 Historical: historical,
         }
-        if ctle != nil </span><span class="cov9" title="622">{
-                if ctle.X509Cert != nil </span><span class="cov9" title="370">{
+        if ctle != nil </span><span class="cov9" title="725">{
+                if ctle.X509Cert != nil </span><span class="cov9" title="536">{
                         le.Certificate = ctle.X509Cert
-                }</span> else<span class="cov8" title="252"> if ctle.Precert != nil </span><span class="cov8" title="252">{
+                }</span> else<span class="cov8" title="189"> if ctle.Precert != nil </span><span class="cov8" title="189">{
                         le.PreCert = true
                         le.Certificate = ctle.Precert.TBSCertificate
                 }</span>
         }
-        <span class="cov9" title="622">if ctrle != nil </span><span class="cov9" title="622">{
-                if len(ctrle.Cert.Data) &gt; 0 </span><span class="cov9" title="622">{
+        <span class="cov9" title="725">if ctrle != nil </span><span class="cov9" title="725">{
+                if len(ctrle.Cert.Data) &gt; 0 </span><span class="cov9" title="725">{
                         shasig := sha256.Sum256(ctrle.Cert.Data)
                         le.Signature = shasig[:]
                 }</span>
-                <span class="cov9" title="622">if tse := ctrle.Leaf.TimestampedEntry; tse != nil </span><span class="cov9" title="622">{
+                <span class="cov9" title="725">if tse := ctrle.Leaf.TimestampedEntry; tse != nil </span><span class="cov9" title="725">{
                         ts := int64(tse.Timestamp) //#nosec G115
                         le.Seen = time.UnixMilli(ts).UTC()
                 }</span>
         }
-        <span class="cov9" title="622">if len(le.Signature) == 0 &amp;&amp; le.Certificate != nil </span><span class="cov0" title="0">{
+        <span class="cov9" title="725">if len(le.Signature) == 0 &amp;&amp; le.Certificate != nil </span><span class="cov0" title="0">{
                 if raw := le.Certificate.Raw; len(raw) &gt; 0 </span><span class="cov0" title="0">{
                         shasig := sha256.Sum256(raw)
                         le.Signature = shasig[:]
@@ -1166,7 +1166,7 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
                         le.Signature = shasig[:]
                 }</span>
         }
-        <span class="cov9" title="622">return le</span>
+        <span class="cov9" title="725">return le</span>
 }
 
 func (ls *LogStream) makeTileLogEntry(logindex int64, entry *sunlight.LogEntry, historical bool) (le *LogEntry) <span class="cov5" title="26">{
@@ -1177,24 +1177,24 @@ func (ls *LogStream) makeTileLogEntry(logindex int64, entry *sunlight.LogEntry, 
         }
         if entry != nil </span><span class="cov5" title="26">{
                 le.Seen = time.UnixMilli(entry.Timestamp).UTC()
-                if entry.IsPrecert </span><span class="cov4" title="11">{
+                if entry.IsPrecert </span><span class="cov4" title="12">{
                         le.PreCert = true
                 }</span>
                 <span class="cov5" title="26">var cert *x509.Certificate
                 var certErr error
-                if entry.IsPrecert </span><span class="cov4" title="11">{
+                if entry.IsPrecert </span><span class="cov4" title="12">{
                         cert, certErr = x509.ParseTBSCertificate(entry.Certificate)
-                }</span> else<span class="cov4" title="15"> {
+                }</span> else<span class="cov4" title="14"> {
                         cert, certErr = x509.ParseCertificate(entry.Certificate)
                 }</span>
                 <span class="cov5" title="26">if certErr != nil </span><span class="cov0" title="0">{
                         le.Err = certErr
                 }</span>
                 <span class="cov5" title="26">le.Certificate = cert
-                if entry.IsPrecert &amp;&amp; len(entry.PreCertificate) &gt; 0 </span><span class="cov4" title="11">{
+                if entry.IsPrecert &amp;&amp; len(entry.PreCertificate) &gt; 0 </span><span class="cov4" title="12">{
                         shasig := sha256.Sum256(entry.PreCertificate)
                         le.Signature = shasig[:]
-                }</span> else<span class="cov4" title="15"> if len(entry.Certificate) &gt; 0 </span><span class="cov4" title="15">{
+                }</span> else<span class="cov4" title="14"> if len(entry.Certificate) &gt; 0 </span><span class="cov4" title="14">{
                         shasig := sha256.Sum256(entry.Certificate)
                         le.Signature = shasig[:]
                 }</span>
@@ -1211,15 +1211,15 @@ func (ls *LogStream) makeTileLogEntry(logindex int64, entry *sunlight.LogEntry, 
         <span class="cov5" title="26">return</span>
 }
 
-func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) <span class="cov9" title="586">{
-        if le != nil </span><span class="cov9" title="586">{
-                if cert := le.Cert(); cert != nil </span><span class="cov9" title="586">{
+func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) <span class="cov9" title="691">{
+        if le != nil </span><span class="cov9" title="691">{
+                if cert := le.Cert(); cert != nil </span><span class="cov9" title="691">{
                         ls.seeIndex(le.LogIndex)
                         wanted = now.Before(cert.NotAfter) || now.Sub(cert.Seen) &lt; time.Hour*24*time.Duration(ls.PgMaxAge)
-                        if ctx.Err() == nil </span><span class="cov9" title="586">{
+                        if ctx.Err() == nil </span><span class="cov9" title="691">{
                                 ls.Count.Add(1)
                                 ls.LogOperator.Count.Add(1)
-                                if db := ls.DB(); db != nil </span><span class="cov9" title="586">{
+                                if db := ls.DB(); db != nil </span><span class="cov9" title="691">{
                                         db.sendToBatcher(ctx, le)
                                 }</span> else<span class="cov0" title="0"> {
                                         select </span>{
@@ -1230,34 +1230,34 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
                         }
                 }
         }
-        <span class="cov9" title="586">return</span>
+        <span class="cov9" title="691">return</span>
 }
 
-func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) <span class="cov6" title="58">{
+func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) <span class="cov6" title="62">{
         errTxt := err.Error()
-        if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") </span><span class="cov6" title="58">{
+        if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") </span><span class="cov6" title="60">{
                 return true
         }</span>
-        <span class="cov0" title="0">if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") </span><span class="cov0" title="0">{
+        <span class="cov1" title="2">if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") </span><span class="cov0" title="0">{
                 return false
         }</span>
-        <span class="cov0" title="0">rspErr, isRspErr := err.(jsonclient.RspError)
-        if isRspErr </span><span class="cov0" title="0">{
+        <span class="cov1" title="2">rspErr, isRspErr := err.(jsonclient.RspError)
+        if isRspErr </span><span class="cov1" title="2">{
                 switch rspErr.StatusCode </span>{
                 case http.StatusTooManyRequests,
                         http.StatusGatewayTimeout:<span class="cov0" title="0">
                         return false</span>
                 }
         }
-        <span class="cov0" title="0">ls.addError(ls, wrapErr(err, from))
-        if isRspErr </span><span class="cov0" title="0">{
+        <span class="cov1" title="2">ls.addError(ls, wrapErr(err, from))
+        if isRspErr </span><span class="cov1" title="2">{
                 switch rspErr.StatusCode </span>{
                 case http.StatusInternalServerError,
                         http.StatusBadGateway:<span class="cov0" title="0">
                         return false</span>
                 }
         }
-        <span class="cov0" title="0">return true</span>
+        <span class="cov1" title="2">return true</span>
 }
 
 func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) <span class="cov7" title="118">{
@@ -1317,11 +1317,11 @@ func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, histor
 }
 
 func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) <span class="cov6" title="68">{
-        for start &lt;= end </span><span class="cov6" title="82">{
+        for start &lt;= end </span><span class="cov6" title="79">{
                 if ctx.Err() != nil </span><span class="cov0" title="0">{
                         return
                 }</span>
-                <span class="cov6" title="82">bo := &amp;backoff.Backoff{
+                <span class="cov6" title="79">bo := &amp;backoff.Backoff{
                         Min:    1 * time.Second,
                         Max:    30 * time.Second,
                         Factor: 2,
@@ -1329,37 +1329,37 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogC
                 }
                 var resp *ct.GetEntriesResponse
                 stop := start + min(LogBatchSize, end-start)
-                if err := bo.Retry(ctx, func() error </span><span class="cov6" title="82">{
+                if err := bo.Retry(ctx, func() error </span><span class="cov6" title="79">{
                         ls.adjustTailLimiter(historical)
                         var err error
                         resp, err = client.GetRawEntries(ctx, start, stop)
                         return err
-                }</span>); err != nil <span class="cov5" title="32">{
-                        if ls.handleStreamError(err, "GetRawEntries") </span><span class="cov5" title="32">{
+                }</span>); err != nil <span class="cov5" title="34">{
+                        if ls.handleStreamError(err, "GetRawEntries") </span><span class="cov5" title="34">{
                                 if gapcounter != nil &amp;&amp; ctx.Err() == nil </span><span class="cov0" title="0">{
                                         _ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
                                         gapcounter.Add(start - (end + 1))
                                 }</span>
-                                <span class="cov5" title="32">return</span>
+                                <span class="cov5" title="34">return</span>
                         }
-                } else<span class="cov6" title="50"> {
+                } else<span class="cov6" title="45"> {
                         now := time.Now()
-                        for i := range resp.Entries </span><span class="cov9" title="622">{
+                        for i := range resp.Entries </span><span class="cov9" title="725">{
                                 le := ls.makeLogEntry(start, resp.Entries[i], historical)
-                                if handleFn(ctx, now, le) </span><span class="cov9" title="586">{
+                                if handleFn(ctx, now, le) </span><span class="cov9" title="691">{
                                         wanted = true
                                 }</span>
-                                <span class="cov9" title="622">start++
+                                <span class="cov9" title="725">start++
                                 if gapcounter != nil </span><span class="cov0" title="0">{
                                         gapcounter.Add(-1)
                                 }</span>
                         }
-                        <span class="cov6" title="50">if historical &amp;&amp; !wanted </span><span class="cov0" title="0">{
+                        <span class="cov6" title="45">if historical &amp;&amp; !wanted </span><span class="cov0" title="0">{
                                 return
                         }</span>
                 }
         }
-        <span class="cov5" title="36">return</span>
+        <span class="cov5" title="34">return</span>
 }
 
 func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) <span class="cov6" title="50">{
@@ -1409,8 +1409,8 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
                                                                         lastIndex = -1
                                                                         ls.adjustTailLimiter(historical)
                                                                         now := time.Now()
-                                                                        for i, entry := range client.Entries(ctx, checkpoint.Tree, start) </span><span class="cov5" title="25">{
-                                                                                if i &gt; end </span><span class="cov0" title="0">{
+                                                                        for i, entry := range client.Entries(ctx, checkpoint.Tree, start) </span><span class="cov5" title="27">{
+                                                                                if i &gt; end </span><span class="cov1" title="2">{
                                                                                         break</span>
                                                                                 }
                                                                                 <span class="cov5" title="25">le := ls.makeTileLogEntry(i, entry, historical)
@@ -1528,7 +1528,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
                                 }
                         }
                 }
-                <span class="cov9" title="58">if gapCh := ls.getGapCh(); gapCh != nil </span><span class="cov5" title="8">{
+                <span class="cov9" title="58">if gapCh := ls.getGapCh(); gapCh != nil </span><span class="cov7" title="19">{
                         fillGap := func(label string, g gap) </span><span class="cov1" title="1">{
                                 if ctx.Err() == nil </span><span class="cov1" title="1">{
                                         ls.InsideGaps.Add((g.end - g.start) + 1)
@@ -1539,10 +1539,10 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
                                         }</span>
                                 }
                         }
-                        <span class="cov5" title="8">for gap := range gapCh </span><span class="cov1" title="1">{
+                        <span class="cov7" title="19">for gap := range gapCh </span><span class="cov1" title="1">{
                                 fillGap("gap", gap)
                         }</span>
-                        <span class="cov5" title="8">if lastgap.end != 0 &amp;&amp; ctx.Err() == nil </span><span class="cov0" title="0">{
+                        <span class="cov7" title="19">if lastgap.end != 0 &amp;&amp; ctx.Err() == nil </span><span class="cov0" title="0">{
                                 fillGap("last gap", lastgap)
                         }</span>
                 }
@@ -1633,36 +1633,36 @@ import (
         "github.com/jackc/pgx/v5/pgconn"
 )
 
-func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) <span class="cov4" title="44">{
+func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) <span class="cov4" title="36">{
         var b []byte
         b = append(b, `[`...)
-        for i, le := range queued </span><span class="cov6" title="586">{
-                if i &gt; 0 </span><span class="cov6" title="542">{
+        for i, le := range queued </span><span class="cov6" title="691">{
+                if i &gt; 0 </span><span class="cov6" title="655">{
                         b = append(b, `,`...)
                 }</span>
-                <span class="cov6" title="586">b = le.appendJSON(b)</span>
+                <span class="cov6" title="691">b = le.appendJSON(b)</span>
         }
-        <span class="cov4" title="44">b = append(b, `]`...)
+        <span class="cov4" title="36">b = append(b, `]`...)
         now := time.Now()
         _, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
         elapsed := time.Since(now)
-        if err != nil </span><span class="cov3" title="31">{
+        if err != nil </span><span class="cov3" title="29">{
                 if pe, ok := err.(*pgconn.PgError); ok </span><span class="cov0" title="0">{
                         if pe.SQLState() == "22P02" </span><span class="cov0" title="0">{
                                 cdb.LogInfo("generated invalid JSON data", "json", string(b))
                         }</span>
                 }
         }
-        <span class="cov4" title="44">cdb.mu.Lock()
+        <span class="cov4" title="36">cdb.mu.Lock()
         cdb.newentrycount += int64(len(queued))
         cdb.newentrytime += elapsed
         cdb.mu.Unlock()
         return</span>
 }
 
-func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) <span class="cov3" title="32">{
+func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) <span class="cov4" title="32">{
         defer wg.Done()
-        if batchCh := cdb.getBatchCh(workerID); batchCh != nil </span><span class="cov3" title="32">{
+        if batchCh := cdb.getBatchCh(workerID); batchCh != nil </span><span class="cov4" title="32">{
                 cdb.Workers.Add(1)
                 defer cdb.Workers.Add(-1)
                 const tickerInterval = time.Second * 10
@@ -1670,34 +1670,34 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) <
                 tckr := time.NewTicker(1 + (staggerInterval * time.Duration(workerID)))
                 stop := false
                 var queued []*LogEntry
-                for !stop </span><span class="cov6" title="638">{
+                for !stop </span><span class="cov6" title="740">{
                         ticked := false
                         select </span>{
-                        case &lt;-ctx.Done():<span class="cov3" title="32">
+                        case &lt;-ctx.Done():<span class="cov4" title="32">
                                 stop = true</span>
-                        case &lt;-tckr.C:<span class="cov3" title="20">
+                        case &lt;-tckr.C:<span class="cov3" title="17">
                                 ticked = true
-                                if staggerInterval != 0 </span><span class="cov3" title="20">{
+                                if staggerInterval != 0 </span><span class="cov3" title="17">{
                                         staggerInterval = 0
                                         tckr.Stop()
                                         tckr = time.NewTicker(tickerInterval)
                                         defer tckr.Stop()
                                 }</span>
-                        case le := &lt;-batchCh:<span class="cov6" title="586">
+                        case le := &lt;-batchCh:<span class="cov6" title="691">
                                 queued = append(queued, le)</span>
                         }
-                        <span class="cov6" title="638">if l := len(queued); l &gt; 0 &amp;&amp; (l &gt;= DbBatchSize || ticked || stop) </span><span class="cov4" title="44">{
+                        <span class="cov6" title="740">if l := len(queued); l &gt; 0 &amp;&amp; (l &gt;= DbBatchSize || ticked || stop) </span><span class="cov4" title="36">{
                                 _ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
-                                for _, le := range queued </span><span class="cov6" title="586">{
-                                        if !stop </span><span class="cov5" title="121">{
+                                for _, le := range queued </span><span class="cov6" title="691">{
+                                        if !stop </span><span class="cov5" title="108">{
                                                 select </span>{
                                                 case &lt;-ctx.Done():<span class="cov0" title="0">
                                                         stop = true</span>
-                                                case cdb.getSendEntryCh() &lt;- le:<span class="cov5" title="121"></span>
+                                                case cdb.getSendEntryCh() &lt;- le:<span class="cov5" title="108"></span>
                                                 }
                                         }
                                 }
-                                <span class="cov4" title="44">clear(queued)
+                                <span class="cov4" title="36">clear(queued)
                                 queued = queued[:0]</span>
                         }
                 }
@@ -1718,7 +1718,7 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) <span class
         }</span>()
 
         <span class="cov1" title="1">wg.Add(cdb.workerCount)
-        for i := 0; i &lt; cdb.workerCount; i++ </span><span class="cov3" title="32">{
+        for i := 0; i &lt; cdb.workerCount; i++ </span><span class="cov4" title="32">{
                 go cdb.worker(ctx, wg, i)
         }</span>
 
@@ -1726,28 +1726,28 @@ func (cdb *PgDB) runWorkers(ctx context.Context, wg *sync.WaitGroup) <span class
         ticker := time.NewTicker(interval)
         avgentrytimes := make([]time.Duration, time.Minute/interval)
         defer ticker.Stop()
-        for </span><span class="cov4" title="60">{
+        for </span><span class="cov4" title="51">{
                 select </span>{
                 case &lt;-ctx.Done():<span class="cov1" title="1">
                         return</span>
-                case &lt;-ticker.C:<span class="cov4" title="59">
+                case &lt;-ticker.C:<span class="cov4" title="50">
                         cdb.mu.Lock()
                         avgentrytime := cdb.newentrytime
-                        if d := time.Duration(cdb.newentrycount); d &gt; 0 </span><span class="cov3" title="12">{
+                        if d := time.Duration(cdb.newentrycount); d &gt; 0 </span><span class="cov2" title="6">{
                                 avgentrytime /= d
                         }</span>
-                        <span class="cov4" title="59">cdb.newentrytime = 0
+                        <span class="cov4" title="50">cdb.newentrytime = 0
                         cdb.newentrycount = 0
                         avgentrytimes[ticks] = avgentrytime
                         ticks++
                         if ticks &gt;= cap(avgentrytimes) </span><span class="cov0" title="0">{
                                 ticks = 0
                         }</span>
-                        <span class="cov4" title="59">avgentrytime = 0
-                        for _, d := range avgentrytimes </span><span class="cov10" title="35400">{
+                        <span class="cov4" title="50">avgentrytime = 0
+                        for _, d := range avgentrytimes </span><span class="cov10" title="30000">{
                                 avgentrytime += d
                         }</span>
-                        <span class="cov4" title="59">cdb.avgentrytime = avgentrytime / time.Duration(cap(avgentrytimes))
+                        <span class="cov4" title="50">cdb.avgentrytime = avgentrytime / time.Duration(cap(avgentrytimes))
                         cdb.mu.Unlock()</span>
                 }
         }
@@ -1874,7 +1874,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) <span c
                         if pool, err = pgxpool.NewWithConfig(ctx, poolcfg); err == nil </span><span class="cov3" title="8">{
                                 if err = pool.Ping(ctx); err == nil </span><span class="cov3" title="8">{
                                         cs.LogInfo("database", "addr", cs.Config.PgAddr, "name", cs.Config.PgName, "prefix", cs.Config.PgPrefix)
-                                        pfx := func(s string) string </span><span class="cov6" title="209">{ return strings.ReplaceAll(s, "CERTDB_", cs.Config.PgPrefix) }</span>
+                                        pfx := func(s string) string </span><span class="cov7" title="209">{ return strings.ReplaceAll(s, "CERTDB_", cs.Config.PgPrefix) }</span>
                                         <span class="cov3" title="8">if err = ensureSchema(ctx, pool, pfx); err == nil </span><span class="cov3" title="8">{
                                                 var pgversion string
                                                 if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&amp;pgversion), "postgres version") == nil </span><span class="cov3" title="8">{
@@ -1932,46 +1932,46 @@ func (cdb *PgDB) Close() <span class="cov3" title="8">{
         <span class="cov3" title="8">cdb.Pool.Close()</span>
 }
 
-func (cdb *PgDB) QueueUsage() (pct int) <span class="cov6" title="96">{
+func (cdb *PgDB) QueueUsage() (pct int) <span class="cov6" title="93">{
         cdb.mu.Lock()
         chans := cdb.batchCh
         cdb.mu.Unlock()
         totalLen := 0
         totalCap := 0
-        for _, ch := range chans </span><span class="cov10" title="3072">{
-                if ch != nil </span><span class="cov10" title="3072">{
+        for _, ch := range chans </span><span class="cov10" title="2976">{
+                if ch != nil </span><span class="cov10" title="2976">{
                         totalLen += len(ch)
                         totalCap += cap(ch)
                 }</span>
         }
-        <span class="cov6" title="96">if totalCap &gt; 0 </span><span class="cov6" title="96">{
+        <span class="cov6" title="93">if totalCap &gt; 0 </span><span class="cov6" title="93">{
                 pct = totalLen * 100 / totalCap
         }</span>
-        <span class="cov6" title="96">return</span>
+        <span class="cov6" title="93">return</span>
 }
 
-func (cdb *PgDB) getBatchCh(idx int) (ch chan *LogEntry) <span class="cov8" title="618">{
+func (cdb *PgDB) getBatchCh(idx int) (ch chan *LogEntry) <span class="cov8" title="723">{
         cdb.mu.Lock()
         ch = cdb.batchCh[idx]
         cdb.mu.Unlock()
         return
 }</span>
 
-func (cdb *PgDB) workerIndexFor(le *LogEntry) (idx int) <span class="cov8" title="586">{
-        if cdb != nil &amp;&amp; le != nil </span><span class="cov8" title="586">{
-                if cert := le.Cert(); cert != nil &amp;&amp; len(cert.Signature) &gt; 0 </span><span class="cov8" title="586">{
+func (cdb *PgDB) workerIndexFor(le *LogEntry) (idx int) <span class="cov8" title="691">{
+        if cdb != nil &amp;&amp; le != nil </span><span class="cov8" title="691">{
+                if cert := le.Cert(); cert != nil &amp;&amp; len(cert.Signature) &gt; 0 </span><span class="cov8" title="691">{
                         idx = int(cert.Signature[0] &gt;&gt; (8 - cdb.workerBits))
                 }</span>
         }
-        <span class="cov8" title="586">return</span>
+        <span class="cov8" title="691">return</span>
 }
 
-func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) <span class="cov8" title="586">{
-        if le != nil &amp;&amp; ctx.Err() == nil </span><span class="cov8" title="586">{
-                if ch := cdb.getBatchCh(cdb.workerIndexFor(le)); ch != nil </span><span class="cov8" title="586">{
+func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) <span class="cov8" title="691">{
+        if le != nil &amp;&amp; ctx.Err() == nil </span><span class="cov8" title="691">{
+                if ch := cdb.getBatchCh(cdb.workerIndexFor(le)); ch != nil </span><span class="cov8" title="691">{
                         select </span>{
                         case &lt;-ctx.Done():<span class="cov0" title="0"></span>
-                        case ch &lt;- le:<span class="cov8" title="586"></span>
+                        case ch &lt;- le:<span class="cov8" title="691"></span>
                         }
                 }
         }
@@ -2328,21 +2328,21 @@ func (cdb *PgDB) selectGapEndIndexes(ctx context.Context, streamIDs []int32) (en
                 sem := make(chan struct{}, workers)
                 results := make(chan result, len(streamIDs))
                 var wg sync.WaitGroup
-                for _, streamID := range streamIDs </span><span class="cov5" title="62">{
-                        if ctx.Err() == nil </span><span class="cov5" title="62">{
+                for _, streamID := range streamIDs </span><span class="cov5" title="63">{
+                        if ctx.Err() == nil </span><span class="cov5" title="63">{
                                 wg.Add(1)
                                 sem &lt;- struct{}{}
-                                go func(id int32) </span><span class="cov5" title="62">{
+                                go func(id int32) </span><span class="cov5" title="63">{
                                         defer wg.Done()
-                                        defer func() </span><span class="cov5" title="62">{
+                                        defer func() </span><span class="cov5" title="63">{
                                                 &lt;-sem
                                         }</span>()
-                                        <span class="cov5" title="62">row := cdb.QueryRow(ctx, query, id)
+                                        <span class="cov5" title="63">row := cdb.QueryRow(ctx, query, id)
                                         var maxIndex int64
                                         e := row.Scan(&amp;maxIndex)
                                         if e == nil </span><span class="cov1" title="2">{
                                                 results &lt;- result{streamID: id, maxIndex: maxIndex, ok: true}
-                                        }</span> else<span class="cov5" title="60"> if errors.Is(e, pgx.ErrNoRows) </span><span class="cov5" title="60">{
+                                        }</span> else<span class="cov5" title="61"> if errors.Is(e, pgx.ErrNoRows) </span><span class="cov5" title="61">{
                                                 results &lt;- result{streamID: id}
                                         }</span> else<span class="cov0" title="0"> {
                                                 results &lt;- result{streamID: id, err: e}
@@ -2354,8 +2354,8 @@ func (cdb *PgDB) selectGapEndIndexes(ctx context.Context, streamIDs []int32) (en
                         wg.Wait()
                         close(results)
                 }</span>()
-                <span class="cov1" title="2">for res := range results </span><span class="cov5" title="62">{
-                        if res.err == nil </span><span class="cov5" title="62">{
+                <span class="cov1" title="2">for res := range results </span><span class="cov5" title="63">{
+                        if res.err == nil </span><span class="cov5" title="63">{
                                 if res.ok </span><span class="cov1" title="2">{
                                         endIndexes[res.streamID] = res.maxIndex
                                 }</span>
@@ -2476,11 +2476,11 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) <span cl
         cdb.mu.Lock()
         for _, logop := range cdb.operators </span><span class="cov3" title="9">{
                 logop.mu.Lock()
-                for _, ls := range logop.streams </span><span class="cov5" title="62">{
-                        if ls.gapCh == nil </span><span class="cov5" title="60">{
+                for _, ls := range logop.streams </span><span class="cov5" title="63">{
+                        if ls.gapCh == nil </span><span class="cov5" title="61">{
                                 ls.gapCh = make(chan gap, 10)
                         }</span>
-                        <span class="cov5" title="62">streams[ls.Id] = ls
+                        <span class="cov5" title="63">streams[ls.Id] = ls
                         streamIDs = append(streamIDs, ls.Id)</span>
                 }
                 <span class="cov3" title="9">logop.mu.Unlock()</span>
@@ -2488,13 +2488,13 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) <span cl
         <span class="cov1" title="2">cdb.mu.Unlock()
 
         defer func() </span><span class="cov1" title="2">{
-                for _, ls := range streams </span><span class="cov5" title="62">{
+                for _, ls := range streams </span><span class="cov5" title="63">{
                         ls.mu.Lock()
-                        if ls.gapCh != nil </span><span class="cov5" title="62">{
+                        if ls.gapCh != nil </span><span class="cov5" title="63">{
                                 close(ls.gapCh)
                                 ls.gapCh = nil
                         }</span>
-                        <span class="cov5" title="62">ls.mu.Unlock()</span>
+                        <span class="cov5" title="63">ls.mu.Unlock()</span>
                 }
         }()
 
@@ -2524,7 +2524,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) <span cl
                 }</span>
 
                 <span class="cov1" title="2">var streamWG sync.WaitGroup
-                for streamID, ls := range streams </span><span class="cov5" title="62">{
+                for streamID, ls := range streams </span><span class="cov5" title="63">{
                         if endIndex, ok := endIndexes[streamID]; ok </span><span class="cov1" title="2">{
                                 streamWG.Add(1)
                                 go cdb.selectStreamGaps(ctx, &amp;streamWG, ls, endIndex, pageSize, &amp;totals)
@@ -2808,11 +2808,11 @@ func (we wrappedErr) Unwrap() error <span class="cov0" title="0">{
         return we.err
 }</span>
 
-func wrapErr(err error, msg string) error <span class="cov10" title="69">{
-        if err == nil </span><span class="cov10" title="69">{
+func wrapErr(err error, msg string) error <span class="cov10" title="71">{
+        if err == nil </span><span class="cov9" title="69">{
                 return nil
         }</span>
-        <span class="cov0" title="0">return wrappedErr{err: err, msg: msg}</span>
+        <span class="cov2" title="2">return wrappedErr{err: err, msg: msg}</span>
 }
 </pre>
 		
