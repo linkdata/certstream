@@ -1,4 +1,4 @@
-WITH seed AS (
+WITH findgap_seed AS (
   SELECT $2::bigint AS logindex
   WHERE $2::bigint >= 0
 ),
@@ -12,7 +12,7 @@ base AS (
   LIMIT $4
 ),
 scan_rows AS (
-  SELECT logindex FROM seed
+  SELECT logindex FROM findgap_seed
   UNION ALL
   SELECT logindex FROM base
 ),
