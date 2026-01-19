@@ -46,6 +46,7 @@ func (cdb *PgDB) backfillGaps(ctx context.Context, ls *LogStream) {
 			}
 		}
 		if lastgap.end != 0 && ctx.Err() == nil {
+			ls.InsideGaps.Add((lastgap.end - lastgap.start) + 1)
 			cdb.LogInfo("last gap", "url", ls.URL(), "stream", ls.Id, "logindex", lastgap.start, "length", (lastgap.end-lastgap.start)+1)
 			ls.getRawEntries(ctx, lastgap.start, lastgap.end, true, ls.sendEntry, &ls.InsideGaps)
 		}
