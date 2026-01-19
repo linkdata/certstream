@@ -377,7 +377,7 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
 		if batchSize > 0 {
 			cutoff = cutoff.UTC()
 			query := cdb.Pfx(`WITH todelete AS (
-  SELECT id
+  SELECT ctid
   FROM CERTDB_cert
   WHERE notafter <= $1
   ORDER BY notafter ASC
@@ -385,7 +385,7 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
 )
 DELETE FROM CERTDB_cert
 USING todelete
-WHERE CERTDB_cert.id = todelete.id;`)
+WHERE CERTDB_cert.ctid = todelete.ctid;`)
 			var tag pgconn.CommandTag
 			if tag, err = cdb.Exec(ctx, query, cutoff, batchSize); err == nil {
 				rowsDeleted = tag.RowsAffected()
