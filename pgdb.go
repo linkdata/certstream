@@ -398,8 +398,7 @@ WHERE CERTDB_cert.ctid = todelete.ctid;`)
 func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
 		if batchSize > 0 {
-			query := cdb.Pfx(`
-WITH target AS (
+			query := cdb.Pfx(`WITH todelete AS (
   SELECT logindex
   FROM CERTDB_entry
   WHERE stream = $1
@@ -407,10 +406,9 @@ WITH target AS (
   LIMIT $2
 )
 DELETE FROM CERTDB_entry
-USING target
+USING todelete
 WHERE CERTDB_entry.stream = $1
-  AND CERTDB_entry.logindex = target.logindex;
-`)
+  AND CERTDB_entry.logindex = todelete.logindex;`)
 			var tag pgconn.CommandTag
 			if tag, err = cdb.Exec(ctx, query, streamId, batchSize); err == nil {
 				rowsDeleted = tag.RowsAffected()
