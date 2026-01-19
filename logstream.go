@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -337,28 +338,63 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	errTxt := err.Error()
 	if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") {
-		return true
-	}
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
-		return false
-	}
-	rspErr, isRspErr := err.(jsonclient.RspError)
-	if isRspErr {
-		switch rspErr.StatusCode {
-		case http.StatusTooManyRequests,
-			http.StatusGatewayTimeout:
-			return false
+		fatal = true
+	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
+		fatal = false
+	} else {
+		var statusCode int
+		var hasStatus bool
+		statusCode, hasStatus = statusCodeFromError(err)
+		fatal = true
+		if hasStatus {
+			switch statusCode {
+			case http.StatusTooManyRequests,
+				http.StatusGatewayTimeout,
+				http.StatusNotFound:
+				fatal = false
+			}
+		}
+		if fatal {
+			ls.addError(ls, wrapErr(err, from))
+			if hasStatus {
+				switch statusCode {
+				case http.StatusInternalServerError,
+					http.StatusBadGateway:
+					fatal = false
+				}
+			}
 		}
 	}
-	ls.addError(ls, wrapErr(err, from))
-	if isRspErr {
-		switch rspErr.StatusCode {
-		case http.StatusInternalServerError,
-			http.StatusBadGateway:
-			return false
+	return
+}
+
+func statusCodeFromError(err error) (code int, ok bool) {
+	if err != nil {
+		if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
+			code = rspErr.StatusCode
+			ok = true
+		} else {
+			msg := err.Error()
+			idx := strings.LastIndex(msg, "status code ")
+			if idx >= 0 {
+				start := idx + len("status code ")
+				end := start
+				for end < len(msg) {
+					if msg[end] < '0' || msg[end] > '9' {
+						break
+					}
+					end++
+				}
+				if end > start {
+					var convErr error
+					if code, convErr = strconv.Atoi(msg[start:end]); convErr == nil {
+						ok = true
+					}
+				}
+			}
 		}
 	}
-	return true
+	return
 }
 
 func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
