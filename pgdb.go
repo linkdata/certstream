@@ -30,22 +30,24 @@ type gap struct {
 type PgDB struct {
 	*CertStream
 	*pgxpool.Pool
-	Pfx               func(string) string // prefix replacer
-	Workers           atomic.Int32
-	funcOperatorID    string
-	funcStreamID      string
-	funcIngestBatch   string
-	stmtSelectAllGaps string
-	stmtSelectMinIdx  string
-	stmtSelectMaxIdx  string
-	mu                sync.Mutex // protects following
-	batchCh           []chan *LogEntry
-	workerBits        int
-	workerCount       int
-	estimates         map[string]float64 // row count estimates
-	newentrytime      time.Duration
-	newentrycount     int64
-	avgentrytime      time.Duration
+	Pfx                   func(string) string // prefix replacer
+	Workers               atomic.Int32
+	funcOperatorID        string
+	funcStreamID          string
+	funcIngestBatch       string
+	stmtSelectAllGaps     string
+	stmtSelectMinIdx      string
+	stmtSelectMaxIdx      string
+	stmtSelectBackfillIdx string
+	stmtUpdateBackfillIdx string
+	mu                    sync.Mutex // protects following
+	batchCh               []chan *LogEntry
+	workerBits            int
+	workerCount           int
+	estimates             map[string]float64 // row count estimates
+	newentrytime          time.Duration
+	newentrycount         int64
+	avgentrytime          time.Duration
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
@@ -90,18 +92,20 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							batchChans[i] = make(chan *LogEntry, (DbBatchSize*12)/10)
 						}
 						cdb = &PgDB{
-							CertStream:        cs,
-							Pool:              pool,
-							Pfx:               pfx,
-							funcOperatorID:    pfx(callOperatorID),
-							funcStreamID:      pfx(callStreamID),
-							funcIngestBatch:   pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
-							stmtSelectAllGaps: pfx(SelectAllGaps),
-							stmtSelectMinIdx:  pfx(SelectMinIndex),
-							stmtSelectMaxIdx:  pfx(SelectMaxIndex),
-							batchCh:           batchChans,
-							workerBits:        workerBits,
-							workerCount:       workerCount,
+							CertStream:            cs,
+							Pool:                  pool,
+							Pfx:                   pfx,
+							funcOperatorID:        pfx(callOperatorID),
+							funcStreamID:          pfx(callStreamID),
+							funcIngestBatch:       pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
+							stmtSelectAllGaps:     pfx(SelectAllGaps),
+							stmtSelectMinIdx:      pfx(SelectMinIndex),
+							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
+							stmtSelectBackfillIdx: pfx(SelectBackfillIndex),
+							stmtUpdateBackfillIdx: pfx(UpdateBackfillIndex),
+							batchCh:               batchChans,
+							workerBits:            workerBits,
+							workerCount:           workerCount,
 							estimates: map[string]float64{
 								"cert":   0,
 								"domain": 0,
