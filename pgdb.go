@@ -679,7 +679,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 		logop.mu.Lock()
 		for _, ls := range logop.streams {
 			if ls.gapCh == nil {
-				ls.gapCh = make(chan gap, 10)
+				ls.gapCh = make(chan gap, 1)
 			}
 			streams[ls.Id] = ls
 			streamIDs = append(streamIDs, ls.Id)
