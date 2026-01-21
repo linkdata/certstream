@@ -380,7 +380,7 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
   SELECT ctid
   FROM CERTDB_cert
   WHERE notafter <= $1
-  ORDER BY notafter ASC
+  ORDER BY notafter DESC
   LIMIT $2
 )
 DELETE FROM CERTDB_cert
