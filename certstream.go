@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ type CertStream struct {
 	TailClient  *http.Client     // may be nil if not backfilling
 	tailLimiter *bwlimit.Limiter // master tail limiter, if known
 	subLimiter  *bwlimit.Limiter // sub tail limiter
+	tailLogFile *os.File         // tail HTTP request log
 	mu          sync.Mutex       // protects following
 	db          *PgDB
 	sendEntryCh chan *LogEntry
@@ -94,6 +96,13 @@ func (cs *CertStream) getSendEntryCh() (ch chan *LogEntry) {
 	return
 }
 
+func (cs *CertStream) getTailLogFile() (f *os.File) {
+	cs.mu.Lock()
+	f = cs.tailLogFile
+	cs.mu.Unlock()
+	return
+}
+
 func (cs *CertStream) DB() (db *PgDB) {
 	cs.mu.Lock()
 	db = cs.db
@@ -107,6 +116,8 @@ func (cs *CertStream) Close() {
 	cs.sendEntryCh = nil
 	db := cs.db
 	cs.db = nil
+	tailLog := cs.tailLogFile
+	cs.tailLogFile = nil
 	cs.mu.Unlock()
 	if seCh != nil {
 		// drain
@@ -122,6 +133,9 @@ func (cs *CertStream) Close() {
 	}
 	if db != nil {
 		db.Close()
+	}
+	if tailLog != nil {
+		_ = tailLog.Close()
 	}
 }
 
@@ -174,31 +188,54 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 	tphead.DialContext = cfg.HeadDialer.DialContext
 	tptail := DefaultTransport.Clone()
 	tptail.DialContext = tailDialer.DialContext
-
-	cs = &CertStream{
-		Config: *cfg,
-		HeadClient: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: tphead,
-		},
-		TailClient: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: tptail,
-		},
-		tailLimiter: tailLimiter,
-		subLimiter:  subLimiter,
-		operators:   map[string]*LogOperator{},
+	tailTransport := http.RoundTripper(tptail)
+	var tailLogFile *os.File
+	if cfg.TailLog != "" {
+		tailLogFile, err = os.OpenFile(cfg.TailLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			tailTransport = newTailLogTransport(tptail, tailLogFile)
+		} else {
+			err = errTailLogOpen{err: err}
+		}
 	}
 
-	var db *PgDB
-	if db, err = NewPgDB(ctx, cs); err == nil {
-		cs.mu.Lock()
-		cs.db = db
-		cs.sendEntryCh = make(chan *LogEntry, 1024*8)
-		cs.C = cs.sendEntryCh
-		cs.mu.Unlock()
-		wg.Add(1)
-		go cs.run(ctx, wg)
+	if err == nil {
+		cs = &CertStream{
+			Config: *cfg,
+			HeadClient: &http.Client{
+				Timeout:   10 * time.Second,
+				Transport: tphead,
+			},
+			TailClient: &http.Client{
+				Timeout:   10 * time.Second,
+				Transport: tailTransport,
+			},
+			tailLimiter: tailLimiter,
+			subLimiter:  subLimiter,
+			tailLogFile: tailLogFile,
+			operators:   map[string]*LogOperator{},
+		}
+
+		var db *PgDB
+		if db, err = NewPgDB(ctx, cs); err == nil {
+			cs.mu.Lock()
+			cs.db = db
+			cs.sendEntryCh = make(chan *LogEntry, 1024*8)
+			cs.C = cs.sendEntryCh
+			cs.mu.Unlock()
+			wg.Add(1)
+			go cs.run(ctx, wg)
+		}
+	}
+	if err != nil && tailLogFile != nil {
+		_ = tailLogFile.Close()
+		if cs != nil {
+			cs.mu.Lock()
+			if cs.tailLogFile == tailLogFile {
+				cs.tailLogFile = nil
+			}
+			cs.mu.Unlock()
+		}
 	}
 
 	return

@@ -20,6 +20,7 @@ type Config struct {
 	PgMaxAge              int                 // maximum age in days to backfill
 	PgNoSSL               bool                // if true, do not use SSL
 	GetEntriesParallelism int                 // number of concurrent GetRawEntries requests per range, default 8
+	TailLog               string              // log HTTP requests using the tail dialer to this file
 }
 
 // NewConfig returns a new default Config
