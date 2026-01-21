@@ -89,7 +89,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 						workerCount := 1 << workerBits
 						batchChans := make([]chan *LogEntry, workerCount)
 						for i := range batchChans {
-							batchChans[i] = make(chan *LogEntry, (DbBatchSize*12)/10)
+							batchChans[i] = make(chan *LogEntry, (DbIngestBatchSize*12)/10)
 						}
 						cdb = &PgDB{
 							CertStream:            cs,
@@ -318,10 +318,6 @@ func (cdb *PgDB) GetHistoricalCertificates(ctx context.Context, expiresAfter tim
 		if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT MAX(notafter) FROM CERTDB_cert;`)).Scan(&maxNotAfter); err == nil {
 			if maxNotAfter != nil {
 				maxAtStart := maxNotAfter.UTC()
-				pageSize := DbBatchSize
-				if pageSize < 1 {
-					pageSize = 100
-				}
 				lastNotAfter := expiresAfter
 				lastID := int64(0)
 				query := cdb.Pfx(`
@@ -335,7 +331,7 @@ LIMIT $5;
 `)
 				for err == nil {
 					var rows pgx.Rows
-					if rows, err = cdb.Query(ctx, query, expiresAfter, maxAtStart, lastNotAfter, lastID, pageSize); err == nil {
+					if rows, err = cdb.Query(ctx, query, expiresAfter, maxAtStart, lastNotAfter, lastID, max(100, HistoricalBatchSize)); err == nil {
 						var dbcerts []PgCertificate
 						for rows.Next() && err == nil {
 							var dbcert PgCertificate
@@ -591,18 +587,10 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 
 	var totals gapTotals
 	if ctx.Err() == nil {
-		pageSize := DbBatchSize
-		if pageSize < 100 {
-			pageSize = 100
-		}
-		if pageSize > 10000 {
-			pageSize = 10000
-		}
-
 		var streamWG sync.WaitGroup
 		for _, ls := range streams {
 			streamWG.Add(1)
-			go cdb.selectStreamGaps(ctx, &streamWG, ls, pageSize, &totals)
+			go cdb.selectStreamGaps(ctx, &streamWG, ls, max(100, FindGapsBatchSize), &totals)
 		}
 		streamWG.Wait()
 	}

@@ -61,7 +61,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 			case le := <-batchCh:
 				queued = append(queued, le)
 			}
-			if l := len(queued); l > 0 && (l >= DbBatchSize || ticked || stop) {
+			if l := len(queued); l > 0 && (l >= DbIngestBatchSize || ticked || stop) {
 				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
 				for _, le := range queued {
 					if !stop {
