@@ -71,25 +71,31 @@ func TestPgDB_SelectAllGapsPerStream(t *testing.T) {
 						cs.operators = map[string]*LogOperator{
 							logop.Domain: logop,
 						}
-						chA := lsA.gapCh
-						chB := lsB.gapCh
-
-						var wg sync.WaitGroup
-						wg.Add(1)
-						go db.selectAllGaps(ctx, &wg)
-
-						wg.Wait()
-						if chA == nil || chB == nil {
-							t.Fatalf("gap channel not initialized")
+						if err = db.updateBackfillIndex(ctx, lsA, 1); err != nil {
+							t.Fatalf("update stream A backfill failed: %v", err)
+						} else if err = db.updateBackfillIndex(ctx, lsB, 10); err != nil {
+							t.Fatalf("update stream B backfill failed: %v", err)
 						} else {
-							gotA := collectGaps(chA)
-							gotB := collectGaps(chB)
-							wantA := []gap{{start: 3, end: 4}}
-							wantB := []gap{{start: 11, end: 11}}
-							if !gapsEqual(gotA, wantA) {
-								t.Fatalf("stream A gaps = %v, want %v", gotA, wantA)
-							} else if !gapsEqual(gotB, wantB) {
-								t.Fatalf("stream B gaps = %v, want %v", gotB, wantB)
+							chA := lsA.gapCh
+							chB := lsB.gapCh
+
+							var wg sync.WaitGroup
+							wg.Add(1)
+							go db.selectAllGaps(ctx, &wg)
+
+							wg.Wait()
+							if chA == nil || chB == nil {
+								t.Fatalf("gap channel not initialized")
+							} else {
+								gotA := collectGaps(chA)
+								gotB := collectGaps(chB)
+								wantA := []gap{{start: 3, end: 4}}
+								wantB := []gap{{start: 11, end: 11}}
+								if !gapsEqual(gotA, wantA) {
+									t.Fatalf("stream A gaps = %v, want %v", gotA, wantA)
+								} else if !gapsEqual(gotB, wantB) {
+									t.Fatalf("stream B gaps = %v, want %v", gotB, wantB)
+								}
 							}
 						}
 					}
@@ -312,6 +318,63 @@ func TestPgDB_SelectStreamGapsMaxAtStart(t *testing.T) {
 						}
 					case <-time.After(2 * time.Second):
 						t.Fatalf("timed out waiting for first gap")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPgDB_SelectStreamGapsUsesBackfillIndex(t *testing.T) {
+	t.Parallel()
+
+	ctx, db, cs := setupSelectGapsDB(t)
+	if db != nil && cs != nil {
+		var operatorID int32
+		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+			"op", "op@example.com",
+		).Scan(&operatorID); err != nil {
+			t.Fatalf("insert operator failed: %v", err)
+		} else {
+			url := "https://example.com/log-backfill-start"
+			var streamID int32
+			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+				t.Fatalf("insert stream failed: %v", err)
+			} else if err = insertEntries(ctx, db, streamID, []int64{1, 2, 4, 6}); err != nil {
+				t.Fatalf("insert entries failed: %v", err)
+			} else {
+				logop := &LogOperator{
+					CertStream: cs,
+					operator:   &loglist3.Operator{Name: "op", Email: []string{"op@example.com"}},
+					Domain:     "example.com",
+					streams:    map[string]*LogStream{},
+				}
+				ls := &LogStream{
+					LogOperator: logop,
+					Id:          streamID,
+					log:         &loglist3.Log{URL: url},
+				}
+				ls.gapCh = make(chan gap, 2)
+				logop.streams[url] = ls
+				cs.operators = map[string]*LogOperator{
+					logop.Domain: logop,
+				}
+
+				if err = db.updateBackfillIndex(ctx, ls, 4); err != nil {
+					t.Fatalf("set backfill index failed: %v", err)
+				} else {
+					var wg sync.WaitGroup
+					wg.Add(1)
+					go db.selectStreamGaps(ctx, &wg, ls, 2, nil)
+
+					wg.Wait()
+					close(ls.gapCh)
+					got := collectGaps(ls.gapCh)
+					want := []gap{
+						{start: 5, end: 5},
+					}
+					if !gapsEqual(got, want) {
+						t.Fatalf("gaps = %v, want %v", got, want)
 					}
 				}
 			}

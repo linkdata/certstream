@@ -513,37 +513,39 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 						endIndex = maxIndex.Int64
 					}
 					if endIndex >= 0 {
-						var lastIndex int64 = -1
-						for err == nil && ctx.Err() == nil && lastIndex < endIndex {
-							stmt := cdb.selectAllGapsStmt(ls.Id)
-							row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex, pageSize)
-							var gapStart sql.NullInt64
-							var gapEnd sql.NullInt64
-							var lastLogIndex sql.NullInt64
-							if err = row.Scan(&gapStart, &gapEnd, &lastLogIndex); err == nil {
-								advanced := false
-								if gapStart.Valid && gapEnd.Valid {
-									g := gap{start: gapStart.Int64, end: gapEnd.Int64}
-									select {
-									case <-ctx.Done():
-									case gapCh <- g:
-										lastIndex = gapEnd.Int64
-										if totals != nil {
-											totals.add(g)
+						var lastIndex int64
+						if err = cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id).Scan(&lastIndex); err == nil {
+							for err == nil && ctx.Err() == nil && lastIndex < endIndex {
+								stmt := cdb.selectAllGapsStmt(ls.Id)
+								row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex, pageSize)
+								var gapStart sql.NullInt64
+								var gapEnd sql.NullInt64
+								var lastLogIndex sql.NullInt64
+								if err = row.Scan(&gapStart, &gapEnd, &lastLogIndex); err == nil {
+									advanced := false
+									if gapStart.Valid && gapEnd.Valid {
+										g := gap{start: gapStart.Int64, end: gapEnd.Int64}
+										select {
+										case <-ctx.Done():
+										case gapCh <- g:
+											lastIndex = gapEnd.Int64
+											if totals != nil {
+												totals.add(g)
+											}
+											advanced = true
 										}
-										advanced = true
+									} else if lastLogIndex.Valid {
+										_ = cdb.updateBackfillIndex(ctx, ls, lastLogIndex.Int64)
 									}
-								} else if lastLogIndex.Valid {
-									_ = cdb.updateBackfillIndex(ctx, ls, lastLogIndex.Int64)
-								}
-								if !advanced && ctx.Err() == nil && lastLogIndex.Valid {
-									if lastLogIndex.Int64 > lastIndex {
-										lastIndex = lastLogIndex.Int64
-										advanced = true
+									if !advanced && ctx.Err() == nil && lastLogIndex.Valid {
+										if lastLogIndex.Int64 > lastIndex {
+											lastIndex = lastLogIndex.Int64
+											advanced = true
+										}
 									}
-								}
-								if !advanced {
-									break
+									if !advanced {
+										break
+									}
 								}
 							}
 						}
