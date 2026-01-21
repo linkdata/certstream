@@ -174,8 +174,8 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 							entryCount int
 						}
 						expectFirst := []expectedCount{
-							{name: "oldest", certCount: 0, entryCount: 1},
-							{name: "old", certCount: 1, entryCount: 1},
+							{name: "oldest", certCount: 1, entryCount: 1},
+							{name: "old", certCount: 0, entryCount: 1},
 							{name: "recent", certCount: 1, entryCount: 1},
 							{name: "future", certCount: 1, entryCount: 1},
 						}
@@ -196,6 +196,7 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 								t.Fatalf("rows deleted second call = %d, want 1", rowsDeleted)
 							} else {
 								expectSecond := []expectedCount{
+									{name: "oldest", certCount: 0, entryCount: 1},
 									{name: "old", certCount: 0, entryCount: 1},
 									{name: "recent", certCount: 1, entryCount: 1},
 									{name: "future", certCount: 1, entryCount: 1},
