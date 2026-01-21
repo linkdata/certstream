@@ -51,9 +51,11 @@ func (tlt *tailLogTransport) RoundTrip(req *http.Request) (resp *http.Response, 
 
 func (tlt *tailLogTransport) logRequest(req *http.Request, resp *http.Response, err error) {
 	if tlt != nil && tlt.writer != nil {
+		host := ""
 		method := ""
 		uri := ""
 		if req != nil {
+			host = req.Host
 			method = req.Method
 			if req.URL != nil {
 				uri = req.URL.Path
@@ -70,7 +72,7 @@ func (tlt *tailLogTransport) logRequest(req *http.Request, resp *http.Response, 
 			result = strconv.Itoa(resp.StatusCode)
 		}
 		tlt.mu.Lock()
-		_, _ = fmt.Fprintf(tlt.writer, "%s %s %s %s\n", time.Now().UTC().Format(time.RFC3339), method, uri, result)
+		_, _ = fmt.Fprintf(tlt.writer, "%s %s %s%s %s\n", time.Now().UTC().Format(time.RFC3339), method, host, uri, result)
 		tlt.mu.Unlock()
 	}
 }

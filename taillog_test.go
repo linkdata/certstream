@@ -61,7 +61,7 @@ func TestTailLogTransportLogsResponse(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	line := string(data)
-	if !strings.Contains(line, "GET /test/path?foo=bar&baz=qux 202") {
+	if !strings.Contains(line, "GET example.test/test/path?foo=bar&baz=qux 202") {
 		t.Fatalf("log line missing fields: %q", line)
 	}
 }
@@ -96,7 +96,7 @@ func TestTailLogTransportLogsError(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	line := string(data)
-	if !strings.Contains(line, "POST /error/path?bad=yes error: synthetic failure") {
+	if !strings.Contains(line, "POST example.test/error/path?bad=yes error: synthetic failure") {
 		t.Fatalf("log line missing fields: %q", line)
 	}
 }
