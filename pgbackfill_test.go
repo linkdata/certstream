@@ -84,11 +84,12 @@ func TestPgDB_BackfillGapsUpdatesBackfillIndex(t *testing.T) {
 				ls.gapCh <- g
 				close(ls.gapCh)
 
-				fetchFn := func(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+				fetchFn := func(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 					if gapcounter != nil {
 						gapcounter.Add(-((end - start) + 1))
 					}
 					wanted = true
+					next = end
 					return
 				}
 

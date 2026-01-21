@@ -29,6 +29,10 @@ var IdleCloseTime = time.Hour * 24 * 7
 
 type handleLogEntryFn func(ctx context.Context, now time.Time, entry *LogEntry) (wanted bool)
 
+type rawEntriesClient interface {
+	GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error)
+}
+
 type LogStream struct {
 	*LogOperator
 	Count      atomic.Int64 // number of certificates sent to the channel
@@ -155,11 +159,11 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 
 	for err == nil {
 		if start < end {
-			ls.getRawEntries(ctx, start, end, false, ls.sendEntry, nil)
-			if end-start <= LogBatchSize/2 {
+			startBefore := start
+			start, _ = ls.getRawEntries(ctx, start, end, false, ls.sendEntry, nil)
+			if end-startBefore <= LogBatchSize/2 {
 				sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
 			}
-			start = end
 		}
 		end, err = ls.newLastIndex(ctx)
 	}
@@ -397,109 +401,74 @@ func statusCodeFromError(err error) (code int, ok bool) {
 	return
 }
 
-func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
+	next = start
 	if start <= end {
 		if ls.isTiled() {
-			wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
+			next, wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
 		} else {
 			client := ls.headClient
 			if historical && ls.tailClient != nil {
 				client = ls.tailClient
 			}
-
-			maxparallelism := int64(max(ls.CertStream.Config.GetEntriesParallelism, 1))
-			totalEntries := (end - start) + 1
-			if historical || maxparallelism == 1 || totalEntries <= LogBatchSize || totalEntries < maxparallelism {
-				wanted = ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
-			} else {
-				type segment struct {
-					start int64
-					end   int64
-				}
-
-				parallelism := min(maxparallelism, totalEntries/LogBatchSize)
-				segments := make([]segment, parallelism)
-				baseSize := totalEntries / parallelism
-				remainder := totalEntries % parallelism
-				segStart := start
-				for i := range parallelism {
-					size := baseSize
-					if int64(i) < remainder {
-						size++
-					}
-					segEnd := min(segStart+size-1, end)
-					segments[i] = segment{start: segStart, end: segEnd}
-					segStart = segEnd + 1
-				}
-
-				var anyWanted atomic.Bool
-				var wg sync.WaitGroup
-				for _, seg := range segments {
-					if seg.start <= seg.end {
-						wg.Add(1)
-						go func(segStart, segEnd int64) {
-							defer wg.Done()
-							if ls.getRawEntriesRange(ctx, client, segStart, segEnd, historical, handleFn, gapcounter) {
-								anyWanted.Store(true)
-							}
-						}(seg.start, seg.end)
-					}
-				}
-				wg.Wait()
-				wanted = anyWanted.Load()
-			}
+			next, wanted = ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
 		}
 	}
 	return
 }
 
-func (ls *LogStream) getRawEntriesRange(ctx context.Context, client *client.LogClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
-	for start <= end {
-		if ctx.Err() != nil {
-			return
-		}
-		bo := &backoff.Backoff{
-			Min:    1 * time.Second,
-			Max:    30 * time.Second,
-			Factor: 2,
-			Jitter: true,
-		}
-		var resp *ct.GetEntriesResponse
-		stop := start + min(LogBatchSize, end-start)
-		if err := bo.Retry(ctx, func() error {
-			ls.adjustTailLimiter(historical)
-			var err error
-			resp, err = client.GetRawEntries(ctx, start, stop)
-			return err
-		}); err != nil {
-			if ls.handleStreamError(err, "GetRawEntries") {
+func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
+	next = start
+	stop := false
+	for start <= end && !stop {
+		if ctx.Err() == nil {
+			bo := &backoff.Backoff{
+				Min:    1 * time.Second,
+				Max:    30 * time.Second,
+				Factor: 2,
+				Jitter: true,
+			}
+			var resp *ct.GetEntriesResponse
+			stopIndex := start + min(LogBatchSize, end-start)
+			err := bo.Retry(ctx, func() error {
+				ls.adjustTailLimiter(historical)
+				var err error
+				resp, err = client.GetRawEntries(ctx, start, stopIndex)
+				return err
+			})
+			if err == nil {
+				now := time.Now()
+				for i := range resp.Entries {
+					le := ls.makeLogEntry(start, resp.Entries[i], historical)
+					ls.seeIndex(start)
+					if handleFn(ctx, now, le) {
+						wanted = true
+					}
+					next = start
+					start++
+					if gapcounter != nil {
+						gapcounter.Add(-1)
+					}
+				}
+				if historical && !wanted {
+					stop = true
+				}
+			} else if ls.handleStreamError(err, "GetRawEntries") {
 				if gapcounter != nil && ctx.Err() == nil {
 					_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
 					gapcounter.Add(start - (end + 1))
 				}
-				return
+				stop = true
 			}
 		} else {
-			now := time.Now()
-			for i := range resp.Entries {
-				le := ls.makeLogEntry(start, resp.Entries[i], historical)
-				if handleFn(ctx, now, le) {
-					wanted = true
-				}
-				start++
-				if gapcounter != nil {
-					gapcounter.Add(-1)
-				}
-			}
-			if historical && !wanted {
-				return
-			}
+			stop = true
 		}
 	}
 	return
 }
 
-func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool) {
+func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
+	next = start
 	if start <= end {
 		client := ls.headTile
 		if historical && ls.tailTile != nil {
@@ -551,10 +520,12 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 											break
 										}
 										le := ls.makeTileLogEntry(i, entry, historical)
+										ls.seeIndex(i)
 										if handleFn(ctx, now, le) {
 											wanted = true
 										}
 										lastIndex = i
+										next = i
 										if gapcounter != nil {
 											gapcounter.Add(-1)
 										}

@@ -16,7 +16,7 @@ type errLogEntriesTooOld struct {
 	MaxAge int
 }
 
-type rawEntriesFetcher func(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) bool
+type rawEntriesFetcher func(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool)
 
 func (e errLogEntriesTooOld) Error() string {
 	return "log entries are older than " + strconv.Itoa(e.MaxAge) + " days"
@@ -122,7 +122,8 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				start := max(0, minIndex-BulkRange)
 				stop := minIndex - 1
 				minIndex = start
-				if !ls.getRawEntries(ctx, start, stop, true, ls.sendEntry, nil) {
+				var wanted bool
+				if _, wanted = ls.getRawEntries(ctx, start, stop, true, ls.sendEntry, nil); !wanted {
 					cdb.LogInfo("backlog stops", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 					ls.addError(ls, errLogEntriesTooOld{MaxAge: cdb.PgMaxAge})
 					stopBackfill = true
