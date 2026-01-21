@@ -548,6 +548,8 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 										}
 										advanced = true
 									}
+								} else if lastLogIndex.Valid {
+									_ = cdb.updateBackfillIndex(ctx, ls, lastLogIndex.Int64)
 								}
 								if !advanced && ctx.Err() == nil && lastLogIndex.Valid {
 									if lastLogIndex.Int64 > lastIndex {

@@ -125,6 +125,61 @@ func TestPgDB_SelectAllGapsStmtDynamicCTE(t *testing.T) {
 	}
 }
 
+func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
+	t.Parallel()
+
+	ctx, db, cs := setupSelectGapsDB(t)
+	if db != nil && cs != nil {
+		var operatorID int32
+		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+			"op", "op@example.com",
+		).Scan(&operatorID); err != nil {
+			t.Fatalf("insert operator failed: %v", err)
+		} else {
+			url := "https://example.com/log-no-gaps"
+			var streamID int32
+			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+				t.Fatalf("insert stream failed: %v", err)
+			} else if err = insertEntries(ctx, db, streamID, []int64{1, 2, 3, 4, 5}); err != nil {
+				t.Fatalf("insert entries failed: %v", err)
+			} else {
+				logop := &LogOperator{
+					CertStream: cs,
+					operator:   &loglist3.Operator{Name: "op", Email: []string{"op@example.com"}},
+					Domain:     "example.com",
+					streams:    map[string]*LogStream{},
+				}
+				ls := &LogStream{
+					LogOperator: logop,
+					Id:          streamID,
+					log:         &loglist3.Log{URL: url},
+				}
+				ls.gapCh = make(chan gap, 1)
+				logop.streams[url] = ls
+				cs.operators = map[string]*LogOperator{
+					logop.Domain: logop,
+				}
+
+				var wg sync.WaitGroup
+				wg.Add(1)
+				go db.selectStreamGaps(ctx, &wg, ls, 2, nil)
+
+				wg.Wait()
+				close(ls.gapCh)
+
+				var backfillIndex int64
+				if err = db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
+					streamID,
+				).Scan(&backfillIndex); err != nil {
+					t.Fatalf("select backfill_logindex failed: %v", err)
+				} else if backfillIndex != 5 {
+					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, 5)
+				}
+			}
+		}
+	}
+}
+
 func TestPgDB_SelectStreamGapsOrder(t *testing.T) {
 	t.Parallel()
 
