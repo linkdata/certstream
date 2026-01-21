@@ -126,6 +126,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				if _, wanted = ls.getRawEntries(ctx, start, stop, true, ls.sendEntry, &ls.Backfill); !wanted {
 					cdb.LogInfo("backlog stops", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 					ls.addError(ls, errLogEntriesTooOld{MaxAge: cdb.PgMaxAge})
+					ls.Backfill.Store(0)
 					break
 				}
 			}
