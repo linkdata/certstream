@@ -22,7 +22,7 @@ import (
 	"github.com/google/trillian/client/backoff"
 )
 
-var DbIngestBatchSize = 100    // number of entries to send to ingest at a time
+var DbIngestBatchSize = 1000   // number of entries to send to ingest at a time
 var HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
 var FindGapsBatchSize = 10000  // logindex range to SELECT when looking for gaps
 var LogBatchSize = int64(1000)
