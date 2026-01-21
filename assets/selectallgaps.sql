@@ -1,4 +1,4 @@
-WITH findgap_seed AS (
+WITH CERTDB_findgap_STREAMID_LOGINDEX AS (
   SELECT $2::bigint AS logindex
   WHERE $2::bigint >= 0
 ),
@@ -12,7 +12,7 @@ base AS (
   LIMIT $4
 ),
 scan_rows AS (
-  SELECT logindex FROM findgap_seed
+  SELECT logindex FROM CERTDB_findgap_STREAMID_LOGINDEX
   UNION ALL
   SELECT logindex FROM base
 ),

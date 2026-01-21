@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -493,6 +494,25 @@ func (gt *gapTotals) values() (count int64, size int64) {
 	return
 }
 
+func gapLogIndexLabel(logIndex int64) (label string) {
+	label = strconv.FormatInt(logIndex, 10)
+	if strings.HasPrefix(label, "-") {
+		label = "neg" + strings.TrimPrefix(label, "-")
+	}
+	return
+}
+
+func (cdb *PgDB) selectAllGapsStmt(streamID int32, logIndex int64) (stmt string) {
+	if cdb != nil {
+		stmt = cdb.stmtSelectAllGaps
+		if stmt != "" {
+			stmt = strings.ReplaceAll(stmt, "STREAMID", strconv.FormatInt(int64(streamID), 10))
+			stmt = strings.ReplaceAll(stmt, "LOGINDEX", gapLogIndexLabel(logIndex))
+		}
+	}
+	return
+}
+
 func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *LogStream, pageSize int, totals *gapTotals) {
 	defer wg.Done()
 
@@ -510,7 +530,8 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 					if endIndex >= 0 {
 						var lastIndex int64 = -1
 						for err == nil && ctx.Err() == nil && lastIndex < endIndex {
-							row := cdb.QueryRow(ctx, cdb.stmtSelectAllGaps, ls.Id, lastIndex, endIndex, pageSize)
+							stmt := cdb.selectAllGapsStmt(ls.Id, lastIndex)
+							row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex, pageSize)
 							var gapStart sql.NullInt64
 							var gapEnd sql.NullInt64
 							var lastLogIndex sql.NullInt64

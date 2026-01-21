@@ -99,6 +99,32 @@ func TestPgDB_SelectAllGapsPerStream(t *testing.T) {
 	}
 }
 
+func TestPgDB_SelectAllGapsStmtDynamicCTE(t *testing.T) {
+	t.Parallel()
+
+	pfx := func(s string) string {
+		return strings.ReplaceAll(s, "CERTDB_", "certdb_")
+	}
+	db := &PgDB{
+		Pfx:               pfx,
+		stmtSelectAllGaps: pfx(SelectAllGaps),
+	}
+
+	stmt := db.selectAllGapsStmt(12, 34)
+	if !strings.Contains(stmt, "WITH certdb_findgap_12_34 AS") {
+		t.Fatalf("selectAllGapsStmt missing stream/logindex CTE name")
+	} else {
+		stmtNeg := db.selectAllGapsStmt(12, -1)
+		if !strings.Contains(stmtNeg, "WITH certdb_findgap_12_neg1 AS") {
+			t.Fatalf("selectAllGapsStmt missing negative logindex CTE name")
+		} else {
+			if strings.Contains(stmtNeg, "STREAMID") || strings.Contains(stmtNeg, "LOGINDEX") {
+				t.Fatalf("selectAllGapsStmt contains template tokens")
+			}
+		}
+	}
+}
+
 func TestPgDB_SelectStreamGapsOrder(t *testing.T) {
 	t.Parallel()
 
@@ -327,12 +353,14 @@ func addGapQuerySleep(t *testing.T, db *PgDB, seconds string) {
 	if db == nil {
 		t.Fatalf("db is nil")
 	} else {
-		if !strings.Contains(db.stmtSelectAllGaps, "WITH findgap_seed") {
-			t.Fatalf("selectAllGaps missing WITH findgap_seed")
+		seedCTE := db.Pfx("CERTDB_findgap_STREAMID_LOGINDEX")
+		seedWith := "WITH " + seedCTE
+		if !strings.Contains(db.stmtSelectAllGaps, seedWith) {
+			t.Fatalf("selectAllGaps missing %s", seedWith)
 		} else {
 			db.stmtSelectAllGaps = strings.Replace(db.stmtSelectAllGaps,
-				"WITH findgap_seed",
-				"WITH gap_sleep AS (SELECT pg_sleep("+seconds+")),\nfindgap_seed",
+				seedWith,
+				"WITH gap_sleep AS (SELECT pg_sleep("+seconds+")),\n"+seedCTE,
 				1,
 			)
 		}
