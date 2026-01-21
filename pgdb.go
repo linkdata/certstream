@@ -541,9 +541,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 						}
 					}
 				}
-				if err != nil && ctx.Err() == nil {
-					_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
-				}
+				_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
 			}
 		}
 	}
