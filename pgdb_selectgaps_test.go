@@ -99,6 +99,152 @@ func TestPgDB_SelectAllGapsPerStream(t *testing.T) {
 	}
 }
 
+func TestPgDB_SelectStreamGapsOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx, db, cs := setupSelectGapsDB(t)
+	if db != nil && cs != nil {
+		var operatorID int32
+		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+			"op", "op@example.com",
+		).Scan(&operatorID); err != nil {
+			t.Fatalf("insert operator failed: %v", err)
+		} else {
+			url := "https://example.com/log-order"
+			var streamID int32
+			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+				t.Fatalf("insert stream failed: %v", err)
+			} else {
+				if err = insertEntries(ctx, db, streamID, []int64{1, 2, 4, 7, 8, 11}); err != nil {
+					t.Fatalf("insert entries failed: %v", err)
+				} else {
+					logop := &LogOperator{
+						CertStream: cs,
+						operator:   &loglist3.Operator{Name: "op", Email: []string{"op@example.com"}},
+						Domain:     "example.com",
+						streams:    map[string]*LogStream{},
+					}
+					ls := &LogStream{
+						LogOperator: logop,
+						Id:          streamID,
+						log:         &loglist3.Log{URL: url},
+					}
+					ls.gapCh = make(chan gap, 1)
+					logop.streams[url] = ls
+					cs.operators = map[string]*LogOperator{
+						logop.Domain: logop,
+					}
+
+					addGapQuerySleep(t, db, "0.2")
+
+					var wg sync.WaitGroup
+					gotCh := make(chan []gap, 1)
+					go func() {
+						time.Sleep(300 * time.Millisecond)
+						gotCh <- collectGaps(ls.gapCh)
+					}()
+
+					wg.Add(1)
+					go db.selectStreamGaps(ctx, &wg, ls, 4, nil)
+
+					wg.Wait()
+					close(ls.gapCh)
+					got := <-gotCh
+					want := []gap{
+						{start: 3, end: 3},
+						{start: 5, end: 6},
+						{start: 9, end: 10},
+					}
+					if !gapsEqual(got, want) {
+						t.Fatalf("gaps = %v, want %v", got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPgDB_SelectStreamGapsMaxAtStart(t *testing.T) {
+	t.Parallel()
+
+	ctx, db, cs := setupSelectGapsDB(t)
+	if db != nil && cs != nil {
+		var operatorID int32
+		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+			"op", "op@example.com",
+		).Scan(&operatorID); err != nil {
+			t.Fatalf("insert operator failed: %v", err)
+		} else {
+			url := "https://example.com/log-max-at-start"
+			var streamID int32
+			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+				t.Fatalf("insert stream failed: %v", err)
+			} else {
+				if err = insertEntries(ctx, db, streamID, []int64{1, 2, 4, 7, 8, 11}); err != nil {
+					t.Fatalf("insert entries failed: %v", err)
+				} else {
+					logop := &LogOperator{
+						CertStream: cs,
+						operator:   &loglist3.Operator{Name: "op", Email: []string{"op@example.com"}},
+						Domain:     "example.com",
+						streams:    map[string]*LogStream{},
+					}
+					ls := &LogStream{
+						LogOperator: logop,
+						Id:          streamID,
+						log:         &loglist3.Log{URL: url},
+					}
+					ls.gapCh = make(chan gap, 10)
+					logop.streams[url] = ls
+					cs.operators = map[string]*LogOperator{
+						logop.Domain: logop,
+					}
+
+					addGapQuerySleep(t, db, "0.2")
+
+					firstGapCh := make(chan gap, 1)
+					gotCh := make(chan []gap, 1)
+					go func() {
+						var got []gap
+						for g := range ls.gapCh {
+							if len(got) == 0 {
+								firstGapCh <- g
+							}
+							got = append(got, g)
+						}
+						gotCh <- got
+					}()
+
+					var wg sync.WaitGroup
+					wg.Add(1)
+					go db.selectStreamGaps(ctx, &wg, ls, 4, nil)
+
+					select {
+					case <-firstGapCh:
+						if err = insertEntries(ctx, db, streamID, []int64{20}); err != nil {
+							t.Fatalf("insert entries after start failed: %v", err)
+						} else {
+							wg.Wait()
+							close(ls.gapCh)
+							got := <-gotCh
+							want := []gap{
+								{start: 3, end: 3},
+								{start: 5, end: 6},
+								{start: 9, end: 10},
+							}
+							if !gapsEqual(got, want) {
+								t.Fatalf("gaps = %v, want %v", got, want)
+							}
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatalf("timed out waiting for first gap")
+					}
+				}
+			}
+		}
+	}
+}
+
 func setupSelectGapsDB(t *testing.T) (ctx context.Context, db *PgDB, cs *CertStream) {
 	t.Helper()
 
@@ -173,6 +319,33 @@ func insertEntries(ctx context.Context, db *PgDB, streamID int32, indices []int6
 		}
 	}
 	return
+}
+
+func addGapQuerySleep(t *testing.T, db *PgDB, seconds string) {
+	t.Helper()
+
+	if db == nil {
+		t.Fatalf("db is nil")
+	} else {
+		if !strings.Contains(db.stmtSelectAllGaps, "WITH findgap_seed") {
+			t.Fatalf("selectAllGaps missing WITH findgap_seed")
+		} else {
+			db.stmtSelectAllGaps = strings.Replace(db.stmtSelectAllGaps,
+				"WITH findgap_seed",
+				"WITH gap_sleep AS (SELECT pg_sleep("+seconds+")),\nfindgap_seed",
+				1,
+			)
+		}
+		if !strings.Contains(db.stmtSelectAllGaps, "FROM last") {
+			t.Fatalf("selectAllGaps missing FROM last")
+		} else {
+			db.stmtSelectAllGaps = strings.Replace(db.stmtSelectAllGaps,
+				"FROM last",
+				"FROM gap_sleep, last",
+				1,
+			)
+		}
+	}
 }
 
 func collectGaps(ch chan gap) (gaps []gap) {

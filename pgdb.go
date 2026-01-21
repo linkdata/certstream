@@ -493,174 +493,55 @@ func (gt *gapTotals) values() (count int64, size int64) {
 	return
 }
 
-func (cdb *PgDB) gapIndexWorkers(total int) (workers int) {
-	workers = 1
-	if cdb != nil {
-		if cdb.CertStream != nil {
-			workers = cdb.CertStream.Config.PgConns / 4
-		}
-		if workers < 1 {
-			workers = 1
-		}
-		if workers > 16 {
-			workers = 16
-		}
-	}
-	if total < workers {
-		workers = total
-	}
-	return
-}
-
-func (cdb *PgDB) selectGapEndIndexes(ctx context.Context, streamIDs []int32) (endIndexes map[int32]int64, err error) {
-	endIndexes = map[int32]int64{}
-	if len(streamIDs) > 0 {
-		query := cdb.Pfx(`SELECT logindex FROM CERTDB_entry WHERE stream = $1 ORDER BY logindex DESC LIMIT 1;`)
-		workers := cdb.gapIndexWorkers(len(streamIDs))
-		if workers < 1 {
-			workers = 1
-		}
-		type result struct {
-			streamID int32
-			maxIndex int64
-			ok       bool
-			err      error
-		}
-		sem := make(chan struct{}, workers)
-		results := make(chan result, len(streamIDs))
-		var wg sync.WaitGroup
-		for _, streamID := range streamIDs {
-			if ctx.Err() == nil {
-				wg.Add(1)
-				sem <- struct{}{}
-				go func(id int32) {
-					defer wg.Done()
-					defer func() {
-						<-sem
-					}()
-					row := cdb.QueryRow(ctx, query, id)
-					var maxIndex int64
-					e := row.Scan(&maxIndex)
-					if e == nil {
-						results <- result{streamID: id, maxIndex: maxIndex, ok: true}
-					} else if errors.Is(e, pgx.ErrNoRows) {
-						results <- result{streamID: id}
-					} else {
-						results <- result{streamID: id, err: e}
-					}
-				}(streamID)
-			}
-		}
-		go func() {
-			wg.Wait()
-			close(results)
-		}()
-		for res := range results {
-			if res.err == nil {
-				if res.ok {
-					endIndexes[res.streamID] = res.maxIndex
-				}
-			} else {
-				err = errors.Join(err, res.err)
-			}
-		}
-	}
-	return
-}
-
-func (cdb *PgDB) enqueueGap(ctx context.Context, gapCh chan gap, queue *[]gap, g gap) (cancelled bool) {
-	if gapCh != nil {
-		select {
-		case <-ctx.Done():
-			cancelled = true
-		case gapCh <- g:
-		default:
-			if queue != nil {
-				*queue = append(*queue, g)
-			}
-		}
-	}
-	if ctx.Err() != nil {
-		cancelled = true
-	}
-	return
-}
-
-func (cdb *PgDB) flushGapQueue(ctx context.Context, gapCh chan gap, queue []gap) (cancelled bool) {
-	if gapCh != nil {
-		remain := len(queue)
-		idx := 0
-		for remain > 0 && ctx.Err() == nil {
-			sent := false
-			select {
-			case <-ctx.Done():
-				cancelled = true
-			case gapCh <- queue[idx]:
-				idx++
-				remain--
-				sent = true
-			default:
-			}
-			if !sent && !cancelled && remain > 0 {
-				sleep(ctx, time.Second)
-			}
-		}
-	}
-	if ctx.Err() != nil {
-		cancelled = true
-	}
-	return
-}
-
-func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *LogStream, endIndex int64, pageSize int, totals *gapTotals) {
+func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *LogStream, pageSize int, totals *gapTotals) {
 	defer wg.Done()
 
 	if ls != nil {
 		gapCh := ls.getGapCh()
 		if gapCh != nil {
-			if endIndex >= 0 && pageSize > 0 {
-				var queue []gap
+			if pageSize > 0 {
 				var err error
-				var lastIndex int64 = -1
-				var cancelled bool
-				for err == nil && !cancelled && lastIndex < endIndex {
-					row := cdb.QueryRow(ctx, cdb.stmtSelectAllGaps, ls.Id, lastIndex, endIndex, pageSize)
-					var gapStart sql.NullInt64
-					var gapEnd sql.NullInt64
-					var lastLogIndex sql.NullInt64
-					if err = row.Scan(&gapStart, &gapEnd, &lastLogIndex); err == nil {
-						advanced := false
-						if gapStart.Valid && gapEnd.Valid {
-							g := gap{start: gapStart.Int64, end: gapEnd.Int64}
-							if totals != nil {
-								totals.add(g)
-							}
-							if cdb.enqueueGap(ctx, gapCh, &queue, g) {
-								cancelled = true
-							}
-							lastIndex = gapEnd.Int64
-							advanced = true
-						}
-						if !advanced && lastLogIndex.Valid {
-							if lastLogIndex.Int64 > lastIndex {
-								lastIndex = lastLogIndex.Int64
-								advanced = true
-							}
-						}
-						if !advanced {
-							break
-						}
+				var maxIndex sql.NullInt64
+				if err = cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&maxIndex); err == nil {
+					endIndex := int64(-1)
+					if maxIndex.Valid {
+						endIndex = maxIndex.Int64
 					}
-					if ctx.Err() != nil {
-						cancelled = true
+					if endIndex >= 0 {
+						var lastIndex int64 = -1
+						for err == nil && ctx.Err() == nil && lastIndex < endIndex {
+							row := cdb.QueryRow(ctx, cdb.stmtSelectAllGaps, ls.Id, lastIndex, endIndex, pageSize)
+							var gapStart sql.NullInt64
+							var gapEnd sql.NullInt64
+							var lastLogIndex sql.NullInt64
+							if err = row.Scan(&gapStart, &gapEnd, &lastLogIndex); err == nil {
+								advanced := false
+								if gapStart.Valid && gapEnd.Valid {
+									g := gap{start: gapStart.Int64, end: gapEnd.Int64}
+									select {
+									case <-ctx.Done():
+									case gapCh <- g:
+										lastIndex = gapEnd.Int64
+										if totals != nil {
+											totals.add(g)
+										}
+										advanced = true
+									}
+								}
+								if !advanced && ctx.Err() == nil && lastLogIndex.Valid {
+									if lastLogIndex.Int64 > lastIndex {
+										lastIndex = lastLogIndex.Int64
+										advanced = true
+									}
+								}
+								if !advanced {
+									break
+								}
+							}
+						}
 					}
 				}
-				if err == nil && !cancelled {
-					if cdb.flushGapQueue(ctx, gapCh, queue) {
-						cancelled = true
-					}
-				}
-				if err != nil && !cancelled {
+				if err != nil && ctx.Err() == nil {
 					_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
 				}
 			}
@@ -672,7 +553,6 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	streams := make(map[int32]*LogStream)
-	streamIDs := make([]int32, 0, 64)
 
 	cdb.mu.Lock()
 	for _, logop := range cdb.operators {
@@ -682,7 +562,6 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 				ls.gapCh = make(chan gap, 1)
 			}
 			streams[ls.Id] = ls
-			streamIDs = append(streamIDs, ls.Id)
 		}
 		logop.mu.Unlock()
 	}
@@ -703,19 +582,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 	cdb.LogInfo("selectAllGaps starts", "streams", len(streams))
 
 	var totals gapTotals
-	var endIndexes map[int32]int64
-	var err error
-	if len(streamIDs) > 0 {
-		endIndexes, err = cdb.selectGapEndIndexes(ctx, streamIDs)
-	} else {
-		endIndexes = map[int32]int64{}
-	}
-
-	if err != nil {
-		_ = cdb.LogError(err, "selectAllGaps.EndIndexes")
-	}
-
-	if err == nil && ctx.Err() == nil {
+	if ctx.Err() == nil {
 		pageSize := DbBatchSize
 		if pageSize < 100 {
 			pageSize = 100
@@ -725,11 +592,9 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 		}
 
 		var streamWG sync.WaitGroup
-		for streamID, ls := range streams {
-			if endIndex, ok := endIndexes[streamID]; ok {
-				streamWG.Add(1)
-				go cdb.selectStreamGaps(ctx, &streamWG, ls, endIndex, pageSize, &totals)
-			}
+		for _, ls := range streams {
+			streamWG.Add(1)
+			go cdb.selectStreamGaps(ctx, &streamWG, ls, pageSize, &totals)
 		}
 		streamWG.Wait()
 	}
