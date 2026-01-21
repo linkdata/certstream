@@ -348,37 +348,25 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
 		fatal = false
 	} else {
-		var statusCode int
-		var hasStatus bool
-		statusCode, hasStatus = statusCodeFromError(err)
-		fatal = true
-		if hasStatus {
-			switch statusCode {
-			case http.StatusTooManyRequests,
-				http.StatusGatewayTimeout,
-				http.StatusNotFound:
-				fatal = false
-			}
-		}
-		if fatal {
-			ls.addError(ls, wrapErr(err, from))
-			if hasStatus {
-				switch statusCode {
-				case http.StatusInternalServerError,
-					http.StatusBadGateway:
-					fatal = false
-				}
+		statusCode := statusCodeFromError(err)
+		switch statusCode {
+		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound:
+			// expected, just retry, no need to log it
+		case http.StatusInternalServerError, http.StatusBadGateway:
+			fallthrough
+		default:
+			if ls.addError(ls, wrapErr(err, from)) >= MaxErrors {
+				fatal = true
 			}
 		}
 	}
 	return
 }
 
-func statusCodeFromError(err error) (code int, ok bool) {
+func statusCodeFromError(err error) (code int) {
 	if err != nil {
 		if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 			code = rspErr.StatusCode
-			ok = true
 		} else {
 			msg := err.Error()
 			idx := strings.LastIndex(msg, "status code ")
@@ -392,10 +380,7 @@ func statusCodeFromError(err error) (code int, ok bool) {
 					end++
 				}
 				if end > start {
-					var convErr error
-					if code, convErr = strconv.Atoi(msg[start:end]); convErr == nil {
-						ok = true
-					}
+					code, _ = strconv.Atoi(msg[start:end])
 				}
 			}
 		}

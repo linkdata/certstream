@@ -55,7 +55,7 @@ func (lo *LogOperator) Errors() (errs []*StreamError) {
 	return
 }
 
-func (lo *LogOperator) addError(ls *LogStream, err error) {
+func (lo *LogOperator) addError(ls *LogStream, err error) (errcount int) {
 	if err != nil {
 		now := time.Now()
 		lo.mu.Lock()
@@ -65,7 +65,9 @@ func (lo *LogOperator) addError(ls *LogStream, err error) {
 			lo.errors = slices.Delete(lo.errors, 0, len(lo.errors)-MaxErrors)
 		}
 		ls.errcount++
+		errcount = ls.errcount
 	}
+	return
 }
 
 func (lo *LogOperator) Streams() (sl []*LogStream) {

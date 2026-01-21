@@ -8,22 +8,22 @@ import (
 )
 
 func TestStatusCodeFromError(t *testing.T) {
-	code, ok := statusCodeFromError(jsonclient.RspError{
+	code := statusCodeFromError(jsonclient.RspError{
 		Err:        errors.New("nope"),
 		StatusCode: 404,
 	})
-	if !ok || code != 404 {
-		t.Fatalf("statusCodeFromError(jsonclient) = %d, %t", code, ok)
+	if code != 404 {
+		t.Fatalf("statusCodeFromError(jsonclient) = %d", code)
 	}
 
-	code, ok = statusCodeFromError(errors.New("tile/1/000: unexpected status code 404"))
-	if !ok || code != 404 {
-		t.Fatalf("statusCodeFromError(string) = %d, %t", code, ok)
+	code = statusCodeFromError(errors.New("tile/1/000: unexpected status code 404"))
+	if code != 404 {
+		t.Fatalf("statusCodeFromError(string) = %d", code)
 	}
 
-	code, ok = statusCodeFromError(errors.New("no status here"))
-	if ok {
-		t.Fatalf("statusCodeFromError(no status) = %d, %t", code, ok)
+	code = statusCodeFromError(errors.New("no status here"))
+	if code != 0 {
+		t.Fatalf("statusCodeFromError(no status) = %d", code)
 	}
 }
 
