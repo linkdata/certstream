@@ -31,6 +31,7 @@ var DefaultTransport = &http.Transport{
 	MaxIdleConnsPerHost:   2,
 	DisableKeepAlives:     false,
 	ExpectContinueTimeout: 1 * time.Second,
+	ForceAttemptHTTP2:     true,
 }
 
 func (cs *CertStream) LogInfo(msg string, args ...any) {
