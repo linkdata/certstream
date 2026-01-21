@@ -23,6 +23,6 @@ const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE
 
 const SelectBackfillIndex = `SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`
 
-const UpdateBackfillIndex = `UPDATE CERTDB_stream SET backfill_logindex = $1 WHERE id = $2;`
+const UpdateBackfillIndex = `UPDATE CERTDB_stream SET backfill_logindex = $1 WHERE id = $2 AND backfill_logindex < $1;`
 
 const SelectEstimate = `SELECT reltuples AS estimate FROM pg_class WHERE relname = $1;`
