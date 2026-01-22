@@ -122,6 +122,42 @@ IF to_regtype('CERTDB_split_domain_result') IS NULL THEN
   );
 END IF;
 
+IF to_regtype('CERTDB_gap') IS NULL THEN
+  CREATE TYPE CERTDB_gap AS (
+    start_gap bigint,
+    end_gap bigint
+  );
+END IF;
+
+CREATE OR REPLACE FUNCTION CERTDB_findgap(
+  p_streamid integer,
+  p_start_logindex bigint,
+  p_end_logindex bigint
+)
+RETURNS CERTDB_gap
+LANGUAGE sql
+STABLE
+AS $$
+SELECT COALESCE(
+  (
+    SELECT ROW(logindex + 1, next_i - 1)::CERTDB_gap
+    FROM (
+      SELECT
+        logindex,
+        LEAD(logindex) OVER (ORDER BY logindex) AS next_i
+      FROM CERTDB_entry
+      WHERE stream = p_streamid
+        AND logindex >= p_start_logindex
+        AND logindex <= p_end_logindex
+    ) gaps
+    WHERE next_i > logindex + 1
+    ORDER BY logindex
+    LIMIT 1
+  ),
+  ROW(NULL::bigint, NULL::bigint)::CERTDB_gap
+);
+$$;
+
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
 RETURNS CERTDB_split_domain_result
 LANGUAGE plpgsql

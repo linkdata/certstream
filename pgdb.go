@@ -35,9 +35,10 @@ type PgDB struct {
 	funcOperatorID        string
 	funcStreamID          string
 	funcIngestBatch       string
-	stmtSelectAllGaps     string
+	stmtFindGap           string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
+	stmtSelectMinIdxFrom  string
 	stmtSelectBackfillIdx string
 	stmtUpdateBackfillIdx string
 	mu                    sync.Mutex // protects following
@@ -101,9 +102,10 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
 							funcIngestBatch:       pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
-							stmtSelectAllGaps:     pfx(SelectAllGaps),
+							stmtFindGap:           pfx(SelectFindGap),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
+							stmtSelectMinIdxFrom:  pfx(SelectMinIndexFrom),
 							stmtSelectBackfillIdx: pfx(SelectBackfillIndex),
 							stmtUpdateBackfillIdx: pfx(UpdateBackfillIndex),
 							batchCh:               batchChans,
@@ -491,66 +493,59 @@ func (gt *gapTotals) values() (count int64, size int64) {
 	return
 }
 
-func (cdb *PgDB) selectAllGapsStmt(streamID int32) (stmt string) {
-	stmt = strings.ReplaceAll(cdb.stmtSelectAllGaps, "STREAMID", fmt.Sprintf("%03d", streamID))
-	return
-}
-
-func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *LogStream, pageSize int, totals *gapTotals) {
+func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *LogStream, totals *gapTotals) {
 	defer wg.Done()
 
 	if ls != nil {
 		gapCh := ls.getGapCh()
 		if gapCh != nil {
-			if pageSize > 0 {
-				var err error
-				var maxIndex sql.NullInt64
-				if err = cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&maxIndex); err == nil {
-					endIndex := int64(-1)
-					if maxIndex.Valid {
-						endIndex = maxIndex.Int64
-					}
-					if endIndex >= 0 {
-						var lastIndex int64
-						if err = cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id).Scan(&lastIndex); err == nil {
-							for err == nil && ctx.Err() == nil && lastIndex < endIndex {
-								stmt := cdb.selectAllGapsStmt(ls.Id)
-								row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex, pageSize)
-								var gapStart sql.NullInt64
-								var gapEnd sql.NullInt64
-								var lastLogIndex sql.NullInt64
-								if err = row.Scan(&gapStart, &gapEnd, &lastLogIndex); err == nil {
-									advanced := false
-									if gapStart.Valid && gapEnd.Valid {
-										g := gap{start: gapStart.Int64, end: gapEnd.Int64}
-										select {
-										case <-ctx.Done():
-										case gapCh <- g:
-											lastIndex = gapEnd.Int64
-											if totals != nil {
-												totals.add(g)
+			var err error
+			var maxIndex sql.NullInt64
+			if err = cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&maxIndex); err == nil {
+				endIndex := int64(-1)
+				if maxIndex.Valid {
+					endIndex = maxIndex.Int64
+				}
+				if endIndex >= 0 {
+					var lastIndex int64
+					if err = cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id).Scan(&lastIndex); err == nil {
+						var startIndex sql.NullInt64
+						if err = cdb.QueryRow(ctx, cdb.stmtSelectMinIdxFrom, ls.Id, lastIndex).Scan(&startIndex); err == nil {
+							if startIndex.Valid {
+								if startIndex.Int64 != lastIndex && ctx.Err() == nil {
+									_ = cdb.updateBackfillIndex(ctx, ls, startIndex.Int64)
+									lastIndex = startIndex.Int64
+								}
+								stmt := cdb.stmtFindGap
+								for err == nil && ctx.Err() == nil && lastIndex < endIndex {
+									row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex)
+									var gapStart sql.NullInt64
+									var gapEnd sql.NullInt64
+									if err = row.Scan(&gapStart, &gapEnd); err == nil {
+										if gapStart.Valid && gapEnd.Valid {
+											g := gap{start: gapStart.Int64, end: gapEnd.Int64}
+											select {
+											case <-ctx.Done():
+											case gapCh <- g:
+												lastIndex = gapEnd.Int64 + 1
+												if totals != nil {
+													totals.add(g)
+												}
 											}
-											advanced = true
+										} else if ctx.Err() == nil {
+											if err = cdb.updateBackfillIndex(ctx, ls, endIndex); err == nil {
+												lastIndex = endIndex
+											}
+											break
 										}
-									} else if lastLogIndex.Valid {
-										_ = cdb.updateBackfillIndex(ctx, ls, lastLogIndex.Int64)
-									}
-									if !advanced && ctx.Err() == nil && lastLogIndex.Valid {
-										if lastLogIndex.Int64 > lastIndex {
-											lastIndex = lastLogIndex.Int64
-											advanced = true
-										}
-									}
-									if !advanced {
-										break
 									}
 								}
 							}
 						}
 					}
 				}
-				_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
 			}
+			_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
 		}
 	}
 }
@@ -592,7 +587,7 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 		var streamWG sync.WaitGroup
 		for _, ls := range streams {
 			streamWG.Add(1)
-			go cdb.selectStreamGaps(ctx, &streamWG, ls, max(100, FindGapsBatchSize), &totals)
+			go cdb.selectStreamGaps(ctx, &streamWG, ls, &totals)
 		}
 		streamWG.Wait()
 	}

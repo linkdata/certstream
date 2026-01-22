@@ -14,12 +14,13 @@ var FunctionStreamID string
 //go:embed assets/funcingestbatch.sql
 var FuncIngestBatch string
 
-//go:embed assets/selectallgaps.sql
-var SelectAllGaps string
-
 const SelectMinIndex = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
 
 const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1;`
+
+const SelectMinIndexFrom = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1 AND logindex >= $2;`
+
+const SelectFindGap = `SELECT start_gap, end_gap FROM CERTDB_findgap($1, $2, $3);`
 
 const SelectBackfillIndex = `SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`
 

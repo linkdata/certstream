@@ -105,25 +105,6 @@ func TestPgDB_SelectAllGapsPerStream(t *testing.T) {
 	}
 }
 
-func TestPgDB_SelectAllGapsStmtDynamicCTE(t *testing.T) {
-	t.Parallel()
-
-	pfx := func(s string) string {
-		return strings.ReplaceAll(s, "CERTDB_", "certdb_")
-	}
-	db := &PgDB{
-		Pfx:               pfx,
-		stmtSelectAllGaps: pfx(SelectAllGaps),
-	}
-
-	if !strings.Contains(db.selectAllGapsStmt(1), "WITH certdb_findgap_001 AS") {
-		t.Fatalf("selectAllGapsStmt format wrong (1)")
-	}
-	if !strings.Contains(db.selectAllGapsStmt(1234), "WITH certdb_findgap_1234 AS") {
-		t.Fatalf("selectAllGapsStmt format wrong (1234)")
-	}
-}
-
 func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 	t.Parallel()
 
@@ -161,7 +142,7 @@ func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 
 				var wg sync.WaitGroup
 				wg.Add(1)
-				go db.selectStreamGaps(ctx, &wg, ls, 2, nil)
+				go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 				wg.Wait()
 				close(ls.gapCh)
@@ -173,6 +154,65 @@ func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 					t.Fatalf("select backfill_logindex failed: %v", err)
 				} else if backfillIndex != 5 {
 					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, 5)
+				}
+			}
+		}
+	}
+}
+
+func TestPgDB_SelectStreamGapsExample(t *testing.T) {
+	t.Parallel()
+
+	ctx, db, cs := setupSelectGapsDB(t)
+	if db != nil && cs != nil {
+		var operatorID int32
+		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+			"op", "op@example.com",
+		).Scan(&operatorID); err != nil {
+			t.Fatalf("insert operator failed: %v", err)
+		} else {
+			url := "https://example.com/log-example"
+			var streamID int32
+			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+				t.Fatalf("insert stream failed: %v", err)
+			} else if err = insertEntries(ctx, db, streamID, []int64{1, 3, 6, 8}); err != nil {
+				t.Fatalf("insert entries failed: %v", err)
+			} else {
+				logop := &LogOperator{
+					CertStream: cs,
+					operator:   &loglist3.Operator{Name: "op", Email: []string{"op@example.com"}},
+					Domain:     "example.com",
+					streams:    map[string]*LogStream{},
+				}
+				ls := &LogStream{
+					LogOperator: logop,
+					Id:          streamID,
+					log:         &loglist3.Log{URL: url},
+				}
+				ls.gapCh = make(chan gap, 4)
+				logop.streams[url] = ls
+				cs.operators = map[string]*LogOperator{
+					logop.Domain: logop,
+				}
+
+				if err = db.updateBackfillIndex(ctx, ls, 1); err != nil {
+					t.Fatalf("set backfill index failed: %v", err)
+				} else {
+					var wg sync.WaitGroup
+					wg.Add(1)
+					go db.selectStreamGaps(ctx, &wg, ls, nil)
+
+					wg.Wait()
+					close(ls.gapCh)
+					got := collectGaps(ls.gapCh)
+					want := []gap{
+						{start: 2, end: 2},
+						{start: 4, end: 5},
+						{start: 7, end: 7},
+					}
+					if !gapsEqual(got, want) {
+						t.Fatalf("gaps = %v, want %v", got, want)
+					}
 				}
 			}
 		}
@@ -225,7 +265,7 @@ func TestPgDB_SelectStreamGapsOrder(t *testing.T) {
 					}()
 
 					wg.Add(1)
-					go db.selectStreamGaps(ctx, &wg, ls, 4, nil)
+					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					wg.Wait()
 					close(ls.gapCh)
@@ -297,7 +337,7 @@ func TestPgDB_SelectStreamGapsMaxAtStart(t *testing.T) {
 
 					var wg sync.WaitGroup
 					wg.Add(1)
-					go db.selectStreamGaps(ctx, &wg, ls, 4, nil)
+					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					select {
 					case <-firstGapCh:
@@ -365,7 +405,7 @@ func TestPgDB_SelectStreamGapsUsesBackfillIndex(t *testing.T) {
 				} else {
 					var wg sync.WaitGroup
 					wg.Add(1)
-					go db.selectStreamGaps(ctx, &wg, ls, 2, nil)
+					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					wg.Wait()
 					close(ls.gapCh)
@@ -464,23 +504,14 @@ func addGapQuerySleep(t *testing.T, db *PgDB, seconds string) {
 	if db == nil {
 		t.Fatalf("db is nil")
 	} else {
-		seedCTE := db.Pfx("CERTDB_findgap_STREAMID")
-		seedWith := "WITH " + seedCTE
-		if !strings.Contains(db.stmtSelectAllGaps, seedWith) {
-			t.Fatalf("selectAllGaps missing %s", seedWith)
+		findgapFrom := "FROM " + db.Pfx("CERTDB_findgap")
+		if !strings.Contains(db.stmtFindGap, findgapFrom) {
+			t.Fatalf("selectAllGaps missing %s", findgapFrom)
 		} else {
-			db.stmtSelectAllGaps = strings.Replace(db.stmtSelectAllGaps,
-				seedWith,
-				"WITH gap_sleep AS (SELECT pg_sleep("+seconds+")),\n"+seedCTE,
-				1,
-			)
-		}
-		if !strings.Contains(db.stmtSelectAllGaps, "FROM last") {
-			t.Fatalf("selectAllGaps missing FROM last")
-		} else {
-			db.stmtSelectAllGaps = strings.Replace(db.stmtSelectAllGaps,
-				"FROM last",
-				"FROM gap_sleep, last",
+			db.stmtFindGap = "WITH gap_sleep AS (SELECT pg_sleep(" + seconds + "))\n" + db.stmtFindGap
+			db.stmtFindGap = strings.Replace(db.stmtFindGap,
+				findgapFrom,
+				"FROM gap_sleep, "+db.Pfx("CERTDB_findgap"),
 				1,
 			)
 		}
