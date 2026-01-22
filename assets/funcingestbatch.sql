@@ -292,8 +292,6 @@ SELECT DISTINCT cert_id, wild, www, domain, tld
 FROM cert_domains
 $sql$;
 BEGIN
-    PERFORM set_config('synchronous_commit', 'off', true);
-
     debug_enabled = COALESCE(current_setting('certstream.debug', true), '') = 'on';
 
     -- Each unique certificate must be processed only once.

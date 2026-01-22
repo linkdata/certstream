@@ -19,6 +19,7 @@ type Config struct {
 	PgWorkerBits          int                 // number of prefix bits that determine DB workers, default 5 (32 workers)
 	PgMaxAge              int                 // maximum age in days to backfill
 	PgNoSSL               bool                // if true, do not use SSL
+	PgSyncCommit          bool                // if true, do not set synchronous_commit=off
 	GetEntriesParallelism int                 // number of concurrent GetRawEntries requests per range, default 8
 	TailLog               string              // log HTTP requests using the tail dialer to this file
 }
