@@ -42,9 +42,11 @@ func TestTailLogTransportLogsResponse(t *testing.T) {
 	}
 	transport := newTailLogTransport(&staticTransport{
 		resp: &http.Response{
-			StatusCode: http.StatusAccepted,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("ok")),
+			StatusCode:    http.StatusAccepted,
+			Status:        "202 Accepted",
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader("ok")),
+			ContentLength: 2,
 		},
 	}, file)
 	if transport == nil {
@@ -61,7 +63,7 @@ func TestTailLogTransportLogsResponse(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	line := string(data)
-	if !strings.Contains(line, "GET example.test/test/path?foo=bar&baz=qux 202") {
+	if !strings.Contains(line, "GET https://example.test/test/path?foo=bar&baz=qux (0) => \"202 Accepted\" (2)") {
 		t.Fatalf("log line missing fields: %q", line)
 	}
 }
@@ -96,7 +98,7 @@ func TestTailLogTransportLogsError(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	line := string(data)
-	if !strings.Contains(line, "POST example.test/error/path?bad=yes error: synthetic failure") {
+	if !strings.Contains(line, "POST https://example.test/error/path?bad=yes (0) => \"000 missing response; synthetic failure\" (-1)") {
 		t.Fatalf("log line missing fields: %q", line)
 	}
 }

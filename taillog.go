@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -51,28 +50,37 @@ func (tlt *tailLogTransport) RoundTrip(req *http.Request) (resp *http.Response, 
 
 func (tlt *tailLogTransport) logRequest(req *http.Request, resp *http.Response, err error) {
 	if tlt != nil && tlt.writer != nil {
-		host := ""
-		method := ""
-		uri := ""
+		var scheme, host, method, uri, result string
+		reqcl := int64(-1)
+		respcl := int64(-1)
 		if req != nil {
+			reqcl = req.ContentLength
 			host = req.Host
 			method = req.Method
 			if req.URL != nil {
+				scheme = req.URL.Scheme
 				uri = req.URL.Path
 				if raw := req.URL.RawQuery; raw != "" {
 					uri += "?" + raw
 				}
 			}
+			if resp != nil {
+				if result = resp.Status; result == "" {
+					result = fmt.Sprintf("%03d", resp.StatusCode)
+				}
+				respcl = resp.ContentLength
+			} else {
+				result = "000 missing response"
+			}
+		} else {
+			result = "000 missing request"
 		}
-		result := "error: missing response"
 		if err != nil {
-			result = "error: " + err.Error()
-		}
-		if err == nil && resp != nil {
-			result = strconv.Itoa(resp.StatusCode)
+			result += "; " + err.Error()
 		}
 		tlt.mu.Lock()
-		_, _ = fmt.Fprintf(tlt.writer, "%s %s %s%s %s\n", time.Now().UTC().Format(time.RFC3339), method, host, uri, result)
+		_, _ = fmt.Fprintf(tlt.writer, "%s %s %s://%s%s (%d) => %q (%d)\n",
+			time.Now().UTC().Format(time.RFC3339), method, scheme, host, uri, reqcl, result, respcl)
 		tlt.mu.Unlock()
 	}
 }
