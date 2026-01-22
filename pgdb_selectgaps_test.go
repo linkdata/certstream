@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	pgImage = "postgres:16-alpine"
+	pgImage = "postgres:18-alpine"
 	pgUser  = "cert"
 	pgPass  = "secretpass"
 	pgDB    = "certstream"

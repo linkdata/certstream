@@ -1,6 +1,17 @@
 DO $outer$
 BEGIN
 
+-- We require PostgreSQL 18 or later!
+
+CREATE OR REPLACE FUNCTION CERTDB_reverse_labels(d text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT array_to_string(array_reverse(string_to_array(d, '.')), '.');
+$$;
+
 IF to_regclass('CERTDB_operator') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_operator (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -72,6 +83,7 @@ IF to_regclass('CERTDB_domain') IS NULL THEN
   );
   CREATE INDEX IF NOT EXISTS CERTDB_domain_cert_idx ON CERTDB_domain (cert);
   CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_idx ON CERTDB_domain USING gin (domain gin_trgm_ops) WITH (fastupdate = off);
+  CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_rev_idx ON CERTDB_domain (CERTDB_reverse_labels(domain));
 END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN
