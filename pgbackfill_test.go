@@ -100,8 +100,8 @@ func TestPgDB_BackfillGapsUpdatesBackfillIndex(t *testing.T) {
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
-				} else if backfillIndex != g.start {
-					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, g.start)
+				} else if backfillIndex != g.end+1 {
+					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, g.end+1)
 				}
 			}
 		}

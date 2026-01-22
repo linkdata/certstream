@@ -48,7 +48,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 					cdb.LogInfo(label, "url", ls.URL(), "stream", ls.Id, "logindex", g.start, "length", (g.end-g.start)+1)
 					fetchFn(ctx, g.start, g.end, true, ls.sendEntry, &ls.Backfill)
 					if ctx.Err() == nil {
-						_ = cdb.updateBackfillIndex(ctx, ls, g.start)
+						_ = cdb.updateBackfillIndex(ctx, ls, g.end+1)
 					}
 				}
 			}
