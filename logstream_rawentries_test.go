@@ -30,7 +30,7 @@ func (f *fakeRawEntriesClient) GetRawEntries(ctx context.Context, start, end int
 	return &ct.GetEntriesResponse{Entries: entries}, nil
 }
 
-func TestGetRawEntriesRangeReturnsLastConsecutive(t *testing.T) {
+func TestGetRawEntriesRangeReturnsNextIndex(t *testing.T) {
 	cs := &CertStream{}
 	lo := &LogOperator{CertStream: cs}
 	ls := &LogStream{LogOperator: lo}
@@ -42,7 +42,7 @@ func TestGetRawEntriesRangeReturnsLastConsecutive(t *testing.T) {
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
-	if next != 11 {
-		t.Fatalf("next = %d, want 11", next)
+	if next != 12 {
+		t.Fatalf("next = %d, want 12", next)
 	}
 }

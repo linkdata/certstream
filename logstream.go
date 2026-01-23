@@ -422,20 +422,20 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 				resp, err = client.GetRawEntries(ctx, start, stopIndex)
 				return err
 			})
-			if err == nil {
-				now := time.Now()
-				for i := range resp.Entries {
-					le := ls.makeLogEntry(start, resp.Entries[i], historical)
-					ls.seeIndex(start)
-					if handleFn(ctx, now, le) {
-						wanted = true
+				if err == nil {
+					now := time.Now()
+					for i := range resp.Entries {
+						le := ls.makeLogEntry(start, resp.Entries[i], historical)
+						ls.seeIndex(start)
+						if handleFn(ctx, now, le) {
+							wanted = true
+						}
+						start++
+						next = start
+						if gapcounter != nil {
+							gapcounter.Add(-1)
+						}
 					}
-					next = start
-					start++
-					if gapcounter != nil {
-						gapcounter.Add(-1)
-					}
-				}
 				if historical && !wanted {
 					stop = true
 				}
@@ -511,7 +511,7 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 											wanted = true
 										}
 										lastIndex = i
-										next = i
+										next = i + 1
 										if gapcounter != nil {
 											gapcounter.Add(-1)
 										}
