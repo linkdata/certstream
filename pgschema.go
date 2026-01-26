@@ -11,6 +11,9 @@ var FunctionOperatorID string
 //go:embed assets/funcstreamid.sql
 var FunctionStreamID string
 
+//go:embed assets/funcsubdomain.sql
+var FuncSubdomain string
+
 //go:embed assets/funcingestbatch.sql
 var FuncIngestBatch string
 
