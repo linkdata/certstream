@@ -463,6 +463,36 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 			}
 		}
 	}
+	applyEntries := func(entries []ct.LeafEntry, requested int64, err error) (short bool, ok bool) {
+		if err == nil {
+			if len(entries) > 0 {
+				processEntries(entries)
+			}
+			if int64(len(entries)) < requested {
+				short = true
+			}
+			if historical && !wanted {
+				stop = true
+			}
+			ok = true
+		} else {
+			if gapcounter != nil && ctx.Err() == nil {
+				_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+				gapcounter.Add(start - (end + 1))
+			}
+			stop = true
+		}
+		return
+	}
+	type rawEntriesRange struct {
+		start int64
+		end   int64
+	}
+	type rawEntriesResult struct {
+		rng     rawEntriesRange
+		entries []ct.LeafEntry
+		err     error
+	}
 	for start <= end && !stop {
 		if ctx.Err() == nil {
 			rangeStop := false
@@ -470,48 +500,15 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 			if requested > 0 {
 				rangeEnd := start + requested - 1
 				entries, err := ls.getRawEntriesSubRange(ctx, client, start, rangeEnd, historical)
-				received := len(entries)
-				if err == nil {
-					if received > 0 {
-						processEntries(entries)
-					}
-					if received < int(requested) {
-						rangeStop = true
-					}
-					if historical && !wanted {
-						stop = true
-					}
-				} else {
-					if gapcounter != nil && ctx.Err() == nil {
-						_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
-						gapcounter.Add(start - (end + 1))
-					}
-					stop = true
+				short, ok := applyEntries(entries, requested, err)
+				if ok && short {
+					rangeStop = true
 				}
 				if err == nil && !stop && !rangeStop {
 					entriesRemaining := end - start + 1
 					if entriesRemaining > 0 {
-						chunkSize := int64(received)
-						if chunkSize > 32 {
-							chunkSize = 32
-						}
-						if chunkSize < 1 {
-							chunkSize = 1
-						}
-						parallel := int(min(entriesRemaining, LogBatchSize) / chunkSize)
-						if parallel < 1 {
-							parallel = 1
-						}
-						type rawEntriesRange struct {
-							start int64
-							end   int64
-						}
-						type rawEntriesResult struct {
-							rng     rawEntriesRange
-							entries []ct.LeafEntry
-							short   bool
-							err     error
-						}
+						chunkSize := max(1, min(32, int64(len(entries))))
+						parallel := max(1, int(min(entriesRemaining, LogBatchSize)/chunkSize))
 						ranges := make([]rawEntriesRange, 0, parallel)
 						rangeStart := start
 						for i := 0; i < parallel && rangeStart <= end; i++ {
@@ -529,7 +526,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 							go func(idx int, r rawEntriesRange) {
 								defer wg.Done()
 								entries, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
-								results[idx] = rawEntriesResult{rng: r, entries: entries, short: err != nil, err: err}
+								results[idx] = rawEntriesResult{rng: r, entries: entries, err: err}
 							}(i, rng)
 						}
 						wg.Wait()
@@ -538,23 +535,9 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 							for i := range results {
 								if !stop && !processStop {
 									result := results[i]
-									if result.err == nil {
-										requested := int(result.rng.end - result.rng.start + 1)
-										if len(result.entries) > 0 {
-											processEntries(result.entries)
-										}
-										if result.short || len(result.entries) < requested {
-											processStop = true
-										}
-										if historical && !wanted {
-											stop = true
-										}
-									} else {
-										if gapcounter != nil && ctx.Err() == nil {
-											_ = ls.LogError(result.err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
-											gapcounter.Add(start - (end + 1))
-										}
-										stop = true
+									requested := result.rng.end - result.rng.start + 1
+									short, ok := applyEntries(result.entries, requested, result.err)
+									if !ok || short {
 										processStop = true
 									}
 								}
@@ -566,20 +549,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 							remaining := end - start + 1
 							if remaining > 0 && remaining < chunkSize {
 								tailEntries, tailErr := ls.getRawEntriesSubRange(ctx, client, start, end, historical)
-								if tailErr == nil {
-									if len(tailEntries) > 0 {
-										processEntries(tailEntries)
-									}
-									if historical && !wanted {
-										stop = true
-									}
-								} else {
-									if gapcounter != nil && ctx.Err() == nil {
-										_ = ls.LogError(tailErr, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
-										gapcounter.Add(start - (end + 1))
-									}
-									stop = true
-								}
+								_, _ = applyEntries(tailEntries, remaining, tailErr)
 							}
 						}
 					}
