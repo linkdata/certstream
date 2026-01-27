@@ -155,8 +155,8 @@ func TestGetRawEntriesRangeAdjustsParallelOnShortResponse(t *testing.T) {
 		return true
 	}
 	_, _ = ls.getRawEntriesRange(context.Background(), client, 0, 7, false, handleFn, nil)
-	if ls.getParallel() != 4 {
-		t.Fatalf("parallel = %d, want 4", ls.getParallel())
+	if ls.GetParallel() != 4 {
+		t.Fatalf("parallel = %d, want 4", ls.GetParallel())
 	}
 }
 

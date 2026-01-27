@@ -108,7 +108,7 @@ func (ls *LogStream) getGapCh() (ch chan gap) {
 	return
 }
 
-func (ls *LogStream) getParallel() (parallel int) {
+func (ls *LogStream) GetParallel() (parallel int) {
 	if ls != nil {
 		ls.parallelMu.Lock()
 		parallel = ls.parallel
@@ -440,7 +440,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 		if ctx.Err() == nil {
 			stopIndex := start + min(LogBatchSize, end-start)
 			remaining := stopIndex - start + 1
-			parallel := ls.getParallel()
+			parallel := ls.GetParallel()
 			if parallel > int(remaining) {
 				parallel = int(remaining)
 			}
