@@ -24,7 +24,7 @@ import (
 
 var DbIngestBatchSize = 1000   // number of entries to send to ingest at a time
 var HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
-var LogBatchSize = int64(1000)
+var LogBatchSize = int64(1024)
 var MaxErrors = 100
 var IdleCloseTime = time.Hour * 24 * 7
 
