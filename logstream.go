@@ -122,14 +122,8 @@ func (ls *LogStream) getParallel() (parallel int) {
 
 func (ls *LogStream) setParallel(parallel int) {
 	if ls != nil {
-		if parallel < 1 {
-			parallel = 1
-		}
-		if parallel > 16 {
-			parallel = 16
-		}
 		ls.parallelMu.Lock()
-		ls.parallel = parallel
+		ls.parallel = max(1, min(16, max(ls.parallel, parallel)))
 		ls.parallelMu.Unlock()
 	}
 }
