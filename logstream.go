@@ -149,15 +149,7 @@ func sleep(ctx context.Context, d time.Duration) {
 func rawEntriesStopIndex(start, end int64) (stop int64) {
 	stop = start
 	if start <= end {
-		size := LogBatchSize
-		if size < 1 {
-			size = 1
-		}
-		remaining := end - start + 1
-		if remaining < size {
-			size = remaining
-		}
-		stop = start + size - 1
+		stop = start + min(end-start+1, LogBatchSize) - 1
 	}
 	return
 }
@@ -461,17 +453,14 @@ func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntrie
 				Jitter: true,
 			}
 			var resp *ct.GetEntriesResponse
-			err = bo.Retry(ctx, func() error {
+			err = bo.Retry(ctx, func() (e error) {
 				ls.adjustTailLimiter(historical)
-				var reqErr error
-				resp, reqErr = client.GetRawEntries(ctx, start, stopIndex)
-				if reqErr == nil {
-					return nil
+				if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
+					if !ls.handleStreamError(e, "GetRawEntries") {
+						e = backoff.RetriableError(e.Error())
+					}
 				}
-				if ls.handleStreamError(reqErr, "GetRawEntries") {
-					return reqErr
-				}
-				return backoff.RetriableError(reqErr.Error())
+				return
 			})
 			if err == nil {
 				requested := int(stopIndex - start + 1)
