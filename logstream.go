@@ -110,26 +110,6 @@ func (ls *LogStream) getGapCh() (ch chan gap) {
 	return
 }
 
-func (ls *LogStream) GetParallel() (parallel int) {
-	if ls != nil {
-		ls.parallelMu.Lock()
-		parallel = ls.parallel
-		ls.parallelMu.Unlock()
-	}
-	if parallel < 1 {
-		parallel = 1
-	}
-	return
-}
-
-func (ls *LogStream) setParallel(parallel int) {
-	if ls != nil {
-		ls.parallelMu.Lock()
-		ls.parallel = max(1, min(16, max(ls.parallel, parallel)))
-		ls.parallelMu.Unlock()
-	}
-}
-
 func sleep(ctx context.Context, d time.Duration) {
 	tmr := time.NewTimer(d)
 	defer tmr.Stop()
@@ -468,89 +448,139 @@ func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntrie
 func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	next = start
 	stop := false
+	processEntries := func(entries []ct.LeafEntry) {
+		now := time.Now()
+		for i := range entries {
+			le := ls.makeLogEntry(start, entries[i], historical)
+			ls.seeIndex(start)
+			if handleFn(ctx, now, le) {
+				wanted = true
+			}
+			start++
+			next = start
+			if gapcounter != nil {
+				gapcounter.Add(-1)
+			}
+		}
+	}
 	for start <= end && !stop {
 		if ctx.Err() == nil {
-			stopIndex := rawEntriesStopIndex(start, end)
-			remaining := stopIndex - start + 1
-			parallel := ls.GetParallel()
-			if parallel > int(remaining) {
-				parallel = int(remaining)
-			}
-			if parallel < 1 {
-				parallel = 1
-			}
-			chunkSize := remaining / int64(parallel)
-			if remaining%int64(parallel) != 0 {
-				chunkSize++
-			}
-			if chunkSize < 1 {
-				chunkSize = 1
-			}
-			type rawEntriesRange struct {
-				start int64
-				end   int64
-			}
-			type rawEntriesResult struct {
-				rng     rawEntriesRange
-				entries []ct.LeafEntry
-				short   bool
-				err     error
-			}
-			var ranges []rawEntriesRange
-			rangeStart := start
-			for rangeStart <= stopIndex {
-				rangeEnd := rangeStart + chunkSize - 1
-				if rangeEnd > stopIndex {
-					rangeEnd = stopIndex
+			rangeStop := false
+			requested := min(end-start+1, LogBatchSize)
+			if requested > 0 {
+				rangeEnd := start + requested - 1
+				entries, err := ls.getRawEntriesSubRange(ctx, client, start, rangeEnd, historical)
+				received := len(entries)
+				if err == nil {
+					if received > 0 {
+						processEntries(entries)
+					}
+					if received < int(requested) {
+						rangeStop = true
+					}
+					if historical && !wanted {
+						stop = true
+					}
+				} else {
+					if gapcounter != nil && ctx.Err() == nil {
+						_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+						gapcounter.Add(start - (end + 1))
+					}
+					stop = true
 				}
-				ranges = append(ranges, rawEntriesRange{start: rangeStart, end: rangeEnd})
-				rangeStart = rangeEnd + 1
-			}
-			results := make([]rawEntriesResult, len(ranges))
-			var wg sync.WaitGroup
-			for i, rng := range ranges {
-				wg.Add(1)
-				go func(idx int, r rawEntriesRange) {
-					defer wg.Done()
-					entries, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
-					results[idx] = rawEntriesResult{rng: r, entries: entries, short: err != nil, err: err}
-				}(i, rng)
-			}
-			wg.Wait()
-			processStop := false
-			if ctx.Err() == nil {
-				for i := range results {
-					if !stop && !processStop {
-						result := results[i]
-						if result.err == nil {
-							requested := int(result.rng.end - result.rng.start + 1)
-							received := len(result.entries)
-							now := time.Now()
-							for i := range result.entries {
-								le := ls.makeLogEntry(start, result.entries[i], historical)
-								ls.seeIndex(start)
-								if handleFn(ctx, now, le) {
-									wanted = true
-								}
-								start++
-								next = start
-								if gapcounter != nil {
-									gapcounter.Add(-1)
-								}
+				if err == nil && !stop && !rangeStop {
+					entriesRemaining := end - start + 1
+					if entriesRemaining > 0 {
+						chunkSize := int64(received)
+						if chunkSize > 32 {
+							chunkSize = 32
+						}
+						if chunkSize < 1 {
+							chunkSize = 1
+						}
+						parallel := int(min(entriesRemaining, LogBatchSize) / chunkSize)
+						if parallel < 1 {
+							parallel = 1
+						}
+						type rawEntriesRange struct {
+							start int64
+							end   int64
+						}
+						type rawEntriesResult struct {
+							rng     rawEntriesRange
+							entries []ct.LeafEntry
+							short   bool
+							err     error
+						}
+						ranges := make([]rawEntriesRange, 0, parallel)
+						rangeStart := start
+						for i := 0; i < parallel && rangeStart <= end; i++ {
+							rangeEnd := rangeStart + chunkSize - 1
+							if rangeEnd > end {
+								rangeEnd = end
 							}
-							if result.short || received < requested {
-								processStop = true
-							}
-							if historical && !wanted {
-								stop = true
+							ranges = append(ranges, rawEntriesRange{start: rangeStart, end: rangeEnd})
+							rangeStart = rangeEnd + 1
+						}
+						results := make([]rawEntriesResult, len(ranges))
+						var wg sync.WaitGroup
+						for i, rng := range ranges {
+							wg.Add(1)
+							go func(idx int, r rawEntriesRange) {
+								defer wg.Done()
+								entries, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
+								results[idx] = rawEntriesResult{rng: r, entries: entries, short: err != nil, err: err}
+							}(i, rng)
+						}
+						wg.Wait()
+						processStop := false
+						if ctx.Err() == nil {
+							for i := range results {
+								if !stop && !processStop {
+									result := results[i]
+									if result.err == nil {
+										requested := int(result.rng.end - result.rng.start + 1)
+										if len(result.entries) > 0 {
+											processEntries(result.entries)
+										}
+										if result.short || len(result.entries) < requested {
+											processStop = true
+										}
+										if historical && !wanted {
+											stop = true
+										}
+									} else {
+										if gapcounter != nil && ctx.Err() == nil {
+											_ = ls.LogError(result.err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+											gapcounter.Add(start - (end + 1))
+										}
+										stop = true
+										processStop = true
+									}
+								}
 							}
 						} else {
-							if gapcounter != nil && ctx.Err() == nil {
-								_ = ls.LogError(result.err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
-								gapcounter.Add(start - (end + 1))
-							}
 							stop = true
-							processStop = true
+						}
+						if !stop && !processStop && ctx.Err() == nil {
+							remaining := end - start + 1
+							if remaining > 0 && remaining < chunkSize {
+								tailEntries, tailErr := ls.getRawEntriesSubRange(ctx, client, start, end, historical)
+								if tailErr == nil {
+									if len(tailEntries) > 0 {
+										processEntries(tailEntries)
+									}
+									if historical && !wanted {
+										stop = true
+									}
+								} else {
+									if gapcounter != nil && ctx.Err() == nil {
+										_ = ls.LogError(tailErr, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+										gapcounter.Add(start - (end + 1))
+									}
+									stop = true
+								}
+							}
 						}
 					}
 				}

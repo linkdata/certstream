@@ -84,23 +84,34 @@ func (r *recordingRawEntriesClient) Calls() []rawEntriesCall {
 	return calls
 }
 
-type blockingRawEntriesClient struct {
+type phaseBlockingRawEntriesClient struct {
+	mu      sync.Mutex
+	calls   int
 	started chan struct{}
 	release chan struct{}
 	limit   int
 }
 
-func (b *blockingRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
-	select {
-	case b.started <- struct{}{}:
-	default:
-	case <-ctx.Done():
+func (b *phaseBlockingRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	select {
-	case <-b.release:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	b.mu.Lock()
+	b.calls++
+	call := b.calls
+	b.mu.Unlock()
+	if call > 1 {
+		select {
+		case b.started <- struct{}{}:
+		default:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	count := b.limit
 	remaining := int(end - start + 1)
@@ -225,39 +236,50 @@ func TestGetRawEntriesRangeReturnsNextIndex(t *testing.T) {
 
 func TestGetRawEntriesRangeSplitsRangeWithParallel(t *testing.T) {
 	ls := newTestLogStream()
-	ls.setParallel(2)
-	client := &recordingRawEntriesClient{limit: 10}
+	client := &recordingRawEntriesClient{limit: 1000}
+	originalBatch := LogBatchSize
+	LogBatchSize = 64
+	defer func() {
+		LogBatchSize = originalBatch
+	}()
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
-	next, wanted := ls.getRawEntriesRange(t.Context(), client, 0, 3, false, handleFn, nil)
+	next, wanted := ls.getRawEntriesRange(t.Context(), client, 0, 127, false, handleFn, nil)
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
-	if next != 4 {
-		t.Fatalf("next = %d, want 4", next)
+	if next != 128 {
+		t.Fatalf("next = %d, want 128", next)
 	}
 	calls := client.Calls()
-	if len(calls) != 2 {
-		t.Fatalf("calls = %d, want 2", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(calls))
 	}
 	sort.Slice(calls, func(i, j int) bool {
 		return calls[i].start < calls[j].start
 	})
-	if calls[0].start != 0 || calls[0].end != 1 {
-		t.Fatalf("calls[0] = %d..%d, want 0..1", calls[0].start, calls[0].end)
+	if calls[0].start != 0 || calls[0].end != 63 {
+		t.Fatalf("calls[0] = %d..%d, want 0..63", calls[0].start, calls[0].end)
 	}
-	if calls[1].start != 2 || calls[1].end != 3 {
-		t.Fatalf("calls[1] = %d..%d, want 2..3", calls[1].start, calls[1].end)
+	if calls[1].start != 64 || calls[1].end != 95 {
+		t.Fatalf("calls[1] = %d..%d, want 64..95", calls[1].start, calls[1].end)
+	}
+	if calls[2].start != 96 || calls[2].end != 127 {
+		t.Fatalf("calls[2] = %d..%d, want 96..127", calls[2].start, calls[2].end)
 	}
 }
 
 func TestGetRawEntriesRangeFetchesSubRangesInParallel(t *testing.T) {
 	ls := newTestLogStream()
-	ls.setParallel(2)
+	originalBatch := LogBatchSize
+	LogBatchSize = 64
+	defer func() {
+		LogBatchSize = originalBatch
+	}()
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
-	client := &blockingRawEntriesClient{started: started, release: release, limit: 2}
+	client := &phaseBlockingRawEntriesClient{started: started, release: release, limit: 1000}
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
@@ -265,7 +287,7 @@ func TestGetRawEntriesRangeFetchesSubRangesInParallel(t *testing.T) {
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		_, _ = ls.getRawEntriesRange(ctx, client, 0, 3, false, handleFn, nil)
+		_, _ = ls.getRawEntriesRange(ctx, client, 0, 127, false, handleFn, nil)
 		close(done)
 	}()
 	<-started
