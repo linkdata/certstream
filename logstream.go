@@ -125,6 +125,9 @@ func (ls *LogStream) setParallel(parallel int) {
 		if parallel < 1 {
 			parallel = 1
 		}
+		if parallel > 16 {
+			parallel = 16
+		}
 		ls.parallelMu.Lock()
 		ls.parallel = parallel
 		ls.parallelMu.Unlock()
@@ -134,11 +137,7 @@ func (ls *LogStream) setParallel(parallel int) {
 func (ls *LogStream) adjustParallel(requested, received int) {
 	if requested > 0 && received > 1 {
 		if received*2 < requested {
-			parallel := requested / received
-			if parallel > 16 {
-				parallel = 16
-			}
-			ls.setParallel(parallel)
+			ls.setParallel(requested / received)
 		}
 	}
 }
