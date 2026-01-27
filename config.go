@@ -39,6 +39,6 @@ func NewConfig() *Config {
 		PgConns:          100,
 		PgWorkerBits:     5,
 		PgMaxAge:         90,
-		ConcurrencyLimit: 0,
+		ConcurrencyLimit: 16,
 	}
 }
