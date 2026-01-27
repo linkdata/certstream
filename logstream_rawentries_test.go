@@ -2,7 +2,7 @@ package certstream
 
 import (
 	"context"
-	"errors"
+	"os"
 	"sort"
 	"sync"
 	"testing"
@@ -17,8 +17,11 @@ type fakeRawEntriesClient struct {
 }
 
 func (f *fakeRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if start >= f.errAtStart {
-		return nil, errors.New("boom")
+		return nil, os.ErrInvalid
 	}
 	count := f.limit
 	remaining := int(end - start + 1)
@@ -44,6 +47,9 @@ type recordingRawEntriesClient struct {
 }
 
 func (r *recordingRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	r.mu.Lock()
 	r.calls = append(r.calls, rawEntriesCall{start: start, end: end})
 	r.mu.Unlock()
@@ -97,6 +103,65 @@ func (b *blockingRawEntriesClient) GetRawEntries(ctx context.Context, start, end
 	return &ct.GetEntriesResponse{Entries: entries}, nil
 }
 
+func TestGetRawEntriesSubRangeChunksInOrder(t *testing.T) {
+	cs := &CertStream{}
+	lo := &LogOperator{CertStream: cs}
+	ls := &LogStream{LogOperator: lo}
+	client := &recordingRawEntriesClient{limit: 10}
+	originalBatch := LogBatchSize
+	LogBatchSize = 2
+	defer func() {
+		LogBatchSize = originalBatch
+	}()
+	entries, short, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 4, false)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if short {
+		t.Fatal("short = true, want false")
+	}
+	if len(entries) != 5 {
+		t.Fatalf("entries = %d, want 5", len(entries))
+	}
+	calls := client.Calls()
+	if len(calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(calls))
+	}
+	if calls[0].start != 0 || calls[0].end != 1 {
+		t.Fatalf("calls[0] = %d..%d, want 0..1", calls[0].start, calls[0].end)
+	}
+	if calls[1].start != 2 || calls[1].end != 3 {
+		t.Fatalf("calls[1] = %d..%d, want 2..3", calls[1].start, calls[1].end)
+	}
+	if calls[2].start != 4 || calls[2].end != 4 {
+		t.Fatalf("calls[2] = %d..%d, want 4..4", calls[2].start, calls[2].end)
+	}
+}
+
+func TestGetRawEntriesSubRangeShortResponseStops(t *testing.T) {
+	cs := &CertStream{}
+	lo := &LogOperator{CertStream: cs}
+	ls := &LogStream{LogOperator: lo}
+	client := &recordingRawEntriesClient{limit: 2}
+	entries, short, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 3, false)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if !short {
+		t.Fatal("short = false, want true")
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	calls := client.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	if calls[0].start != 0 || calls[0].end != 3 {
+		t.Fatalf("calls[0] = %d..%d, want 0..3", calls[0].start, calls[0].end)
+	}
+}
+
 func TestGetRawEntriesRangeReturnsNextIndex(t *testing.T) {
 	cs := &CertStream{}
 	lo := &LogOperator{CertStream: cs}
@@ -105,7 +170,7 @@ func TestGetRawEntriesRangeReturnsNextIndex(t *testing.T) {
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
-	next, wanted := ls.getRawEntriesRange(context.Background(), client, 10, 12, false, handleFn, nil)
+	next, wanted := ls.getRawEntriesRange(t.Context(), client, 10, 12, false, handleFn, nil)
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
@@ -123,7 +188,7 @@ func TestGetRawEntriesRangeSplitsRangeWithParallel(t *testing.T) {
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
-	next, wanted := ls.getRawEntriesRange(context.Background(), client, 0, 3, false, handleFn, nil)
+	next, wanted := ls.getRawEntriesRange(t.Context(), client, 0, 3, false, handleFn, nil)
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
@@ -154,7 +219,7 @@ func TestGetRawEntriesRangeAdjustsParallelOnShortResponse(t *testing.T) {
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
-	_, _ = ls.getRawEntriesRange(context.Background(), client, 0, 7, false, handleFn, nil)
+	_, _ = ls.getRawEntriesRange(t.Context(), client, 0, 7, false, handleFn, nil)
 	if ls.GetParallel() != 4 {
 		t.Fatalf("parallel = %d, want 4", ls.GetParallel())
 	}

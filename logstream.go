@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -143,6 +144,22 @@ func sleep(ctx context.Context, d time.Duration) {
 	case <-tmr.C:
 	case <-ctx.Done():
 	}
+}
+
+func rawEntriesStopIndex(start, end int64) (stop int64) {
+	stop = start
+	if start <= end {
+		size := LogBatchSize
+		if size < 1 {
+			size = 1
+		}
+		remaining := end - start + 1
+		if remaining < size {
+			size = remaining
+		}
+		stop = start + size - 1
+	}
+	return
 }
 
 func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time) {
@@ -372,7 +389,7 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 
 func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	errTxt := err.Error()
-	if errors.Is(err, context.Canceled) || strings.Contains(errTxt, "context canceled") {
+	if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrInvalid) || strings.Contains(errTxt, "context canceled") {
 		fatal = true
 	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
 		fatal = false
@@ -433,12 +450,59 @@ func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, histor
 	return
 }
 
+func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool) (entries []ct.LeafEntry, short bool, err error) {
+	if start <= end {
+		for start <= end && err == nil && !short && ctx.Err() == nil {
+			stopIndex := rawEntriesStopIndex(start, end)
+			bo := &backoff.Backoff{
+				Min:    1 * time.Second,
+				Max:    30 * time.Second,
+				Factor: 2,
+				Jitter: true,
+			}
+			var resp *ct.GetEntriesResponse
+			err = bo.Retry(ctx, func() error {
+				ls.adjustTailLimiter(historical)
+				var reqErr error
+				resp, reqErr = client.GetRawEntries(ctx, start, stopIndex)
+				if reqErr == nil {
+					return nil
+				}
+				if ls.handleStreamError(reqErr, "GetRawEntries") {
+					return reqErr
+				}
+				return backoff.RetriableError(reqErr.Error())
+			})
+			if err == nil {
+				requested := int(stopIndex - start + 1)
+				received := 0
+				if resp != nil {
+					received = len(resp.Entries)
+					if received > 0 {
+						entries = append(entries, resp.Entries...)
+					}
+				}
+				ls.adjustParallel(requested, received)
+				if received < requested {
+					short = true
+				} else {
+					start = stopIndex + 1
+				}
+			}
+		}
+		if err == nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}
+	return
+}
+
 func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	next = start
 	stop := false
 	for start <= end && !stop {
 		if ctx.Err() == nil {
-			stopIndex := start + min(LogBatchSize, end-start)
+			stopIndex := rawEntriesStopIndex(start, end)
 			remaining := stopIndex - start + 1
 			parallel := ls.GetParallel()
 			if parallel > int(remaining) {
@@ -459,9 +523,10 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 				end   int64
 			}
 			type rawEntriesResult struct {
-				rng  rawEntriesRange
-				resp *ct.GetEntriesResponse
-				err  error
+				rng     rawEntriesRange
+				entries []ct.LeafEntry
+				short   bool
+				err     error
 			}
 			var ranges []rawEntriesRange
 			rangeStart := start
@@ -479,24 +544,8 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 				wg.Add(1)
 				go func(idx int, r rawEntriesRange) {
 					defer wg.Done()
-					if ctx.Err() == nil {
-						bo := &backoff.Backoff{
-							Min:    1 * time.Second,
-							Max:    30 * time.Second,
-							Factor: 2,
-							Jitter: true,
-						}
-						var resp *ct.GetEntriesResponse
-						err := bo.Retry(ctx, func() error {
-							ls.adjustTailLimiter(historical)
-							var err error
-							resp, err = client.GetRawEntries(ctx, r.start, r.end)
-							return err
-						})
-						results[idx] = rawEntriesResult{rng: r, resp: resp, err: err}
-					} else {
-						results[idx] = rawEntriesResult{rng: r, err: ctx.Err()}
-					}
+					entries, short, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
+					results[idx] = rawEntriesResult{rng: r, entries: entries, short: short, err: err}
 				}(i, rng)
 			}
 			wg.Wait()
@@ -507,11 +556,10 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 						result := results[i]
 						if result.err == nil {
 							requested := int(result.rng.end - result.rng.start + 1)
-							received := len(result.resp.Entries)
-							ls.adjustParallel(requested, received)
+							received := len(result.entries)
 							now := time.Now()
-							for i := range result.resp.Entries {
-								le := ls.makeLogEntry(start, result.resp.Entries[i], historical)
+							for i := range result.entries {
+								le := ls.makeLogEntry(start, result.entries[i], historical)
 								ls.seeIndex(start)
 								if handleFn(ctx, now, le) {
 									wanted = true
@@ -522,13 +570,13 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 									gapcounter.Add(-1)
 								}
 							}
-							if received < requested {
+							if result.short || received < requested {
 								processStop = true
 							}
 							if historical && !wanted {
 								stop = true
 							}
-						} else if ls.handleStreamError(result.err, "GetRawEntries") {
+						} else {
 							if gapcounter != nil && ctx.Err() == nil {
 								_ = ls.LogError(result.err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
 								gapcounter.Add(start - (end + 1))
