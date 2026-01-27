@@ -545,7 +545,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 						}
 						if !stop && !processStop && ctx.Err() == nil {
 							remaining := end - start + 1
-							if remaining > 0 && remaining < chunkSize {
+							if remaining > 0 {
 								tailEntries, tailErr := ls.getRawEntriesSubRange(ctx, client, start, end, historical)
 								_, _ = applyEntries(tailEntries, remaining, tailErr)
 							}
