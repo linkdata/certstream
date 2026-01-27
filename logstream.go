@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -126,14 +127,6 @@ func (ls *LogStream) setParallel(parallel int) {
 		ls.parallelMu.Lock()
 		ls.parallel = max(1, min(16, max(ls.parallel, parallel)))
 		ls.parallelMu.Unlock()
-	}
-}
-
-func (ls *LogStream) adjustParallel(requested, received int) {
-	if requested > 0 && received > 1 {
-		if received*2 < requested {
-			ls.setParallel(requested / received)
-		}
 	}
 }
 
@@ -381,7 +374,7 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 
 func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	errTxt := err.Error()
-	if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrInvalid) || strings.Contains(errTxt, "context canceled") {
+	if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrInvalid) || errors.Is(err, io.ErrNoProgress) || strings.Contains(errTxt, "context canceled") {
 		fatal = true
 	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
 		fatal = false
@@ -442,45 +435,31 @@ func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, histor
 	return
 }
 
-func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool) (entries []ct.LeafEntry, short bool, err error) {
-	if start <= end {
-		for start <= end && err == nil && !short && ctx.Err() == nil {
-			stopIndex := rawEntriesStopIndex(start, end)
-			bo := &backoff.Backoff{
-				Min:    1 * time.Second,
-				Max:    30 * time.Second,
-				Factor: 2,
-				Jitter: true,
-			}
-			var resp *ct.GetEntriesResponse
-			err = bo.Retry(ctx, func() (e error) {
-				ls.adjustTailLimiter(historical)
-				if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
-					if !ls.handleStreamError(e, "GetRawEntries") {
-						e = backoff.RetriableError(e.Error())
-					}
-				}
-				return
-			})
-			if err == nil {
-				requested := int(stopIndex - start + 1)
-				received := 0
-				if resp != nil {
-					received = len(resp.Entries)
-					if received > 0 {
-						entries = append(entries, resp.Entries...)
-					}
-				}
-				ls.adjustParallel(requested, received)
-				if received < requested {
-					short = true
-				} else {
-					start = stopIndex + 1
-				}
-			}
+func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool) (entries []ct.LeafEntry, err error) {
+	for start <= end && err == nil {
+		stopIndex := rawEntriesStopIndex(start, end)
+		bo := &backoff.Backoff{
+			Min:    1 * time.Second,
+			Max:    30 * time.Second,
+			Factor: 2,
+			Jitter: true,
 		}
-		if err == nil && ctx.Err() != nil {
-			err = ctx.Err()
+		var resp *ct.GetEntriesResponse
+		if err = bo.Retry(ctx, func() (e error) {
+			ls.adjustTailLimiter(historical)
+			if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
+				if !ls.handleStreamError(e, "GetRawEntries") {
+					e = backoff.RetriableError(e.Error())
+				}
+			}
+			return
+		}); err == nil {
+			if len(resp.Entries) > 0 {
+				entries = append(entries, resp.Entries...)
+				start += int64(len(resp.Entries))
+			} else {
+				err = io.ErrNoProgress
+			}
 		}
 	}
 	return
@@ -533,8 +512,8 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 				wg.Add(1)
 				go func(idx int, r rawEntriesRange) {
 					defer wg.Done()
-					entries, short, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
-					results[idx] = rawEntriesResult{rng: r, entries: entries, short: short, err: err}
+					entries, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
+					results[idx] = rawEntriesResult{rng: r, entries: entries, short: err != nil, err: err}
 				}(i, rng)
 			}
 			wg.Wait()
