@@ -95,7 +95,7 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 
 	cs := &CertStream{
 		Config: Config{
-			GetEntriesParallelism: 2,
+			ConcurrencyLimit: 2,
 		},
 		HeadClient: &http.Client{
 			Transport: headTransport,

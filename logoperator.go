@@ -103,7 +103,6 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 			log:         log,
 			headClient:  headLogClient,
 			tailClient:  tailLogClient,
-			parallel:    lo.Config.GetEntriesParallelism,
 		}
 		ls.MinIndex.Store(-1)
 		ls.MaxIndex.Store(-1)
@@ -134,10 +133,10 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 
 func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) {
 	var headTile *sunlight.Client
-	if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.GetEntriesParallelism); err == nil {
+	if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.ConcurrencyLimit); err == nil {
 		var tailTile *sunlight.Client
 		if lo.TailClient != nil {
-			tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.GetEntriesParallelism)
+			tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.ConcurrencyLimit)
 		}
 		if err == nil {
 			ls = &LogStream{
@@ -145,7 +144,6 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 				tiledLog:    log,
 				headTile:    headTile,
 				tailTile:    tailTile,
-				parallel:    lo.Config.GetEntriesParallelism,
 			}
 			ls.MinIndex.Store(-1)
 			ls.MaxIndex.Store(-1)
