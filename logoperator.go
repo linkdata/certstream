@@ -103,6 +103,7 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 			log:         log,
 			headClient:  headLogClient,
 			tailClient:  tailLogClient,
+			parallel:    lo.Config.GetEntriesParallelism,
 		}
 		ls.MinIndex.Store(-1)
 		ls.MaxIndex.Store(-1)
@@ -144,6 +145,7 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 				tiledLog:    log,
 				headTile:    headTile,
 				tailTile:    tailTile,
+				parallel:    lo.Config.GetEntriesParallelism,
 			}
 			ls.MinIndex.Store(-1)
 			ls.MaxIndex.Store(-1)
