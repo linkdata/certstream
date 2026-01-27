@@ -2,6 +2,8 @@ package certstream
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -33,6 +35,15 @@ func (f *fakeRawEntriesClient) GetRawEntries(ctx context.Context, start, end int
 		entries[i] = ct.LeafEntry{LeafInput: []byte("invalid"), ExtraData: []byte("invalid")}
 	}
 	return &ct.GetEntriesResponse{Entries: entries}, nil
+}
+
+type emptyRawEntriesClient struct{}
+
+func (e *emptyRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return &ct.GetEntriesResponse{}, nil
 }
 
 type rawEntriesCall struct {
@@ -103,22 +114,24 @@ func (b *blockingRawEntriesClient) GetRawEntries(ctx context.Context, start, end
 	return &ct.GetEntriesResponse{Entries: entries}, nil
 }
 
-func TestGetRawEntriesSubRangeChunksInOrder(t *testing.T) {
+func newTestLogStream() *LogStream {
 	cs := &CertStream{}
 	lo := &LogOperator{CertStream: cs}
 	ls := &LogStream{LogOperator: lo}
+	return ls
+}
+
+func TestGetRawEntriesSubRangeChunksInOrder(t *testing.T) {
+	ls := newTestLogStream()
 	client := &recordingRawEntriesClient{limit: 10}
 	originalBatch := LogBatchSize
 	LogBatchSize = 2
 	defer func() {
 		LogBatchSize = originalBatch
 	}()
-	entries, short, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 4, false)
+	entries, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 4, false)
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
-	}
-	if short {
-		t.Fatal("short = true, want false")
 	}
 	if len(entries) != 5 {
 		t.Fatalf("entries = %d, want 5", len(entries))
@@ -138,35 +151,66 @@ func TestGetRawEntriesSubRangeChunksInOrder(t *testing.T) {
 	}
 }
 
-func TestGetRawEntriesSubRangeShortResponseStops(t *testing.T) {
-	cs := &CertStream{}
-	lo := &LogOperator{CertStream: cs}
-	ls := &LogStream{LogOperator: lo}
-	client := &recordingRawEntriesClient{limit: 2}
-	entries, short, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 3, false)
-	if err != nil {
-		t.Fatalf("err = %v, want nil", err)
+func TestGetRawEntriesSubRangeNoProgress(t *testing.T) {
+	ls := newTestLogStream()
+	client := &emptyRawEntriesClient{}
+	entries, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 1, false)
+	if !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("err = %v, want %v", err, io.ErrNoProgress)
 	}
-	if !short {
-		t.Fatal("short = false, want true")
+	if len(entries) != 0 {
+		t.Fatalf("entries = %d, want 0", len(entries))
+	}
+}
+
+func TestGetRawEntriesSubRangeReturnsPartialEntriesOnError(t *testing.T) {
+	ls := newTestLogStream()
+	client := &fakeRawEntriesClient{errAtStart: 2, limit: 1}
+	entries, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 3, false)
+	if !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("err = %v, want %v", err, os.ErrInvalid)
 	}
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(entries))
 	}
+}
+
+func TestGetRawEntriesSubRangeHandlesShortResponses(t *testing.T) {
+	ls := newTestLogStream()
+	client := &recordingRawEntriesClient{limit: 1}
+	originalBatch := LogBatchSize
+	LogBatchSize = 4
+	defer func() {
+		LogBatchSize = originalBatch
+	}()
+	entries, err := ls.getRawEntriesSubRange(t.Context(), client, 0, 3, false)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("entries = %d, want 4", len(entries))
+	}
 	calls := client.Calls()
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(calls))
+	if len(calls) != 4 {
+		t.Fatalf("calls = %d, want 4", len(calls))
 	}
 	if calls[0].start != 0 || calls[0].end != 3 {
 		t.Fatalf("calls[0] = %d..%d, want 0..3", calls[0].start, calls[0].end)
 	}
+	if calls[1].start != 1 || calls[1].end != 3 {
+		t.Fatalf("calls[1] = %d..%d, want 1..3", calls[1].start, calls[1].end)
+	}
+	if calls[2].start != 2 || calls[2].end != 3 {
+		t.Fatalf("calls[2] = %d..%d, want 2..3", calls[2].start, calls[2].end)
+	}
+	if calls[3].start != 3 || calls[3].end != 3 {
+		t.Fatalf("calls[3] = %d..%d, want 3..3", calls[3].start, calls[3].end)
+	}
 }
 
 func TestGetRawEntriesRangeReturnsNextIndex(t *testing.T) {
-	cs := &CertStream{}
-	lo := &LogOperator{CertStream: cs}
-	ls := &LogStream{LogOperator: lo}
-	client := &fakeRawEntriesClient{errAtStart: 12, limit: 2}
+	ls := newTestLogStream()
+	client := &fakeRawEntriesClient{errAtStart: 100, limit: 2}
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
@@ -174,15 +218,13 @@ func TestGetRawEntriesRangeReturnsNextIndex(t *testing.T) {
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
-	if next != 12 {
-		t.Fatalf("next = %d, want 12", next)
+	if next != 13 {
+		t.Fatalf("next = %d, want 13", next)
 	}
 }
 
 func TestGetRawEntriesRangeSplitsRangeWithParallel(t *testing.T) {
-	cs := &CertStream{}
-	lo := &LogOperator{CertStream: cs}
-	ls := &LogStream{LogOperator: lo}
+	ls := newTestLogStream()
 	ls.setParallel(2)
 	client := &recordingRawEntriesClient{limit: 10}
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
@@ -210,25 +252,8 @@ func TestGetRawEntriesRangeSplitsRangeWithParallel(t *testing.T) {
 	}
 }
 
-func TestGetRawEntriesRangeAdjustsParallelOnShortResponse(t *testing.T) {
-	cs := &CertStream{}
-	lo := &LogOperator{CertStream: cs}
-	ls := &LogStream{LogOperator: lo}
-	ls.setParallel(1)
-	client := &recordingRawEntriesClient{limit: 2}
-	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
-		return true
-	}
-	_, _ = ls.getRawEntriesRange(t.Context(), client, 0, 7, false, handleFn, nil)
-	if ls.GetParallel() != 4 {
-		t.Fatalf("parallel = %d, want 4", ls.GetParallel())
-	}
-}
-
 func TestGetRawEntriesRangeFetchesSubRangesInParallel(t *testing.T) {
-	cs := &CertStream{}
-	lo := &LogOperator{CertStream: cs}
-	ls := &LogStream{LogOperator: lo}
+	ls := newTestLogStream()
 	ls.setParallel(2)
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
