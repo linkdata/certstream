@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Logger                Logger              // if not nil Logger to use, no default
 	HeadDialer            proxy.ContextDialer // dialer for following the head, defaults to &net.Dialer{}
+	HeadLog               string              // log HTTP requests using the head dialer to this file
 	TailDialer            proxy.ContextDialer // if not nil, backfill db using this dialer, no default
 	PgUser                string              // PostgreSQL user, default "certstream"
 	PgPass                string              // PostgreSQL password, default "certstream"

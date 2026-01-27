@@ -134,3 +134,35 @@ func TestStartOpensTailLogFile(t *testing.T) {
 	cancel()
 	wg.Wait()
 }
+
+func TestStartOpensHeadLogFile(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "head.log")
+
+	cfg := NewConfig()
+	cfg.HeadDialer = noDialer{}
+	cfg.TailDialer = noDialer{}
+	cfg.HeadLog = logPath
+
+	wg := &sync.WaitGroup{}
+	cs, err := Start(ctx, wg, cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if cs == nil {
+		t.Fatalf("Start returned nil CertStream")
+	}
+	if cs.getHeadLogFile() == nil {
+		t.Fatalf("head log file was not stored on CertStream")
+	}
+	if _, ok := cs.HeadClient.Transport.(*headLogTransport); !ok {
+		t.Fatalf("HeadClient transport = %T; want *headLogTransport", cs.HeadClient.Transport)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("head log file missing: %v", err)
+	}
+	cancel()
+	wg.Wait()
+}

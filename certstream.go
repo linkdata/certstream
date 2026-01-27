@@ -20,6 +20,7 @@ type CertStream struct {
 	TailClient  *http.Client     // may be nil if not backfilling
 	tailLimiter *bwlimit.Limiter // master tail limiter, if known
 	subLimiter  *bwlimit.Limiter // sub tail limiter
+	headLogFile *os.File         // head HTTP request log
 	tailLogFile *os.File         // tail HTTP request log
 	mu          sync.Mutex       // protects following
 	db          *PgDB
@@ -103,6 +104,13 @@ func (cs *CertStream) getTailLogFile() (f *os.File) {
 	return
 }
 
+func (cs *CertStream) getHeadLogFile() (f *os.File) {
+	cs.mu.Lock()
+	f = cs.headLogFile
+	cs.mu.Unlock()
+	return
+}
+
 func (cs *CertStream) DB() (db *PgDB) {
 	cs.mu.Lock()
 	db = cs.db
@@ -116,6 +124,8 @@ func (cs *CertStream) Close() {
 	cs.sendEntryCh = nil
 	db := cs.db
 	cs.db = nil
+	headLog := cs.headLogFile
+	cs.headLogFile = nil
 	tailLog := cs.tailLogFile
 	cs.tailLogFile = nil
 	cs.mu.Unlock()
@@ -133,6 +143,9 @@ func (cs *CertStream) Close() {
 	}
 	if db != nil {
 		db.Close()
+	}
+	if headLog != nil {
+		_ = headLog.Close()
 	}
 	if tailLog != nil {
 		_ = tailLog.Close()
@@ -186,16 +199,28 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 
 	tphead := DefaultTransport.Clone()
 	tphead.DialContext = cfg.HeadDialer.DialContext
+	headTransport := http.RoundTripper(tphead)
+	var headLogFile *os.File
+	if cfg.HeadLog != "" {
+		headLogFile, err = os.OpenFile(cfg.HeadLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			headTransport = newHeadLogTransport(tphead, headLogFile)
+		} else {
+			err = errHeadLogOpen{err: err}
+		}
+	}
 	tptail := DefaultTransport.Clone()
 	tptail.DialContext = tailDialer.DialContext
 	tailTransport := http.RoundTripper(tptail)
 	var tailLogFile *os.File
-	if cfg.TailLog != "" {
-		tailLogFile, err = os.OpenFile(cfg.TailLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err == nil {
-			tailTransport = newTailLogTransport(tptail, tailLogFile)
-		} else {
-			err = errTailLogOpen{err: err}
+	if err == nil {
+		if cfg.TailLog != "" {
+			tailLogFile, err = os.OpenFile(cfg.TailLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err == nil {
+				tailTransport = newTailLogTransport(tptail, tailLogFile)
+			} else {
+				err = errTailLogOpen{err: err}
+			}
 		}
 	}
 
@@ -204,7 +229,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			Config: *cfg,
 			HeadClient: &http.Client{
 				Timeout:   10 * time.Second,
-				Transport: tphead,
+				Transport: headTransport,
 			},
 			TailClient: &http.Client{
 				Timeout:   10 * time.Second,
@@ -212,6 +237,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			},
 			tailLimiter: tailLimiter,
 			subLimiter:  subLimiter,
+			headLogFile: headLogFile,
 			tailLogFile: tailLogFile,
 			operators:   map[string]*LogOperator{},
 		}
@@ -233,6 +259,16 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			cs.mu.Lock()
 			if cs.tailLogFile == tailLogFile {
 				cs.tailLogFile = nil
+			}
+			cs.mu.Unlock()
+		}
+	}
+	if err != nil && headLogFile != nil {
+		_ = headLogFile.Close()
+		if cs != nil {
+			cs.mu.Lock()
+			if cs.headLogFile == headLogFile {
+				cs.headLogFile = nil
 			}
 			cs.mu.Unlock()
 		}
