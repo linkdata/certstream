@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"context"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +34,10 @@ func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, histor
 	return
 }
 
-func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool) (entries []ct.LeafEntry, err error) {
+// getRawEntriesSubRange fetches and processes the logentries in the index range start...end (inclusive) in order with no parallelism.
+// Returns 'wanted' set to true if handleFn returned true for any logentry.
+// Returns an error if not all entries could be fetched and processed.
+func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, err error) {
 	for start <= end && err == nil {
 		stopIndex := rawEntriesStopIndex(start, end)
 		bo := &backoff.Backoff{
@@ -54,132 +56,82 @@ func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntrie
 			}
 			return
 		}); err == nil {
-			if len(resp.Entries) > 0 {
-				entries = append(entries, resp.Entries...)
-				start += int64(len(resp.Entries))
-			} else {
-				err = io.ErrNoProgress
+			now := time.Now()
+			for i := range resp.Entries {
+				le := ls.makeLogEntry(start, resp.Entries[i], historical)
+				ls.seeIndex(start)
+				if handleFn(ctx, now, le) {
+					wanted = true
+				}
+				start++
+				if gapcounter != nil {
+					gapcounter.Add(-1)
+				}
+			}
+		} else {
+			if gapcounter != nil && ctx.Err() == nil {
+				_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+				gapcounter.Add(start - (end + 1))
 			}
 		}
 	}
 	return
 }
 
+// getRawEntriesRange fetches and processes the logentries in the index range start...end (inclusive) using Config.Concurrency workers.
+// The returned next start index can be less than end+1 if an error occured.
+// Returns the next start index and 'wanted' set to true if handleFn returned true for any logentry.
 func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
-	next = start
-	stop := false
-	processEntries := func(entries []ct.LeafEntry) {
-		now := time.Now()
-		for i := range entries {
-			le := ls.makeLogEntry(start, entries[i], historical)
-			ls.seeIndex(start)
-			if handleFn(ctx, now, le) {
-				wanted = true
-			}
-			start++
-			next = start
-			if gapcounter != nil {
-				gapcounter.Add(-1)
-			}
-		}
-	}
-	applyEntries := func(entries []ct.LeafEntry, requested int64, err error) (short bool, ok bool) {
-		if err == nil {
-			if len(entries) > 0 {
-				processEntries(entries)
-			}
-			if int64(len(entries)) < requested {
-				short = true
-			}
-			if historical && !wanted {
-				stop = true
-			}
-			ok = true
-		} else {
-			if gapcounter != nil && ctx.Err() == nil {
-				_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
-				gapcounter.Add(start - (end + 1))
-			}
-			stop = true
-		}
-		return
-	}
 	type rawEntriesRange struct {
 		start int64
 		end   int64
 	}
-	type rawEntriesResult struct {
-		rng     rawEntriesRange
-		entries []ct.LeafEntry
-		err     error
-	}
-	for start <= end && !stop {
-		if ctx.Err() == nil {
-			rangeStop := false
-			requested := min(end-start+1, LogBatchSize)
-			if requested > 0 {
-				rangeEnd := start + requested - 1
-				entries, err := ls.getRawEntriesSubRange(ctx, client, start, rangeEnd, historical)
-				short, ok := applyEntries(entries, requested, err)
-				if ok && short {
-					rangeStop = true
-				}
-				if err == nil && !stop && !rangeStop {
-					entriesRemaining := end - start + 1
-					if entriesRemaining > 0 {
-						chunkSize := max(1, min(32, int64(len(entries))))
-						parallel := max(1, int(min(entriesRemaining, LogBatchSize)/chunkSize))
-						ranges := make([]rawEntriesRange, 0, parallel)
-						rangeStart := start
-						for i := 0; i < parallel && rangeStart <= end; i++ {
-							rangeEnd := rangeStart + chunkSize - 1
-							if rangeEnd > end {
-								rangeEnd = end
-							}
-							ranges = append(ranges, rawEntriesRange{start: rangeStart, end: rangeEnd})
-							rangeStart = rangeEnd + 1
-						}
-						results := make([]rawEntriesResult, len(ranges))
-						var wg sync.WaitGroup
-						for i, rng := range ranges {
-							wg.Add(1)
-							go func(idx int, r rawEntriesRange) {
-								defer wg.Done()
-								entries, err := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical)
-								results[idx] = rawEntriesResult{rng: r, entries: entries, err: err}
-							}(i, rng)
-						}
-						wg.Wait()
-						processStop := false
-						if ctx.Err() == nil {
-							for i := range results {
-								if !stop && !processStop {
-									result := results[i]
-									requested := result.rng.end - result.rng.start + 1
-									short, ok := applyEntries(result.entries, requested, result.err)
-									if !ok || short {
-										processStop = true
-									}
-								}
-							}
-						} else {
-							stop = true
-						}
-						if !stop && !processStop && ctx.Err() == nil {
-							remaining := end - start + 1
-							if remaining > 0 {
-								tailEntries, tailErr := ls.getRawEntriesSubRange(ctx, client, start, end, historical)
-								_, _ = applyEntries(tailEntries, remaining, tailErr)
-							}
+
+	err := ctx.Err()
+	next = start
+
+	workCh := make(chan rawEntriesRange)
+	workerCount := min(32, max(1, ls.ConcurrencyLimit))
+	workerEnds := make([]rawEntriesRange, workerCount)
+	var wg sync.WaitGroup
+	var workMu sync.Mutex
+	for i := range workerCount {
+		wg.Add(1)
+		go func(workerId int) {
+			defer wg.Done()
+			for r := range workCh {
+				w, e := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
+				workMu.Lock()
+				wanted = wanted || w
+				if e == nil {
+					workerEnds[workerId] = r
+				advanceNext:
+					for i := range workerEnds {
+						if workerEnds[i].start == next {
+							next = workerEnds[i].end + 1
+							goto advanceNext
 						}
 					}
+				} else {
+					err = e
 				}
-			} else {
-				stop = true
+				workMu.Unlock()
 			}
-		} else {
-			stop = true
+		}(i)
+	}
+
+	for start <= end && err == nil {
+		stopIndex := rawEntriesStopIndex(start, end)
+		select {
+		case workCh <- rawEntriesRange{start: start, end: stopIndex}:
+			start = stopIndex + 1
+		case <-ctx.Done():
+			err = ctx.Err()
 		}
 	}
+
+	close(workCh)
+	wg.Wait()
+
 	return
 }
