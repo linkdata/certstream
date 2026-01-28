@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type LogOperator struct {
 	Id       int32              // database ID, if available
 	operator *loglist3.Operator // read-only
 	mu       sync.Mutex         // protects following
+	statuses map[int]int        // HTTP status code counter
 	streams  map[string]*LogStream
 	errcount int
 	errors   []*StreamError
@@ -48,11 +50,17 @@ func (lo *LogOperator) ErrorCount() (n int) {
 	return
 }
 
-func (lo *LogOperator) Status429Count() (n int64) {
-	lo.mu.Lock()
-	for _, s := range lo.streams {
-		n += s.Status429.Load()
+func (lo *LogOperator) addStatus(statuscode int) {
+	if statuscode > 200 {
+		lo.mu.Lock()
+		lo.statuses[statuscode]++
+		lo.mu.Unlock()
 	}
+}
+
+func (lo *LogOperator) Statuses() (m map[int]int) {
+	lo.mu.Lock()
+	m = maps.Clone(lo.statuses)
 	lo.mu.Unlock()
 	return
 }

@@ -42,7 +42,6 @@ type LogStream struct {
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	Backfill   atomic.Int64 // atomic: number of remaining entries to backfill until we reach head
-	Status429  atomic.Int64 // atomic: number of 429 Too Many Requests received
 	Id         int32        // database ID, if available
 	gapCh      chan gap     // protected by LogOperator.mu
 	log        *loglist3.Log
@@ -309,12 +308,11 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	} else {
 		statusCode := statusCodeFromError(err)
 		switch statusCode {
-		case http.StatusTooManyRequests:
-			ls.Status429.Add(1)
-		case http.StatusGatewayTimeout, http.StatusNotFound:
-		case http.StatusInternalServerError, http.StatusBadGateway:
-			fallthrough
+		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound:
+			// ignored and not reported, just counted
+			ls.addStatus(statusCode)
 		default:
+			ls.addStatus(statusCode)
 			if ls.addError(ls, wrapErr(err, from)) >= MaxErrors {
 				fatal = true
 			}
