@@ -58,7 +58,7 @@ func (lo *LogOperator) addStatus(statuscode int) {
 	}
 }
 
-func (lo *LogOperator) Statuses() (m map[int]int) {
+func (lo *LogOperator) StatusCounts() (m map[int]int) {
 	lo.mu.Lock()
 	m = maps.Clone(lo.statuses)
 	lo.mu.Unlock()
