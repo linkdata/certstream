@@ -32,7 +32,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 		if lastindex := ls.LastIndex.Load(); lastindex != -1 {
 			row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
 			var nullableMaxIndex sql.NullInt64
-			if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGaps/MaxIndex", "url", ls.URL()) == nil {
+			if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGapsWithFetcher/MaxIndex", "url", ls.URL()) == nil {
 				if nullableMaxIndex.Valid {
 					ls.seeIndex(nullableMaxIndex.Int64)
 					if nullableMaxIndex.Int64 < lastindex {
@@ -58,6 +58,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 			if lastgap.end != 0 && ctx.Err() == nil {
 				fillGap("last gap", lastgap)
 			}
+			cdb.LogInfo("gaps filled", "url", ls.URL(), "stream", ls.Id)
 		}
 	}
 }
