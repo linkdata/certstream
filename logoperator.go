@@ -53,6 +53,9 @@ func (lo *LogOperator) ErrorCount() (n int) {
 func (lo *LogOperator) addStatus(statuscode int) {
 	if statuscode > 200 {
 		lo.mu.Lock()
+		if lo.statuses == nil {
+			lo.statuses = make(map[int]int)
+		}
 		lo.statuses[statuscode]++
 		lo.mu.Unlock()
 	}
