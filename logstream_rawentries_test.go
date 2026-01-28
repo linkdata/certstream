@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,73 @@ func (c *stubRawEntriesClient) GetRawEntries(ctx context.Context, start, end int
 		err = c.err
 	}
 	return
+}
+
+type controlledRawEntriesClient struct {
+	entry ct.LeafEntry
+	mu    sync.Mutex
+	calls []rawEntriesCall
+	waits map[int64]chan struct{}
+	done  map[int64]chan struct{}
+	errs  map[int64]error
+}
+
+func (c *controlledRawEntriesClient) Calls() []rawEntriesCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.calls)
+}
+
+func (c *controlledRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (resp *ct.GetEntriesResponse, err error) {
+	c.mu.Lock()
+	c.calls = append(c.calls, rawEntriesCall{start: start, end: end})
+	waitCh := c.waits[start]
+	doneCh := c.done[start]
+	if c.errs != nil {
+		err = c.errs[start]
+	}
+	entry := c.entry
+	c.mu.Unlock()
+
+	if waitCh != nil {
+		select {
+		case <-waitCh:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	}
+	if err == nil {
+		count := int(end-start) + 1
+		entries := make([]ct.LeafEntry, count)
+		for i := range entries {
+			entries[i] = entry
+		}
+		resp = &ct.GetEntriesResponse{Entries: entries}
+	}
+	if doneCh != nil {
+		close(doneCh)
+	}
+	return
+}
+
+func sortedRawEntriesCalls(calls []rawEntriesCall) []rawEntriesCall {
+	sorted := slices.Clone(calls)
+	slices.SortFunc(sorted, func(a, b rawEntriesCall) int {
+		if a.start < b.start {
+			return -1
+		}
+		if a.start > b.start {
+			return 1
+		}
+		if a.end < b.end {
+			return -1
+		}
+		if a.end > b.end {
+			return 1
+		}
+		return 0
+	})
+	return sorted
 }
 
 func makeTestLeafEntry(t *testing.T, now time.Time) (leaf ct.LeafEntry) {
@@ -160,5 +228,162 @@ func TestGetRawEntriesStopsOnFatalError(t *testing.T) {
 		}
 	} else {
 		t.Fatalf("getRawEntries error: nil, want non-nil")
+	}
+}
+
+func TestGetRawEntriesParallelProcessesEntries(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	entry := makeTestLeafEntry(t, now)
+	client := &controlledRawEntriesClient{entry: entry}
+
+	oldBatchSize := LogBatchSize
+	LogBatchSize = 2
+	t.Cleanup(func() {
+		LogBatchSize = oldBatchSize
+	})
+
+	ls := &LogStream{
+		LogOperator: &LogOperator{
+			CertStream: &CertStream{
+				Config: Config{
+					Concurrency: 3,
+				},
+			},
+		},
+	}
+	ls.MinIndex.Store(-1)
+	ls.MaxIndex.Store(-1)
+
+	var gotMu sync.Mutex
+	var gotIndexes []int64
+	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
+		gotMu.Lock()
+		gotIndexes = append(gotIndexes, le.LogIndex)
+		gotMu.Unlock()
+		if le.LogIndex == 4 {
+			wanted = true
+		}
+		return
+	}
+
+	var gapcounter atomic.Int64
+	gapcounter.Store(6)
+
+	var next int64
+	var wanted bool
+	next, wanted = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, &gapcounter)
+	if !wanted {
+		t.Fatalf("wanted = false, want true")
+	}
+	if got := gapcounter.Load(); got != 0 {
+		t.Fatalf("gapcounter = %d, want 0", got)
+	}
+	if got, want := next, int64(6); got != want {
+		t.Fatalf("next = %d, want %d", got, want)
+	}
+	if got, want := ls.MinIndex.Load(), int64(0); got != want {
+		t.Fatalf("MinIndex = %d, want %d", got, want)
+	}
+	if got, want := ls.MaxIndex.Load(), int64(5); got != want {
+		t.Fatalf("MaxIndex = %d, want %d", got, want)
+	}
+
+	gotMu.Lock()
+	sortedIndexes := slices.Clone(gotIndexes)
+	gotMu.Unlock()
+	slices.Sort(sortedIndexes)
+	if got, want := sortedIndexes, []int64{0, 1, 2, 3, 4, 5}; !slices.Equal(got, want) {
+		t.Fatalf("indexes = %v, want %v", got, want)
+	}
+
+	if got, want := sortedRawEntriesCalls(client.Calls()), []rawEntriesCall{{start: 0, end: 1}, {start: 2, end: 3}, {start: 4, end: 5}}; !slices.Equal(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+}
+
+func TestGetRawEntriesParallelAdvancesNextOutOfOrder(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	entry := makeTestLeafEntry(t, now)
+
+	waitStart := make(chan struct{})
+	doneLast := make(chan struct{})
+	client := &controlledRawEntriesClient{
+		entry: entry,
+		waits: map[int64]chan struct{}{
+			0: waitStart,
+		},
+		done: map[int64]chan struct{}{
+			4: doneLast,
+		},
+	}
+
+	oldBatchSize := LogBatchSize
+	LogBatchSize = 2
+	t.Cleanup(func() {
+		LogBatchSize = oldBatchSize
+	})
+
+	ls := &LogStream{
+		LogOperator: &LogOperator{
+			CertStream: &CertStream{
+				Config: Config{
+					Concurrency: 2,
+				},
+			},
+		},
+	}
+	ls.MinIndex.Store(-1)
+	ls.MaxIndex.Store(-1)
+
+	var gotMu sync.Mutex
+	var gotIndexes []int64
+	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
+		gotMu.Lock()
+		gotIndexes = append(gotIndexes, le.LogIndex)
+		gotMu.Unlock()
+		return
+	}
+
+	type result struct {
+		next   int64
+		wanted bool
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		var next int64
+		var wanted bool
+		next, wanted = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, nil)
+		resultCh <- result{next: next, wanted: wanted}
+	}()
+
+	select {
+	case <-doneLast:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for last range")
+	}
+	close(waitStart)
+
+	var res result
+	select {
+	case res = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for result")
+	}
+
+	if res.wanted {
+		t.Fatalf("wanted = true, want false")
+	}
+	if got, want := res.next, int64(6); got != want {
+		t.Fatalf("next = %d, want %d", got, want)
+	}
+
+	gotMu.Lock()
+	sortedIndexes := slices.Clone(gotIndexes)
+	gotMu.Unlock()
+	slices.Sort(sortedIndexes)
+	if got, want := sortedIndexes, []int64{0, 1, 2, 3, 4, 5}; !slices.Equal(got, want) {
+		t.Fatalf("indexes = %v, want %v", got, want)
 	}
 }

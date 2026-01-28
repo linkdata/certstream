@@ -76,32 +76,31 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 
 	workCh := make(chan rawEntriesRange)
 	workerCount := min(32, max(1, ls.Concurrency))
-	workerEnds := make([]rawEntriesRange, workerCount)
+	completed := make(map[int64]int64)
 	var wg sync.WaitGroup
 	var workMu sync.Mutex
-	for i := range workerCount {
+	for range workerCount {
 		wg.Add(1)
-		go func(workerId int) {
+		go func() {
 			defer wg.Done()
 			for r := range workCh {
 				w, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
 				workMu.Lock()
 				wanted = wanted || w
 				if e == nil {
-					workerEnds[workerId] = r
+					completed[r.start] = r.end
 				advanceNext:
-					for i := range workerEnds {
-						if workerEnds[i].start == next {
-							next = workerEnds[i].end + 1
-							goto advanceNext
-						}
+					if end, ok := completed[next]; ok {
+						delete(completed, next)
+						next = end + 1
+						goto advanceNext
 					}
 				} else {
 					err = e
 				}
 				workMu.Unlock()
 			}
-		}(i)
+		}()
 	}
 
 	for start <= end && err == nil {
