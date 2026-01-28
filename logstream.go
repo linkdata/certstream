@@ -1,6 +1,7 @@
 package certstream
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -328,7 +329,16 @@ func (ls *LogStream) statusCodeFromError(err error) (code int) {
 		if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 			if code = rspErr.StatusCode; code > 500 {
 				// https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/
-				ls.LogInfo("code500+", "url", ls.URL(), "stream", ls.Id, "code", code, "body", string(rspErr.Body))
+				if after, found := bytes.CutPrefix(bytes.TrimSpace(rspErr.Body), []byte("error code:")); found {
+					if n, err := strconv.Atoi(string(bytes.TrimSpace(after))); err == nil {
+						if n >= 1000 {
+							code = n
+						}
+					}
+				}
+				if code < 1000 {
+					ls.LogInfo("code500+", "url", ls.URL(), "stream", ls.Id, "code", code, "body", string(rspErr.Body))
+				}
 			}
 		} else {
 			msg := err.Error()
