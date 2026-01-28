@@ -123,7 +123,7 @@ func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time)
 		}
 		return
 	}
-	ls.getRawEntries(ctx, end, end, false, fn, nil)
+	ls.getEntries(ctx, end, end, false, fn, nil)
 	return
 }
 
@@ -162,7 +162,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	for err == nil {
 		if start < end {
 			startBefore := start
-			start, _ = ls.getRawEntries(ctx, start, end, false, ls.sendEntry, nil)
+			start, _ = ls.getEntries(ctx, start, end, false, ls.sendEntry, nil)
 			if end-startBefore <= LogBatchSize/2 {
 				sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
 			}
@@ -341,6 +341,22 @@ func statusCodeFromError(err error) (code int) {
 					code, _ = strconv.Atoi(msg[start:end])
 				}
 			}
+		}
+	}
+	return
+}
+
+func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
+	next = start
+	if start <= end {
+		if ls.isTiled() {
+			next, wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
+		} else {
+			client := ls.headClient
+			if historical && ls.tailClient != nil {
+				client = ls.tailClient
+			}
+			next, wanted = ls.getRawEntriesParallel(ctx, client, start, end, historical, handleFn, gapcounter)
 		}
 	}
 	return

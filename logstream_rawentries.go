@@ -18,26 +18,10 @@ func rawEntriesStopIndex(start, end int64) (stop int64) {
 	return
 }
 
-func (ls *LogStream) getRawEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
-	next = start
-	if start <= end {
-		if ls.isTiled() {
-			next, wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
-		} else {
-			client := ls.headClient
-			if historical && ls.tailClient != nil {
-				client = ls.tailClient
-			}
-			next, wanted = ls.getRawEntriesRange(ctx, client, start, end, historical, handleFn, gapcounter)
-		}
-	}
-	return
-}
-
-// getRawEntriesSubRange fetches and processes the logentries in the index range start...end (inclusive) in order with no parallelism.
+// getRawEntries fetches and processes the logentries in the index range start...end (inclusive) in order with no parallelism.
 // Returns 'wanted' set to true if handleFn returned true for any logentry.
 // Returns an error if not all entries could be fetched and processed.
-func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, err error) {
+func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, err error) {
 	for start <= end && err == nil {
 		stopIndex := rawEntriesStopIndex(start, end)
 		bo := &backoff.Backoff{
@@ -78,10 +62,10 @@ func (ls *LogStream) getRawEntriesSubRange(ctx context.Context, client rawEntrie
 	return
 }
 
-// getRawEntriesRange fetches and processes the logentries in the index range start...end (inclusive) using Config.Concurrency workers.
+// getRawEntriesParallel fetches and processes the logentries in the index range start...end (inclusive) using Config.Concurrency workers.
 // The returned next start index can be less than end+1 if an error occured.
 // Returns the next start index and 'wanted' set to true if handleFn returned true for any logentry.
-func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
+func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	type rawEntriesRange struct {
 		start int64
 		end   int64
@@ -91,7 +75,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 	next = start
 
 	workCh := make(chan rawEntriesRange)
-	workerCount := min(32, max(1, ls.ConcurrencyLimit))
+	workerCount := min(32, max(1, ls.Concurrency))
 	workerEnds := make([]rawEntriesRange, workerCount)
 	var wg sync.WaitGroup
 	var workMu sync.Mutex
@@ -100,7 +84,7 @@ func (ls *LogStream) getRawEntriesRange(ctx context.Context, client rawEntriesCl
 		go func(workerId int) {
 			defer wg.Done()
 			for r := range workCh {
-				w, e := ls.getRawEntriesSubRange(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
+				w, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
 				workMu.Lock()
 				wanted = wanted || w
 				if e == nil {

@@ -114,7 +114,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 			_ = cdb.updateBackfillIndex(ctx, ls, minIndex)
 		}
 		ls.seeIndex(minIndex)
-		cdb.backfillGapsWithFetcher(ctx, ls, ls.getRawEntries)
+		cdb.backfillGapsWithFetcher(ctx, ls, ls.getEntries)
 		if minIndex > 0 && ctx.Err() == nil {
 			cdb.LogInfo("backlog start", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 			ls.Backfill.Add(minIndex - 1)
@@ -123,7 +123,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 				stop := minIndex - 1
 				minIndex = start
 				var wanted bool
-				if _, wanted = ls.getRawEntries(ctx, start, stop, true, ls.sendEntry, &ls.Backfill); !wanted {
+				if _, wanted = ls.getEntries(ctx, start, stop, true, ls.sendEntry, &ls.Backfill); !wanted {
 					cdb.LogInfo("backlog stops", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 					ls.addError(ls, errLogEntriesTooOld{MaxAge: cdb.PgMaxAge})
 					ls.Backfill.Store(0)

@@ -133,10 +133,10 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 
 func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) {
 	var headTile *sunlight.Client
-	if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.ConcurrencyLimit); err == nil {
+	if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.Concurrency); err == nil {
 		var tailTile *sunlight.Client
 		if lo.TailClient != nil {
-			tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.ConcurrencyLimit)
+			tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.Concurrency)
 		}
 		if err == nil {
 			ls = &LogStream{
