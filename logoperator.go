@@ -48,6 +48,15 @@ func (lo *LogOperator) ErrorCount() (n int) {
 	return
 }
 
+func (lo *LogOperator) Status429Count() (n int64) {
+	lo.mu.Lock()
+	for _, s := range lo.streams {
+		n += s.Status429.Load()
+	}
+	lo.mu.Unlock()
+	return
+}
+
 func (lo *LogOperator) Errors() (errs []*StreamError) {
 	lo.mu.Lock()
 	errs = append(errs, lo.errors...)
