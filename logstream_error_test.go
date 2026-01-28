@@ -8,7 +8,10 @@ import (
 )
 
 func TestStatusCodeFromError(t *testing.T) {
-	code := statusCodeFromError(jsonclient.RspError{
+	ls := &LogStream{
+		LogOperator: &LogOperator{},
+	}
+	code := ls.statusCodeFromError(jsonclient.RspError{
 		Err:        errors.New("nope"),
 		StatusCode: 404,
 	})
@@ -16,12 +19,12 @@ func TestStatusCodeFromError(t *testing.T) {
 		t.Fatalf("statusCodeFromError(jsonclient) = %d", code)
 	}
 
-	code = statusCodeFromError(errors.New("tile/1/000: unexpected status code 404"))
+	code = ls.statusCodeFromError(errors.New("tile/1/000: unexpected status code 404"))
 	if code != 404 {
 		t.Fatalf("statusCodeFromError(string) = %d", code)
 	}
 
-	code = statusCodeFromError(errors.New("no status here"))
+	code = ls.statusCodeFromError(errors.New("no status here"))
 	if code != 0 {
 		t.Fatalf("statusCodeFromError(no status) = %d", code)
 	}

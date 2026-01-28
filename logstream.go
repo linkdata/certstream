@@ -306,7 +306,7 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
 		fatal = false
 	} else {
-		statusCode := statusCodeFromError(err)
+		statusCode := ls.statusCodeFromError(err)
 		switch statusCode {
 		case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
 			fallthrough
@@ -323,10 +323,13 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	return
 }
 
-func statusCodeFromError(err error) (code int) {
+func (ls *LogStream) statusCodeFromError(err error) (code int) {
 	if err != nil {
 		if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
-			code = rspErr.StatusCode
+			if code = rspErr.StatusCode; code > 500 {
+				// https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/
+				ls.LogInfo("code500+", "url", ls.URL(), "stream", ls.Id, "code", code, "body", string(rspErr.Body))
+			}
 		} else {
 			msg := err.Error()
 			idx := strings.LastIndex(msg, "status code ")
