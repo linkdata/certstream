@@ -9,10 +9,14 @@ import (
 	ct "github.com/google/certificate-transparency-go"
 )
 
-func rawEntriesStopIndex(start, end int64) (stop int64) {
+func rawEntriesStopIndex(start, end int64, historical bool) (stop int64) {
 	stop = start
 	if start <= end {
-		stop = start + min(end-start+1, LogBatchSize) - 1
+		size := LogBatchSize
+		if historical {
+			size = 64
+		}
+		stop = start + min(end-start+1, size) - 1
 	}
 	return
 }
@@ -22,7 +26,7 @@ func rawEntriesStopIndex(start, end int64) (stop int64) {
 // Returns an error if not all entries could be fetched and processed.
 func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, err error) {
 	for start <= end && err == nil {
-		stopIndex := rawEntriesStopIndex(start, end)
+		stopIndex := rawEntriesStopIndex(start, end, historical)
 		var resp *ct.GetEntriesResponse
 		if err = ls.backoff.Retry(ctx, func() (e error) {
 			ls.adjustTailLimiter(historical)
@@ -99,7 +103,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 	}
 
 	for start <= end && err == nil {
-		stopIndex := rawEntriesStopIndex(start, end)
+		stopIndex := rawEntriesStopIndex(start, end, historical)
 		select {
 		case workCh <- rawEntriesRange{start: start, end: stopIndex}:
 			start = stopIndex + 1
