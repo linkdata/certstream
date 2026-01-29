@@ -85,6 +85,9 @@ func (b *logStreamBackoff) wait(ctx context.Context) (err error) {
 			if !next.IsZero() {
 				delay := next.Sub(b.nowFn())
 				if delay > 0 {
+					if b.jitter {
+						delay += time.Duration(rand.Int64N(int64(delay))) /*#nosec G404*/
+					}
 					b.sleepFn(ctx, delay)
 					err = ctx.Err()
 				}
@@ -123,14 +126,8 @@ func (b *logStreamBackoff) backoff() {
 		b.current = max(b.min, b.current)
 		b.current = min(b.max, b.current)
 		b.next = time.Time{}
-
 		if b.current > 0 {
-			delay := b.current
-			if b.jitter {
-				delay += time.Duration(rand.Int64N(int64(b.current))) /*#nosec G404*/
-			}
-			delay = min(b.max, delay)
-			b.next = b.nowFn().Add(delay)
+			b.next = b.nowFn().Add(b.current)
 		}
 	}
 }
