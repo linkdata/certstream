@@ -64,7 +64,7 @@ func (b *logStreamBackoff) Retry(ctx context.Context, f func() error) (err error
 	for err == nil {
 		if err = b.wait(ctx); err == nil {
 			if err = f(); err == nil {
-				b.reset()
+				b.success()
 				break
 			}
 			if errors.Is(err, ErrLogStreamRetryable) {
@@ -86,19 +86,28 @@ func (b *logStreamBackoff) wait(ctx context.Context) (err error) {
 				delay := next.Sub(b.nowFn())
 				if delay > 0 {
 					b.sleepFn(ctx, delay)
+					err = ctx.Err()
 				}
 			}
-			err = ctx.Err()
 		}
 	}
 	return
 }
 
-func (b *logStreamBackoff) reset() {
+func (b *logStreamBackoff) success() {
 	if b != nil {
 		b.mu.Lock()
-		b.current = 0
-		b.next = time.Time{}
+		if b.factor > 0 {
+			b.current = time.Duration(float64(b.current) / b.factor)
+			if b.current < b.min {
+				b.current = 0
+			}
+		}
+		if b.current > 0 {
+			b.next = b.nowFn().Add(b.current)
+		} else {
+			b.next = time.Time{}
+		}
 		b.mu.Unlock()
 	}
 }
@@ -108,7 +117,7 @@ func (b *logStreamBackoff) backoff() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
-		if b.current > 0 {
+		if b.current > 0 && b.factor > 0 {
 			b.current = time.Duration(float64(b.current) * b.factor)
 		}
 		b.current = max(b.min, b.current)
