@@ -106,7 +106,7 @@ func Test_EndToEnd_DefaultStreams_PostgresContainer(t *testing.T) {
 		t.Fatalf("docker run failed: %v\n%s", err, out)
 	}
 	defer func() {
-		_, _ = run(t.Context(), "docker", "kill", cname)
+		_, _ = run(context.Background(), "docker", "kill", cname)
 	}()
 
 	hostPort := dockerMappedPort(ctx, t, cname, "5432/tcp")

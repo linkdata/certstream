@@ -14,8 +14,9 @@ func TestLogStreamBackoffSharesAcrossCalls(t *testing.T) {
 		return now
 	}
 	var sleeps []time.Duration
-	bo.sleepFn = func(ctx context.Context, d time.Duration) {
+	bo.sleepFn = func(ctx context.Context, d time.Duration) error {
 		sleeps = append(sleeps, d)
+		return ctx.Err()
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())

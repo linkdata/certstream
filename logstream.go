@@ -108,13 +108,15 @@ func (ls *LogStream) getGapCh() (ch chan gap) {
 	return
 }
 
-func sleep(ctx context.Context, d time.Duration) {
+func sleep(ctx context.Context, d time.Duration) (err error) {
 	tmr := time.NewTimer(d)
 	defer tmr.Stop()
 	select {
 	case <-tmr.C:
 	case <-ctx.Done():
+		err = ctx.Err()
 	}
+	return
 }
 
 func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time) {
@@ -165,7 +167,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 			startBefore := start
 			start, _ = ls.getEntries(ctx, start, end, false, ls.sendEntry, nil)
 			if end-startBefore <= LogBatchSize/2 {
-				sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
+				_ = sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
 			}
 		}
 		end, err = ls.newLastIndex(ctx)
@@ -173,55 +175,49 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err error) {
-	now := time.Now()
+	started := time.Now()
+	var newIndex int64
 	lastIndex = ls.LastIndex.Load()
-	err = ls.backoff.Retry(ctx, func() error {
-		var newIndex int64
-		var errFrom string
-		var callErr error
-		if ls.isTiled() {
-			errFrom = "Checkpoint"
-			if ls.headTile != nil {
-				var checkpoint sunlight.Checkpoint
-				checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
+	for err == nil {
+		err = ls.backoff.Retry(ctx, func() (callErr error) {
+			var errFrom string
+			if ls.isTiled() {
+				errFrom = "Checkpoint"
+				if ls.headTile != nil {
+					var checkpoint sunlight.Checkpoint
+					checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
+					if callErr == nil {
+						newIndex = checkpoint.N - 1
+					}
+				} else {
+					callErr = ErrSunlightClientMissing
+				}
+			} else {
+				errFrom = "GetSTH"
+				var sth *ct.SignedTreeHead
+				sth, callErr = ls.headClient.GetSTH(ctx)
 				if callErr == nil {
-					newIndex = checkpoint.N - 1
+					newIndex = int64(sth.TreeSize) - 1 //#nosec G115
 				}
-			} else {
-				callErr = ErrSunlightClientMissing
 			}
-		} else {
-			errFrom = "GetSTH"
-			var sth *ct.SignedTreeHead
-			sth, callErr = ls.headClient.GetSTH(ctx)
-			if callErr == nil {
-				newIndex = int64(sth.TreeSize) - 1 //#nosec G115
-			}
-		}
-		if callErr == nil {
-			if lastIndex < newIndex {
-				if lastIndex+LogBatchSize < newIndex || time.Since(now) > time.Second*15 {
-					lastIndex = newIndex
-					ls.LastIndex.Store(lastIndex)
+			if callErr != nil {
+				if ls.handleStreamError(callErr, errFrom) {
+					// keep callErr as-is
 				} else {
-					callErr = wrapLogStreamRetryable(ErrSTHDiffTooLow)
-				}
-			} else {
-				if time.Since(now) > IdleCloseTime {
-					callErr = errLogIdle{Since: now}
-				} else {
-					callErr = wrapLogStreamRetryable(ErrSTHDiffTooLow)
+					callErr = wrapLogStreamRetryable(callErr)
 				}
 			}
-		} else {
-			if ls.handleStreamError(callErr, errFrom) {
-				// keep callErr as-is
-			} else {
-				callErr = wrapLogStreamRetryable(callErr)
+			return
+		})
+		if err == nil {
+			if lastIndex < newIndex && (lastIndex+LogBatchSize < newIndex || time.Since(started) > time.Minute) {
+				lastIndex = newIndex
+				ls.LastIndex.Store(lastIndex)
+				return
 			}
+			err = sleep(ctx, time.Second*10)
 		}
-		return callErr
-	})
+	}
 	return
 }
 

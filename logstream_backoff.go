@@ -45,7 +45,7 @@ type logStreamBackoff struct {
 	current time.Duration
 	next    time.Time
 	nowFn   func() time.Time
-	sleepFn func(context.Context, time.Duration)
+	sleepFn func(context.Context, time.Duration) (err error)
 }
 
 func newLogStreamBackoff(min, max time.Duration, factor float64, jitter bool) (bo *logStreamBackoff) {
@@ -88,8 +88,7 @@ func (b *logStreamBackoff) wait(ctx context.Context) (err error) {
 					if b.jitter {
 						delay += time.Duration(rand.Int64N(int64(delay))) /*#nosec G404*/
 					}
-					b.sleepFn(ctx, delay)
-					err = ctx.Err()
+					err = b.sleepFn(ctx, delay)
 				}
 			}
 		}
