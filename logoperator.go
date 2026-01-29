@@ -68,6 +68,15 @@ func (lo *LogOperator) StatusCounts() (m map[int]int) {
 	return
 }
 
+func (lo *LogOperator) CallCount() (n int64) {
+	lo.mu.Lock()
+	for _, s := range lo.streams {
+		n += s.backoff.Count()
+	}
+	lo.mu.Unlock()
+	return
+}
+
 func (lo *LogOperator) Errors() (errs []*StreamError) {
 	lo.mu.Lock()
 	errs = append(errs, lo.errors...)
