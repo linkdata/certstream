@@ -8,7 +8,6 @@ import (
 
 	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/x509"
-	"github.com/google/trillian/client/backoff"
 )
 
 func (ls *LogStream) makeTileLogEntry(logindex int64, entry *sunlight.LogEntry, historical bool) (le *LogEntry) {
@@ -62,14 +61,8 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 		}
 		if client != nil {
 			var checkpoint sunlight.Checkpoint
-			bo := &backoff.Backoff{
-				Min:    1 * time.Second,
-				Max:    30 * time.Second,
-				Factor: 2,
-				Jitter: true,
-			}
 			var chkErr error
-			chkErr = bo.Retry(ctx, func() error {
+			chkErr = ls.backoff.Retry(ctx, func() error {
 				ls.adjustTailLimiter(historical)
 				var err error
 				checkpoint, _, err = client.Checkpoint(ctx)
@@ -79,7 +72,7 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 				if ls.handleStreamError(err, "Checkpoint") {
 					return err
 				}
-				return backoff.RetriableError(err.Error())
+				return wrapLogStreamRetryable(err)
 			})
 			if chkErr == nil {
 				if checkpoint.N > 0 {
@@ -91,13 +84,7 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 						for start <= end {
 							if ctx.Err() == nil {
 								lastIndex := int64(-1)
-								entryBo := &backoff.Backoff{
-									Min:    1 * time.Second,
-									Max:    30 * time.Second,
-									Factor: 2,
-									Jitter: true,
-								}
-								entryErr := entryBo.Retry(ctx, func() error {
+								entryErr := ls.backoff.Retry(ctx, func() error {
 									lastIndex = -1
 									ls.adjustTailLimiter(historical)
 									now := time.Now()
@@ -123,7 +110,7 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 									if ls.handleStreamError(err, "Entries") {
 										return err
 									}
-									return backoff.RetriableError(err.Error())
+									return wrapLogStreamRetryable(err)
 								})
 								if entryErr == nil {
 									if lastIndex >= start {

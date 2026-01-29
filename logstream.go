@@ -21,7 +21,6 @@ import (
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
-	"github.com/google/trillian/client/backoff"
 )
 
 var DbIngestBatchSize = 1000   // number of entries to send to ingest at a time
@@ -51,6 +50,7 @@ type LogStream struct {
 	tailClient *client.LogClient
 	headTile   *sunlight.Client
 	tailTile   *sunlight.Client
+	backoff    *logStreamBackoff
 }
 
 func (ls *LogStream) URL() string {
@@ -173,54 +173,54 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err error) {
-	bo := &backoff.Backoff{
-		Min:    1 * time.Second,
-		Max:    5 * time.Minute,
-		Factor: 2,
-		Jitter: true,
-	}
 	now := time.Now()
 	lastIndex = ls.LastIndex.Load()
-	err = bo.Retry(ctx, func() error {
+	err = ls.backoff.Retry(ctx, func() error {
 		var newIndex int64
 		var errFrom string
+		var callErr error
 		if ls.isTiled() {
 			errFrom = "Checkpoint"
 			if ls.headTile != nil {
 				var checkpoint sunlight.Checkpoint
-				checkpoint, _, err = ls.headTile.Checkpoint(ctx)
-				if err == nil {
+				checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
+				if callErr == nil {
 					newIndex = checkpoint.N - 1
 				}
 			} else {
-				err = ErrSunlightClientMissing
+				callErr = ErrSunlightClientMissing
 			}
 		} else {
 			errFrom = "GetSTH"
 			var sth *ct.SignedTreeHead
-			sth, err = ls.headClient.GetSTH(ctx)
-			if err == nil {
+			sth, callErr = ls.headClient.GetSTH(ctx)
+			if callErr == nil {
 				newIndex = int64(sth.TreeSize) - 1 //#nosec G115
 			}
 		}
-		if err == nil {
+		if callErr == nil {
 			if lastIndex < newIndex {
 				if lastIndex+LogBatchSize < newIndex || time.Since(now) > time.Second*15 {
 					lastIndex = newIndex
 					ls.LastIndex.Store(lastIndex)
-					return nil
+				} else {
+					callErr = wrapLogStreamRetryable(ErrSTHDiffTooLow)
 				}
 			} else {
 				if time.Since(now) > IdleCloseTime {
-					return errLogIdle{Since: now}
+					callErr = errLogIdle{Since: now}
+				} else {
+					callErr = wrapLogStreamRetryable(ErrSTHDiffTooLow)
 				}
 			}
-			return backoff.RetriableError("STH diff too low")
+		} else {
+			if ls.handleStreamError(callErr, errFrom) {
+				// keep callErr as-is
+			} else {
+				callErr = wrapLogStreamRetryable(callErr)
+			}
 		}
-		if ls.handleStreamError(err, errFrom) {
-			return err
-		}
-		return backoff.RetriableError(err.Error())
+		return callErr
 	})
 	return
 }

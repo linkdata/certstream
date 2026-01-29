@@ -7,7 +7,6 @@ import (
 	"time"
 
 	ct "github.com/google/certificate-transparency-go"
-	"github.com/google/trillian/client/backoff"
 )
 
 func rawEntriesStopIndex(start, end int64) (stop int64) {
@@ -24,18 +23,12 @@ func rawEntriesStopIndex(start, end int64) (stop int64) {
 func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, err error) {
 	for start <= end && err == nil {
 		stopIndex := rawEntriesStopIndex(start, end)
-		bo := &backoff.Backoff{
-			Min:    1 * time.Second,
-			Max:    30 * time.Second,
-			Factor: 2,
-			Jitter: true,
-		}
 		var resp *ct.GetEntriesResponse
-		if err = bo.Retry(ctx, func() (e error) {
+		if err = ls.backoff.Retry(ctx, func() (e error) {
 			ls.adjustTailLimiter(historical)
 			if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
 				if !ls.handleStreamError(e, "GetRawEntries") {
-					e = backoff.RetriableError(e.Error())
+					e = wrapLogStreamRetryable(e)
 				}
 			}
 			return

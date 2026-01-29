@@ -123,6 +123,7 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 			log:         log,
 			headClient:  headLogClient,
 			tailClient:  tailLogClient,
+			backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
 		}
 		ls.MinIndex.Store(-1)
 		ls.MaxIndex.Store(-1)
