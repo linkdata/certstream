@@ -142,7 +142,7 @@ func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, st
 		t.Skip("docker not found in PATH; skipping Postgres container portion")
 	} else {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 3*time.Minute)
+		ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
 		t.Cleanup(cancel)
 
 		cname := "certstream-ingest-" + randHex(6)
@@ -158,7 +158,7 @@ func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, st
 				t.Fatalf("docker run failed: %v\n%s", err, out)
 			} else {
 				t.Cleanup(func() {
-					_, _ = run(context.Background(), "docker", "kill", cname)
+					_, _ = run(t.Context(), "docker", "kill", cname)
 				})
 
 				hostPort := dockerMappedPort(ctx, t, cname, "5432/tcp")

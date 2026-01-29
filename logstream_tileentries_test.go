@@ -267,7 +267,7 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
-	next, wanted := ls.getTileEntries(context.Background(), 0, 2, false, handleFn, nil)
+	next, wanted := ls.getTileEntries(t.Context(), 0, 2, false, handleFn, nil)
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}

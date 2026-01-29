@@ -104,7 +104,7 @@ func TestTailLogTransportLogsError(t *testing.T) {
 }
 
 func TestStartOpensTailLogFile(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "tail.log")
@@ -136,7 +136,7 @@ func TestStartOpensTailLogFile(t *testing.T) {
 }
 
 func TestStartOpensHeadLogFile(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "head.log")
