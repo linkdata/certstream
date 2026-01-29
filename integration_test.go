@@ -83,7 +83,7 @@ func testIntegrationMain(t *testing.T, hostPort string) {
 func Test_EndToEnd_DefaultStreams_PostgresContainer(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Minute)
 	defer cancel()
 
 	// Require docker
@@ -106,7 +106,7 @@ func Test_EndToEnd_DefaultStreams_PostgresContainer(t *testing.T) {
 		t.Fatalf("docker run failed: %v\n%s", err, out)
 	}
 	defer func() {
-		_, _ = run(context.Background(), "docker", "kill", cname)
+		_, _ = run(t.Context(), "docker", "kill", cname)
 	}()
 
 	hostPort := dockerMappedPort(ctx, t, cname, "5432/tcp")

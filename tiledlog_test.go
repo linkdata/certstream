@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -139,7 +138,7 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 		t.Fatalf("expected head and tail sunlight clients")
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if _, err := ls.headTile.Fetcher().ReadEndpoint(ctx, "checkpoint"); err != nil {
 		t.Fatalf("head ReadEndpoint: %v", err)
 	}

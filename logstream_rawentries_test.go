@@ -135,7 +135,7 @@ func makeTestLeafEntry(t *testing.T, now time.Time) (leaf ct.LeafEntry) {
 }
 
 func TestGetRawEntriesProcessesEntries(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	entry := makeTestLeafEntry(t, now)
 	client := &stubRawEntriesClient{entry: entry}
@@ -189,7 +189,7 @@ func TestGetRawEntriesProcessesEntries(t *testing.T) {
 }
 
 func TestGetRawEntriesStopsOnFatalError(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	client := &stubRawEntriesClient{err: io.ErrNoProgress}
 	ls := &LogStream{
 		LogOperator: &LogOperator{
@@ -232,7 +232,7 @@ func TestGetRawEntriesStopsOnFatalError(t *testing.T) {
 }
 
 func TestGetRawEntriesParallelProcessesEntries(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	entry := makeTestLeafEntry(t, now)
 	client := &controlledRawEntriesClient{entry: entry}
@@ -303,7 +303,7 @@ func TestGetRawEntriesParallelProcessesEntries(t *testing.T) {
 }
 
 func TestGetRawEntriesParallelAdvancesNextOutOfOrder(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	entry := makeTestLeafEntry(t, now)
 
