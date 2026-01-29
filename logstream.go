@@ -327,7 +327,7 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 func (ls *LogStream) statusCodeFromError(err error) (code int) {
 	if err != nil {
 		if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
-			if code = rspErr.StatusCode; code > 500 {
+			if code = rspErr.StatusCode; code >= 500 {
 				// https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/
 				if after, found := bytes.CutPrefix(bytes.TrimSpace(rspErr.Body), []byte("error code:")); found {
 					if n, err := strconv.Atoi(string(bytes.TrimSpace(after))); err == nil {
