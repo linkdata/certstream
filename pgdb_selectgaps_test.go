@@ -145,7 +145,6 @@ func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 				go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 				wg.Wait()
-				close(ls.gapCh)
 
 				var backfillIndex int64
 				if err = db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
@@ -160,7 +159,7 @@ func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 	}
 }
 
-func TestPgDB_SelectAllGapsClosesGapCh(t *testing.T) {
+func TestPgDB_SelectStreamGapsClosesGapCh(t *testing.T) {
 	t.Parallel()
 
 	ctx, db, cs := setupSelectGapsDB(t)
@@ -189,6 +188,7 @@ func TestPgDB_SelectAllGapsClosesGapCh(t *testing.T) {
 					Id:          streamID,
 					log:         &loglist3.Log{URL: url},
 				}
+				ls.gapCh = make(chan gap, 1)
 				logop.streams[url] = ls
 				cs.operators = map[string]*LogOperator{
 					logop.Domain: logop,
@@ -199,7 +199,7 @@ func TestPgDB_SelectAllGapsClosesGapCh(t *testing.T) {
 				} else {
 					var wg sync.WaitGroup
 					wg.Add(1)
-					go db.selectAllGaps(ctx, &wg)
+					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					wg.Wait()
 
@@ -270,7 +270,6 @@ func TestPgDB_SelectStreamGapsExample(t *testing.T) {
 					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					wg.Wait()
-					close(ls.gapCh)
 					got := collectGaps(ls.gapCh)
 					want := []gap{
 						{start: 2, end: 2},
@@ -335,7 +334,6 @@ func TestPgDB_SelectStreamGapsOrder(t *testing.T) {
 					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					wg.Wait()
-					close(ls.gapCh)
 					got := <-gotCh
 					want := []gap{
 						{start: 3, end: 3},
@@ -412,7 +410,6 @@ func TestPgDB_SelectStreamGapsMaxAtStart(t *testing.T) {
 							t.Fatalf("insert entries after start failed: %v", err)
 						} else {
 							wg.Wait()
-							close(ls.gapCh)
 							got := <-gotCh
 							want := []gap{
 								{start: 3, end: 3},
@@ -475,7 +472,6 @@ func TestPgDB_SelectStreamGapsUsesBackfillIndex(t *testing.T) {
 					go db.selectStreamGaps(ctx, &wg, ls, nil)
 
 					wg.Wait()
-					close(ls.gapCh)
 					got := collectGaps(ls.gapCh)
 					want := []gap{
 						{start: 5, end: 5},

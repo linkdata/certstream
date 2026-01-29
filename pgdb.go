@@ -498,48 +498,53 @@ func (gt *gapTotals) values() (count int64, size int64) {
 func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *LogStream, totals *gapTotals) {
 	defer wg.Done()
 
-	if ls != nil {
-		gapCh := ls.getGapCh()
-		if gapCh != nil {
-			var err error
-			var maxIndex sql.NullInt64
-			if err = cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&maxIndex); err == nil {
-				endIndex := int64(-1)
-				if maxIndex.Valid {
-					endIndex = maxIndex.Int64
-				}
-				if endIndex >= 0 {
-					var lastIndex int64
-					if err = cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id).Scan(&lastIndex); err == nil {
-						var startIndex sql.NullInt64
-						if err = cdb.QueryRow(ctx, cdb.stmtSelectMinIdxFrom, ls.Id, lastIndex).Scan(&startIndex); err == nil {
-							if startIndex.Valid {
-								if startIndex.Int64 != lastIndex && ctx.Err() == nil {
-									_ = cdb.updateBackfillIndex(ctx, ls, startIndex.Int64)
-									lastIndex = startIndex.Int64
-								}
-								stmt := cdb.stmtFindGap
-								for err == nil && ctx.Err() == nil && lastIndex < endIndex {
-									row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex)
-									var gapStart sql.NullInt64
-									var gapEnd sql.NullInt64
-									if err = row.Scan(&gapStart, &gapEnd); err == nil {
-										if gapStart.Valid && gapEnd.Valid {
-											g := gap{start: gapStart.Int64, end: gapEnd.Int64}
-											select {
-											case <-ctx.Done():
-											case gapCh <- g:
-												lastIndex = gapEnd.Int64 + 1
-												if totals != nil {
-													totals.add(g)
-												}
+	gapCh := ls.getGapCh()
+	if gapCh != nil {
+		defer func() {
+			ls.mu.Lock()
+			if ls.gapCh == gapCh {
+				close(gapCh)
+			}
+			ls.mu.Unlock()
+		}()
+		var err error
+		var maxIndex sql.NullInt64
+		if err = cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&maxIndex); err == nil {
+			endIndex := int64(-1)
+			if maxIndex.Valid {
+				endIndex = maxIndex.Int64
+			}
+			if endIndex >= 0 {
+				var lastIndex int64
+				if err = cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id).Scan(&lastIndex); err == nil {
+					var startIndex sql.NullInt64
+					if err = cdb.QueryRow(ctx, cdb.stmtSelectMinIdxFrom, ls.Id, lastIndex).Scan(&startIndex); err == nil {
+						if startIndex.Valid {
+							if startIndex.Int64 != lastIndex && ctx.Err() == nil {
+								_ = cdb.updateBackfillIndex(ctx, ls, startIndex.Int64)
+								lastIndex = startIndex.Int64
+							}
+							stmt := cdb.stmtFindGap
+							for err == nil && ctx.Err() == nil && lastIndex < endIndex {
+								row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex)
+								var gapStart sql.NullInt64
+								var gapEnd sql.NullInt64
+								if err = row.Scan(&gapStart, &gapEnd); err == nil {
+									if gapStart.Valid && gapEnd.Valid {
+										g := gap{start: gapStart.Int64, end: gapEnd.Int64}
+										select {
+										case <-ctx.Done():
+										case gapCh <- g:
+											lastIndex = gapEnd.Int64 + 1
+											if totals != nil {
+												totals.add(g)
 											}
-										} else if ctx.Err() == nil {
-											if err = cdb.updateBackfillIndex(ctx, ls, endIndex); err == nil {
-												lastIndex = endIndex
-											}
-											break
 										}
+									} else if ctx.Err() == nil {
+										if err = cdb.updateBackfillIndex(ctx, ls, endIndex); err == nil {
+											lastIndex = endIndex
+										}
+										break
 									}
 								}
 							}
@@ -547,8 +552,8 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 					}
 				}
 			}
-			_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
 		}
+		_ = cdb.LogError(err, "selectAllGaps.stream", "stream", ls.Id, "url", ls.URL())
 	}
 }
 
@@ -570,28 +575,16 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 	}
 	cdb.mu.Unlock()
 
-	defer func() {
-		for _, ls := range streams {
-			ls.mu.Lock()
-			if ls.gapCh != nil {
-				close(ls.gapCh)
-			}
-			ls.mu.Unlock()
-		}
-	}()
-
 	start := time.Now()
 	cdb.LogInfo("selectAllGaps starts", "streams", len(streams))
 
 	var totals gapTotals
-	if ctx.Err() == nil {
-		var streamWG sync.WaitGroup
-		for _, ls := range streams {
-			streamWG.Add(1)
-			go cdb.selectStreamGaps(ctx, &streamWG, ls, &totals)
-		}
-		streamWG.Wait()
+	var streamWG sync.WaitGroup
+	for _, ls := range streams {
+		streamWG.Add(1)
+		go cdb.selectStreamGaps(ctx, &streamWG, ls, &totals)
 	}
+	streamWG.Wait()
 
 	if ctx.Err() == nil {
 		totalgaps, totalgapsize := totals.values()
