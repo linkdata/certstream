@@ -14,7 +14,7 @@ func rawEntriesStopIndex(start, end int64, historical bool) (stop int64) {
 	if start <= end {
 		size := LogBatchSize
 		if historical {
-			size = 64
+			size = max(16, LogBatchSize/32)
 		}
 		stop = start + min(end-start+1, size) - 1
 	}
