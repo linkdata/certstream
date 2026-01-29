@@ -227,12 +227,8 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 
 func (ls *LogStream) seeIndex(logindex int64) {
 	if logindex >= 0 {
-		if x := ls.MinIndex.Load(); x > logindex || x == -1 {
-			ls.MinIndex.CompareAndSwap(x, logindex)
-		}
-		if x := ls.MaxIndex.Load(); x < logindex || x == -1 {
-			ls.MaxIndex.CompareAndSwap(x, logindex)
-		}
+		updateAtomicMin(&ls.MinIndex, logindex)
+		updateAtomicMax(&ls.MaxIndex, logindex)
 	}
 }
 
