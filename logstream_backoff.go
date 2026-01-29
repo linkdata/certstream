@@ -42,6 +42,7 @@ type logStreamBackoff struct {
 	max     time.Duration
 	factor  float64
 	jitter  bool
+	count   int64
 	current time.Duration
 	next    time.Time
 	nowFn   func() time.Time
@@ -56,6 +57,15 @@ func newLogStreamBackoff(min, max time.Duration, factor float64, jitter bool) (b
 		jitter:  jitter,
 		nowFn:   time.Now,
 		sleepFn: sleep,
+	}
+	return
+}
+
+func (b *logStreamBackoff) Count() (n int64) {
+	if b != nil {
+		b.mu.Lock()
+		n = b.count
+		b.mu.Unlock()
 	}
 	return
 }
@@ -81,6 +91,7 @@ func (b *logStreamBackoff) wait(ctx context.Context) (err error) {
 		if err = ctx.Err(); err == nil {
 			b.mu.Lock()
 			next := b.next
+			b.count++
 			b.mu.Unlock()
 			if !next.IsZero() {
 				delay := next.Sub(b.nowFn())
