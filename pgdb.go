@@ -575,7 +575,6 @@ func (cdb *PgDB) selectAllGaps(ctx context.Context, wg *sync.WaitGroup) {
 			ls.mu.Lock()
 			if ls.gapCh != nil {
 				close(ls.gapCh)
-				ls.gapCh = nil
 			}
 			ls.mu.Unlock()
 		}

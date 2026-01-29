@@ -160,6 +160,73 @@ func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 	}
 }
 
+func TestPgDB_SelectAllGapsClosesGapCh(t *testing.T) {
+	t.Parallel()
+
+	ctx, db, cs := setupSelectGapsDB(t)
+	if db != nil && cs != nil {
+		var operatorID int32
+		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+			"op", "op@example.com",
+		).Scan(&operatorID); err != nil {
+			t.Fatalf("insert operator failed: %v", err)
+		} else {
+			url := "https://example.com/log-close-gapch"
+			var streamID int32
+			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+				t.Fatalf("insert stream failed: %v", err)
+			} else if err = insertEntries(ctx, db, streamID, []int64{1, 3}); err != nil {
+				t.Fatalf("insert entries failed: %v", err)
+			} else {
+				logop := &LogOperator{
+					CertStream: cs,
+					operator:   &loglist3.Operator{Name: "op", Email: []string{"op@example.com"}},
+					Domain:     "example.com",
+					streams:    map[string]*LogStream{},
+				}
+				ls := &LogStream{
+					LogOperator: logop,
+					Id:          streamID,
+					log:         &loglist3.Log{URL: url},
+				}
+				logop.streams[url] = ls
+				cs.operators = map[string]*LogOperator{
+					logop.Domain: logop,
+				}
+
+				if err = db.updateBackfillIndex(ctx, ls, 1); err != nil {
+					t.Fatalf("set backfill index failed: %v", err)
+				} else {
+					var wg sync.WaitGroup
+					wg.Add(1)
+					go db.selectAllGaps(ctx, &wg)
+
+					wg.Wait()
+
+					gapCh := ls.getGapCh()
+					if gapCh == nil {
+						t.Fatalf("gap channel not initialized")
+					} else {
+						gotCh := make(chan []gap, 1)
+						go func() {
+							gotCh <- collectGaps(gapCh)
+						}()
+						select {
+						case got := <-gotCh:
+							want := []gap{{start: 2, end: 2}}
+							if !gapsEqual(got, want) {
+								t.Fatalf("gaps = %v, want %v", got, want)
+							}
+						case <-time.After(2 * time.Second):
+							t.Fatalf("gap channel not closed")
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestPgDB_SelectStreamGapsExample(t *testing.T) {
 	t.Parallel()
 
