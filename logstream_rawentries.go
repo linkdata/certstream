@@ -36,18 +36,20 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 			now := time.Now()
 			for i := range resp.Entries {
 				le := ls.makeLogEntry(start, resp.Entries[i], historical)
-				ls.seeIndex(start)
 				if handleFn(ctx, now, le) {
 					wanted = true
 				}
+				ls.seeIndex(start)
 				start++
 				if gapcounter != nil {
 					gapcounter.Add(-1)
 				}
 			}
 		} else {
-			if gapcounter != nil && ctx.Err() == nil {
-				_ = ls.LogError(err, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+			if ctx.Err() == nil {
+				_ = ls.LogError(err, "GetRawEntries", "url", ls.URL(), "start", start, "end", end)
+			}
+			if gapcounter != nil {
 				gapcounter.Add(start - (end + 1))
 			}
 		}
