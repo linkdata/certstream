@@ -352,10 +352,11 @@ func TestGetRawEntriesParallelAdvancesNextOutOfOrder(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		var next int64
-		var wanted bool
-		wanted, next, _ = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, nil)
+		wanted, next, err := ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, nil)
 		resultCh <- result{next: next, wanted: wanted}
+		if err != nil {
+			t.Error(err)
+		}
 	}()
 
 	select {

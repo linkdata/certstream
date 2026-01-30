@@ -25,12 +25,14 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 		stopIndex := rawEntriesStopIndex(start, end)
 		var resp *ct.GetEntriesResponse
 		if err = ls.backoff.Retry(ctx, func() (e error) {
-			if sleeptime := min(500, ls.Status429.Load()*2); sleeptime > 0 {
-				if historical {
-					sleeptime *= 2
+			/*if ls.LogOperator != nil {
+				if sleeptime := min(500, ls.Status429.Load()*2); sleeptime > 0 {
+					if historical {
+						sleeptime *= 2
+					}
+					_ = sleep(ctx, time.Millisecond*time.Duration(sleeptime))
 				}
-				_ = sleep(ctx, time.Millisecond*time.Duration(sleeptime))
-			}
+			}*/
 			ls.adjustTailLimiter(historical)
 			if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
 				if !ls.handleStreamError(e, "GetRawEntries") {
@@ -75,15 +77,22 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 	err = ctx.Err()
 	next = start
 
+	workCtx, workCancel := context.WithCancel(ctx)
 	workCh := make(chan rawEntriesRange)
 	workerCount := min(32, max(1, ls.Concurrency))
+	workerSleep := time.Second / time.Duration(workerCount)
 	completed := make(map[int64]int64)
 	var wg sync.WaitGroup
 	var workMu sync.Mutex
-	for range workerCount {
+	for i := range workerCount {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
+			if i > 0 && ls.LogOperator != nil {
+				if ls.Status429.Load() > 0 {
+					_ = sleep(workCtx, workerSleep*time.Duration(i))
+				}
+			}
 			for r := range workCh {
 				w, _, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
 				workMu.Lock()
@@ -101,7 +110,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 				}
 				workMu.Unlock()
 			}
-		}()
+		}(i)
 	}
 
 	for start <= end && err == nil {
@@ -114,6 +123,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 	}
 
 	close(workCh)
+	workCancel()
 	wg.Wait()
 	if err == nil {
 		err = ctx.Err()
