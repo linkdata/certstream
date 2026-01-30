@@ -358,7 +358,7 @@ func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historica
 	if start <= end {
 		if historical {
 			if n249 := ls.Status429.Load(); n249 > 0 {
-				_ = sleep(ctx, time.Millisecond*time.Duration(min(100, n249)))
+				_ = sleep(ctx, time.Millisecond*time.Duration(min(1000, n249)))
 			}
 		}
 		if ls.isTiled() {
