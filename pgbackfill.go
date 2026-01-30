@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 )
 
-var BulkRange = int64(4096)
 var ErrLogEntriesTooOld = errors.New("log entries are older than max age")
 
 type errLogEntriesTooOld struct {
@@ -118,20 +117,20 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 		if minIndex > 0 && ctx.Err() == nil {
 			cdb.LogInfo("backlog start", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 			ls.Backfill.Add(minIndex - 1)
-			for minIndex > 0 && ctx.Err() == nil {
-				start := max(0, minIndex-BulkRange)
+			for minIndex > 0 {
+				start := max(0, minIndex-LogBatchSize)
 				stop := minIndex - 1
 				minIndex = start
 				var wanted bool
 				if _, wanted = ls.getEntries(ctx, start, stop, true, ls.sendEntry, &ls.Backfill); !wanted {
 					if ctx.Err() == nil {
-						cdb.LogInfo("backlog stops", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 						ls.addError(ls, errLogEntriesTooOld{MaxAge: cdb.PgMaxAge})
 					}
 					ls.Backfill.Store(0)
 					break
 				}
 			}
+			cdb.LogInfo("backlog stops", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 		}
 	}
 }
