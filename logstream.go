@@ -287,6 +287,13 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 					}
 				}
 			}
+		} else {
+			wanted = true
+			err := le.Err
+			if err == nil {
+				err = os.ErrInvalid
+			}
+			ls.LogError(err, "sendEntry", "url", ls.URL(), "stream", ls.Id, "logindex", le.LogIndex)
 		}
 	}
 	return
