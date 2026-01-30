@@ -16,11 +16,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"filippo.io/sunlight"
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/transparency-dev/formats/log"
 )
 
 var DbIngestBatchSize = 1000   // number of entries to send to ingest at a time
@@ -48,8 +48,8 @@ type LogStream struct {
 	tiledLog   *loglist3.TiledLog
 	headClient *client.LogClient
 	tailClient *client.LogClient
-	headTile   *sunlight.Client
-	tailTile   *sunlight.Client
+	headTile   *tileClient
+	tailTile   *tileClient
 	backoff    *logStreamBackoff
 }
 
@@ -184,13 +184,13 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 			if ls.isTiled() {
 				errFrom = "Checkpoint"
 				if ls.headTile != nil {
-					var checkpoint sunlight.Checkpoint
-					checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
-					if callErr == nil {
-						newIndex = checkpoint.N - 1
+					var checkpoint *log.Checkpoint
+					checkpoint, _, callErr = ls.headTile.checkpoint(ctx)
+					if callErr == nil && checkpoint != nil {
+						newIndex = int64(checkpoint.Size) - 1 //#nosec G115
 					}
 				} else {
-					callErr = ErrSunlightClientMissing
+					callErr = ErrTesseraClientMissing
 				}
 			} else {
 				errFrom = "GetSTH"
@@ -325,7 +325,9 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 
 func (ls *LogStream) statusCodeFromError(err error) (code int) {
 	if err != nil {
-		if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
+		if statusCoder, ok := err.(interface{ StatusCode() int }); ok {
+			code = statusCoder.StatusCode()
+		} else if rspErr, isRspErr := err.(jsonclient.RspError); isRspErr {
 			if code = rspErr.StatusCode; code >= 500 {
 				// https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/
 				if after, found := bytes.CutPrefix(bytes.TrimSpace(rspErr.Body), []byte("error code:")); found {
@@ -364,7 +366,15 @@ func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historica
 	next = start
 	if start <= end {
 		if ls.isTiled() {
-			next, wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
+			client := ls.headTile
+			fn := ls.getTileEntriesParallel
+			if historical {
+				fn = ls.getTileEntries
+				if ls.tailTile != nil {
+					client = ls.tailTile
+				}
+			}
+			wanted, next, _ = fn(ctx, client, start, end, historical, handleFn, gapcounter)
 		} else {
 			var fn func(ctx context.Context, client rawEntriesClient, start int64, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, next int64, err error)
 			client := ls.headClient

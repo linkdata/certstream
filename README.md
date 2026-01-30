@@ -5,7 +5,7 @@
 
 # CertStream
 
-Small library wrapping github.com/google/certificate-transparency-go and github.com/FiloSottile/sunlight.
+Small library wrapping github.com/google/certificate-transparency-go and github.com/transparency-dev/tessera.
 
 Requires a Postgres database to use.
 
