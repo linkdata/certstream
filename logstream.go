@@ -356,10 +356,11 @@ func (ls *LogStream) statusCodeFromError(err error) (code int) {
 func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	next = start
 	if start <= end {
-		if historical {
-			if n249 := ls.Status429.Load(); n249 > 0 {
-				_ = sleep(ctx, time.Millisecond*time.Duration(min(1000, n249*10)))
+		if sleeptime := min(100, ls.Status429.Load()); sleeptime > 0 {
+			if historical {
+				sleeptime *= 10
 			}
+			_ = sleep(ctx, time.Millisecond*time.Duration(sleeptime))
 		}
 		if ls.isTiled() {
 			next, wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
