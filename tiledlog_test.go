@@ -6,8 +6,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"io"
 	"math/big"
 	"net/http"
@@ -15,8 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/google/certificate-transparency-go/x509"
+	"github.com/google/certificate-transparency-go/x509/pkix"
 )
 
 type countingTransport struct {
@@ -62,9 +61,9 @@ func makeTestCertificate(t *testing.T, now time.Time) []byte {
 func TestMakeTileLogEntryParsesCertificate(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	der := makeTestCertificate(t, now)
-	entry := &sunlight.LogEntry{
+	entry := &tileEntry{
 		Certificate: der,
-		Timestamp:   now.UnixMilli(),
+		Timestamp:   uint64(now.UnixMilli()),
 	}
 	ls := &LogStream{}
 	le := ls.makeTileLogEntry(42, entry, false)
@@ -135,12 +134,12 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 		t.Fatalf("URL() = %q, want %q", ls.URL(), tiledLog.MonitoringURL)
 	}
 	if ls.headTile == nil || ls.tailTile == nil {
-		t.Fatalf("expected head and tail sunlight clients")
+		t.Fatalf("expected head and tail tessera clients")
 	}
 
 	ctx := t.Context()
-	if _, err := ls.headTile.Fetcher().ReadEndpoint(ctx, "checkpoint"); err != nil {
-		t.Fatalf("head ReadEndpoint: %v", err)
+	if _, err := ls.headTile.fetch(ctx, "checkpoint"); err != nil {
+		t.Fatalf("head checkpoint: %v", err)
 	}
 	if headTransport.Count() == 0 {
 		t.Fatalf("head transport not used")
@@ -148,8 +147,8 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 	if tailTransport.Count() != 0 {
 		t.Fatalf("tail transport used for head client")
 	}
-	if _, err := ls.tailTile.Fetcher().ReadEndpoint(ctx, "checkpoint"); err != nil {
-		t.Fatalf("tail ReadEndpoint: %v", err)
+	if _, err := ls.tailTile.fetch(ctx, "checkpoint"); err != nil {
+		t.Fatalf("tail checkpoint: %v", err)
 	}
 	if tailTransport.Count() == 0 {
 		t.Fatalf("tail transport not used")

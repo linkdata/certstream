@@ -19,7 +19,7 @@ func TestStatusCodeFromError(t *testing.T) {
 		t.Fatalf("statusCodeFromError(jsonclient) = %d", code)
 	}
 
-	code = ls.statusCodeFromError(errors.New("tile/1/000: unexpected status code 404"))
+	code = ls.statusCodeFromError(tileFetchError{statusCode: 404, url: "https://example.test/tile/entries/000"})
 	if code != 404 {
 		t.Fatalf("statusCodeFromError(string) = %d", code)
 	}
@@ -34,7 +34,7 @@ func TestHandleStreamErrorTreatsNotFoundAsTransient(t *testing.T) {
 	ls := &LogStream{
 		LogOperator: &LogOperator{},
 	}
-	if ls.handleStreamError(errors.New("tile/1/000: unexpected status code 404"), "Entries") {
+	if ls.handleStreamError(tileFetchError{statusCode: 404, url: "https://example.test/tile/entries/000"}, "Entries") {
 		t.Fatalf("handleStreamError returned fatal for 404")
 	}
 }

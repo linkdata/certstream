@@ -10,26 +10,28 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"filippo.io/sunlight"
 	ct "github.com/google/certificate-transparency-go"
+	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/google/certificate-transparency-go/x509"
+	"github.com/transparency-dev/formats/log"
+	formatnote "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/merkle/rfc6962"
+	"github.com/transparency-dev/merkle/testonly"
+	"github.com/transparency-dev/tessera/api/layout"
+	"github.com/transparency-dev/tessera/ctonly"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/mod/sumdb/note"
-	"golang.org/x/mod/sumdb/tlog"
 )
 
-type tileHashStore struct {
-	hashes map[int64]tlog.Hash
-}
-
 type tileRoundTripper struct {
-	entries    []*sunlight.LogEntry
-	hashStore  *tileHashStore
-	checkpoint []byte
+	entryBundle []byte
+	checkpoint  []byte
 }
 
 type injectedSigner struct {
@@ -51,46 +53,6 @@ func (s *injectedSigner) KeyHash() uint32 {
 
 func (s *injectedSigner) Verifier() note.Verifier {
 	return s.v
-}
-
-func newTileHashStore(recordHashes []tlog.Hash) (store *tileHashStore, err error) {
-	store = &tileHashStore{hashes: make(map[int64]tlog.Hash)}
-	hashReader := tlog.HashReaderFunc(func(indexes []int64) ([]tlog.Hash, error) {
-		return store.readHashes(indexes)
-	})
-	for i, recordHash := range recordHashes {
-		if err == nil {
-			var hashes []tlog.Hash
-			hashes, err = tlog.StoredHashesForRecordHash(int64(i), recordHash, hashReader)
-			if err == nil {
-				base := tlog.StoredHashIndex(0, int64(i))
-				for j, hash := range hashes {
-					store.hashes[base+int64(j)] = hash
-				}
-			}
-		}
-	}
-	if err != nil {
-		store = nil
-	}
-	return
-}
-
-func (store *tileHashStore) readHashes(indexes []int64) (hashes []tlog.Hash, err error) {
-	hashes = make([]tlog.Hash, len(indexes))
-	for i, idx := range indexes {
-		if err == nil {
-			var ok bool
-			hashes[i], ok = store.hashes[idx]
-			if !ok {
-				err = errors.New("tile hash index missing")
-			}
-		}
-	}
-	if err != nil {
-		hashes = nil
-	}
-	return
 }
 
 func signTreeHead(priv *ecdsa.PrivateKey, input []byte) (sig []byte, err error) {
@@ -117,15 +79,15 @@ func noteSignature(timestamp uint64, treeSignature []byte) (sig []byte, err erro
 	return
 }
 
-func mustSignedCheckpoint(t *testing.T, name string, priv *ecdsa.PrivateKey, tree tlog.Tree) (noteBytes []byte) {
+func mustSignedCheckpoint(t *testing.T, name string, verifier note.Verifier, priv *ecdsa.PrivateKey, treeSize uint64, treeHash []byte) (noteBytes []byte) {
 	t.Helper()
 	var err error
 	timestamp := uint64(time.Now().UnixMilli())
 	sth := ct.SignedTreeHead{
 		Version:        ct.V1,
-		TreeSize:       uint64(tree.N),
+		TreeSize:       treeSize,
 		Timestamp:      timestamp,
-		SHA256RootHash: ct.SHA256Hash(tree.Hash),
+		SHA256RootHash: ct.SHA256Hash(treeHash),
 	}
 	var sthInput []byte
 	if sthInput, err = ct.SerializeSTHSignatureInput(sth); err == nil {
@@ -133,16 +95,14 @@ func mustSignedCheckpoint(t *testing.T, name string, priv *ecdsa.PrivateKey, tre
 		if treeSig, err = signTreeHead(priv, sthInput); err == nil {
 			var sig []byte
 			if sig, err = noteSignature(timestamp, treeSig); err == nil {
-				var verifier note.Verifier
-				if verifier, err = sunlight.NewRFC6962Verifier(name, priv.Public()); err == nil {
-					signer := &injectedSigner{v: verifier, sig: sig}
-					noteBytes, err = note.Sign(&note.Note{
-						Text: sunlight.FormatCheckpoint(sunlight.Checkpoint{
-							Origin: name,
-							Tree:   tree,
-						}),
-					}, signer)
-				}
+				signer := &injectedSigner{v: verifier, sig: sig}
+				noteBytes, err = note.Sign(&note.Note{
+					Text: string(log.Checkpoint{
+						Origin: name,
+						Size:   treeSize,
+						Hash:   treeHash,
+					}.Marshal()),
+				}, signer)
 			}
 		}
 	}
@@ -152,21 +112,23 @@ func mustSignedCheckpoint(t *testing.T, name string, priv *ecdsa.PrivateKey, tre
 	return
 }
 
-func (rt *tileRoundTripper) dataTile(tile tlog.Tile) (data []byte, err error) {
-	if tile.L == -1 {
-		start := tile.N * int64(sunlight.TileWidth)
-		end := start + int64(tile.W)
-		if start >= 0 && end <= int64(len(rt.entries)) {
-			for i := start; i < end; i++ {
-				data = sunlight.AppendTileLeaf(data, rt.entries[i])
-			}
-		} else {
-			err = errors.New("tile entry range invalid")
-		}
-	} else {
-		err = errors.New("tile is not a data tile")
+func mustMarshalPKIXPublicKey(t *testing.T, key any) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
 	}
-	return
+	return der
+}
+
+func appendEntryBundle(bundle []byte, entryData []byte) ([]byte, error) {
+	if len(entryData) > math.MaxUint16 {
+		return nil, errors.New("entry too large for bundle")
+	}
+	length := uint16(len(entryData))
+	bundle = append(bundle, byte(length>>8), byte(length))
+	bundle = append(bundle, entryData...)
+	return bundle, nil
 }
 
 func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, err error) {
@@ -175,20 +137,15 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 	var data []byte
 	if path == "checkpoint" {
 		data = rt.checkpoint
-	} else if strings.HasPrefix(path, "tile/") {
-		var tile tlog.Tile
-		tile, err = sunlight.ParseTilePath(path)
-		if err == nil {
-			if tile.L == -1 {
-				data, err = rt.dataTile(tile)
-			} else if tile.L >= 0 {
-				data, err = tlog.ReadTileData(tile, tlog.HashReaderFunc(rt.hashStore.readHashes))
-			} else {
-				status = http.StatusNotFound
-			}
+	} else if strings.HasPrefix(path, "tile/entries/") {
+		entryPath := strings.TrimPrefix(path, "tile/entries/")
+		index, _, parseErr := layout.ParseTileIndexPartial(entryPath)
+		if parseErr != nil {
+			status = http.StatusNotFound
+		} else if index == 0 {
+			data = rt.entryBundle
 		} else {
 			status = http.StatusNotFound
-			err = nil
 		}
 	} else {
 		status = http.StatusNotFound
@@ -209,54 +166,53 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	cert := makeTestCertificate(t, now)
-	entries := []*sunlight.LogEntry{
+	entries := []*ctonly.Entry{
 		{
 			Certificate: cert,
-			Timestamp:   now.UnixMilli(),
-			LeafIndex:   0,
+			Timestamp:   uint64(now.UnixMilli()),
 		},
 		{
 			Certificate: cert,
-			Timestamp:   now.UnixMilli(),
-			LeafIndex:   1,
+			Timestamp:   uint64(now.UnixMilli()),
 		},
 		{
 			Certificate: cert,
-			Timestamp:   now.UnixMilli(),
-			LeafIndex:   2,
+			Timestamp:   uint64(now.UnixMilli()),
 		},
 	}
-	recordHashes := make([]tlog.Hash, len(entries))
+	tree := testonly.New(rfc6962.DefaultHasher)
+	entryBundle := []byte{}
 	for i, entry := range entries {
-		recordHashes[i] = tlog.RecordHash(entry.MerkleTreeLeaf())
+		tree.AppendData(entry.MerkleTreeLeaf(uint64(i)))
+		var bundleErr error
+		entryBundle, bundleErr = appendEntryBundle(entryBundle, entry.LeafData(uint64(i)))
+		if bundleErr != nil {
+			t.Fatalf("appendEntryBundle: %v", bundleErr)
+		}
 	}
-	store, err := newTileHashStore(recordHashes)
-	if err != nil {
-		t.Fatalf("newTileHashStore: %v", err)
-	}
-	treeHash, err := tlog.TreeHash(int64(len(entries)), tlog.HashReaderFunc(store.readHashes))
-	if err != nil {
-		t.Fatalf("TreeHash: %v", err)
-	}
-	tree := tlog.Tree{N: int64(len(entries)), Hash: treeHash}
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	checkpoint := mustSignedCheckpoint(t, "test-log", priv, tree)
-	rt := &tileRoundTripper{
-		entries:    entries,
-		hashStore:  store,
-		checkpoint: checkpoint,
-	}
-	client, err := sunlight.NewClient(&sunlight.ClientConfig{
-		MonitoringPrefix: "https://example.test/",
-		PublicKey:        priv.Public(),
-		HTTPClient:       &http.Client{Transport: rt},
-		UserAgent:        "certstream-test (+https://example.test)",
-	})
+	vkey, err := formatnote.RFC6962VerifierString("https://example.test/", &priv.PublicKey)
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatalf("RFC6962VerifierString: %v", err)
+	}
+	verifier, err := formatnote.NewRFC6962Verifier(vkey)
+	if err != nil {
+		t.Fatalf("NewRFC6962Verifier: %v", err)
+	}
+	checkpoint := mustSignedCheckpoint(t, "example.test", verifier, priv, tree.Size(), tree.Hash())
+	rt := &tileRoundTripper{
+		entryBundle: entryBundle,
+		checkpoint:  checkpoint,
+	}
+	client, err := newTesseraClient(&loglist3.TiledLog{
+		MonitoringURL: "https://example.test/",
+		Key:           mustMarshalPKIXPublicKey(t, &priv.PublicKey),
+	}, &http.Client{Transport: rt})
+	if err != nil {
+		t.Fatalf("newTesseraClient: %v", err)
 	}
 	ls := &LogStream{
 		LogOperator: &LogOperator{
@@ -267,7 +223,10 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
-	next, wanted := ls.getTileEntries(t.Context(), 0, 2, false, handleFn, nil)
+	wanted, next, err := ls.getTileEntries(t.Context(), client, 0, 2, false, handleFn, nil)
+	if err != nil {
+		t.Fatalf("getTileEntries: %v", err)
+	}
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
