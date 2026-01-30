@@ -150,11 +150,6 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 	} else {
 		status = http.StatusNotFound
 	}
-	if err != nil {
-		status = http.StatusNotFound
-		data = nil
-		err = nil
-	}
 	resp = &http.Response{
 		StatusCode: status,
 		Body:       io.NopCloser(bytes.NewReader(data)),
