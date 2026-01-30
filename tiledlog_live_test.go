@@ -85,7 +85,7 @@ func TestLiveLetsEncryptTiledLogLastEntry(t *testing.T) {
 			continue
 		}
 		for _, log := range op.TiledLogs {
-			if log == nil || log.MonitoringURL == "" || len(log.Key) == 0 {
+			if log == nil || log.MonitoringURL == "" || len(log.Key) == 0 || log.State.LogStatus() != loglist3.UsableLogStatus {
 				continue
 			}
 			leLogs = append(leLogs, log)
