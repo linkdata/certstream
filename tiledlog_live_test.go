@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -126,16 +125,7 @@ func TestLiveLetsEncryptTiledLogLastEntry(t *testing.T) {
 
 func fetchLastLogEntry(ctx context.Context, log *loglist3.TiledLog) (*LogEntry, error) {
 	le, err := fetchLastLogEntryWithClient(ctx, log)
-	if err == nil {
-		return le, nil
-	}
-	var fetchErr tileFetchError
-	if errors.As(err, &fetchErr) && fetchErr.StatusCode() == http.StatusForbidden && log.SubmissionURL != "" {
-		fallback := *log
-		fallback.MonitoringURL = ""
-		return fetchLastLogEntryWithClient(ctx, &fallback)
-	}
-	return nil, err
+	return le, err
 }
 
 func fetchLastLogEntryWithClient(ctx context.Context, log *loglist3.TiledLog) (*LogEntry, error) {
