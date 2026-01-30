@@ -9,14 +9,10 @@ import (
 	ct "github.com/google/certificate-transparency-go"
 )
 
-func rawEntriesStopIndex(start, end int64, historical bool) (stop int64) {
+func rawEntriesStopIndex(start, end int64) (stop int64) {
 	stop = start
 	if start <= end {
-		size := LogBatchSize
-		if historical {
-			size = max(16, LogBatchSize/32)
-		}
-		stop = start + min(end-start+1, size) - 1
+		stop = start + min(end-start+1, LogBatchSize) - 1
 	}
 	return
 }
@@ -24,9 +20,9 @@ func rawEntriesStopIndex(start, end int64, historical bool) (stop int64) {
 // getRawEntries fetches and processes the logentries in the index range start...end (inclusive) in order with no parallelism.
 // Returns 'wanted' set to true if handleFn returned true for any logentry.
 // Returns an error if not all entries could be fetched and processed.
-func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, err error) {
+func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, next int64, err error) {
 	for start <= end && err == nil {
-		stopIndex := rawEntriesStopIndex(start, end, historical)
+		stopIndex := rawEntriesStopIndex(start, end)
 		var resp *ct.GetEntriesResponse
 		if err = ls.backoff.Retry(ctx, func() (e error) {
 			ls.adjustTailLimiter(historical)
@@ -64,13 +60,13 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 // getRawEntriesParallel fetches and processes the logentries in the index range start...end (inclusive) using Config.Concurrency workers.
 // The returned next start index can be less than end+1 if an error occured.
 // Returns the next start index and 'wanted' set to true if handleFn returned true for any logentry.
-func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
+func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, next int64, err error) {
 	type rawEntriesRange struct {
 		start int64
 		end   int64
 	}
 
-	err := ctx.Err()
+	err = ctx.Err()
 	next = start
 
 	workCh := make(chan rawEntriesRange)
@@ -83,7 +79,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 		go func() {
 			defer wg.Done()
 			for r := range workCh {
-				w, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
+				w, _, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
 				workMu.Lock()
 				wanted = wanted || w
 				if e == nil {
@@ -103,17 +99,19 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 	}
 
 	for start <= end && err == nil {
-		stopIndex := rawEntriesStopIndex(start, end, historical)
+		stopIndex := rawEntriesStopIndex(start, end)
 		select {
 		case workCh <- rawEntriesRange{start: start, end: stopIndex}:
 			start = stopIndex + 1
 		case <-ctx.Done():
-			err = ctx.Err()
 		}
 	}
 
 	close(workCh)
 	wg.Wait()
+	if err == nil {
+		err = ctx.Err()
+	}
 
 	return
 }

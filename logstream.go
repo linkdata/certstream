@@ -359,11 +359,16 @@ func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historica
 		if ls.isTiled() {
 			next, wanted = ls.getTileEntries(ctx, start, end, historical, handleFn, gapcounter)
 		} else {
+			var fn func(ctx context.Context, client rawEntriesClient, start int64, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, next int64, err error)
 			client := ls.headClient
-			if historical && ls.tailClient != nil {
-				client = ls.tailClient
+			fn = ls.getRawEntriesParallel
+			if historical {
+				fn = ls.getRawEntries
+				if ls.tailClient != nil {
+					client = ls.tailClient
+				}
 			}
-			next, wanted = ls.getRawEntriesParallel(ctx, client, start, end, historical, handleFn, gapcounter)
+			wanted, next, _ = fn(ctx, client, start, end, historical, handleFn, gapcounter)
 		}
 	}
 	return

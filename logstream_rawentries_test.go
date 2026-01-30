@@ -164,7 +164,7 @@ func TestGetRawEntriesProcessesEntries(t *testing.T) {
 
 	var wanted bool
 	var err error
-	if wanted, err = ls.getRawEntries(ctx, client, 0, 4, false, handleFn, &gapcounter); err == nil {
+	if wanted, _, err = ls.getRawEntries(ctx, client, 0, 4, false, handleFn, &gapcounter); err == nil {
 		if !wanted {
 			t.Fatalf("wanted = false, want true")
 		}
@@ -210,7 +210,7 @@ func TestGetRawEntriesStopsOnFatalError(t *testing.T) {
 
 	var wanted bool
 	var err error
-	if wanted, err = ls.getRawEntries(ctx, client, 10, 12, false, handleFn, &gapcounter); err != nil {
+	if wanted, _, err = ls.getRawEntries(ctx, client, 10, 12, false, handleFn, &gapcounter); err != nil {
 		if wanted {
 			t.Fatalf("wanted = true, want false")
 		}
@@ -272,7 +272,7 @@ func TestGetRawEntriesParallelProcessesEntries(t *testing.T) {
 
 	var next int64
 	var wanted bool
-	next, wanted = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, &gapcounter)
+	wanted, next, _ = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, &gapcounter)
 	if !wanted {
 		t.Fatalf("wanted = false, want true")
 	}
@@ -354,7 +354,7 @@ func TestGetRawEntriesParallelAdvancesNextOutOfOrder(t *testing.T) {
 	go func() {
 		var next int64
 		var wanted bool
-		next, wanted = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, nil)
+		wanted, next, _ = ls.getRawEntriesParallel(ctx, client, 0, 5, false, handleFn, nil)
 		resultCh <- result{next: next, wanted: wanted}
 	}()
 
