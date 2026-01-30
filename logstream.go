@@ -303,7 +303,7 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 		switch statusCode {
 		case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
 			fallthrough
-		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest:
+		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest, http.StatusConflict:
 			// ignored and not reported, just counted
 			ls.addStatus(statusCode)
 		default:
@@ -366,6 +366,9 @@ func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historica
 				fn = ls.getRawEntries
 				if ls.tailClient != nil {
 					client = ls.tailClient
+				}
+				if n249 := ls.Status429.Load(); n249 > 0 {
+					_ = sleep(ctx, time.Millisecond*time.Duration(min(100, n249)))
 				}
 			}
 			wanted, next, _ = fn(ctx, client, start, end, historical, handleFn, gapcounter)

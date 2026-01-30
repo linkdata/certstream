@@ -21,7 +21,7 @@ type Config struct {
 	PgMaxAge     int                 // maximum age in days to backfill
 	PgNoSSL      bool                // if true, do not use SSL
 	PgSyncCommit bool                // if true, do not set synchronous_commit=off
-	Concurrency  int                 // number of concurrent requests per stream, default is 8
+	Concurrency  int                 // number of concurrent requests per stream, default is 4
 	TailLog      string              // log HTTP requests using the tail dialer to this file
 }
 
@@ -39,6 +39,6 @@ func NewConfig() *Config {
 		PgConns:      100,
 		PgWorkerBits: 5,
 		PgMaxAge:     90,
-		Concurrency:  8,
+		Concurrency:  4,
 	}
 }

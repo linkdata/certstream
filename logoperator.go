@@ -3,6 +3,7 @@ package certstream
 import (
 	"context"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -17,15 +18,16 @@ import (
 
 type LogOperator struct {
 	*CertStream
-	Domain   string             // e.g. "letsencrypt.org" or "googleapis.com"
-	Count    atomic.Int64       // atomic; sum of the stream's Count
-	Id       int32              // database ID, if available
-	operator *loglist3.Operator // read-only
-	mu       sync.Mutex         // protects following
-	statuses map[int]int        // HTTP status code counter
-	streams  map[string]*LogStream
-	errcount int
-	errors   []*StreamError
+	Domain    string             // e.g. "letsencrypt.org" or "googleapis.com"
+	Count     atomic.Int64       // atomic; sum of the stream's Count
+	Status429 atomic.Int64       // atomic; number of 429 Too Many Requests
+	Id        int32              // database ID, if available
+	operator  *loglist3.Operator // read-only
+	mu        sync.Mutex         // protects following
+	statuses  map[int]int        // HTTP status code counter
+	streams   map[string]*LogStream
+	errcount  int
+	errors    []*StreamError
 }
 
 func (lo *LogOperator) Name() string {
@@ -51,7 +53,10 @@ func (lo *LogOperator) ErrorCount() (n int) {
 }
 
 func (lo *LogOperator) addStatus(statuscode int) {
-	if statuscode > 200 {
+	if statuscode > http.StatusOK {
+		if statuscode == http.StatusTooManyRequests {
+			lo.Status429.Add(1)
+		}
 		lo.mu.Lock()
 		if lo.statuses == nil {
 			lo.statuses = make(map[int]int)
