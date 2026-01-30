@@ -77,7 +77,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 	err = ctx.Err()
 	next = start
 
-	workCtx, workCancel := context.WithCancel(ctx)
+	sleepCtx, sleepCancel := context.WithCancel(ctx)
 	workCh := make(chan rawEntriesRange)
 	workerCount := min(32, max(1, ls.Concurrency))
 	workerSleep := time.Second / time.Duration(workerCount)
@@ -90,7 +90,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 			defer wg.Done()
 			if i > 0 && ls.LogOperator != nil {
 				if ls.Status429.Load() > 0 {
-					_ = sleep(workCtx, workerSleep*time.Duration(i))
+					_ = sleep(sleepCtx, workerSleep*time.Duration(i))
 				}
 			}
 			for r := range workCh {
@@ -123,7 +123,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 	}
 
 	close(workCh)
-	workCancel()
+	sleepCancel()
 	wg.Wait()
 	if err == nil {
 		err = ctx.Err()
