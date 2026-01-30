@@ -69,7 +69,7 @@ func TestLiveStaticTiledLogs(t *testing.T) {
 	t.Fatalf("no live tiled logs passed; failures: %v", failures)
 }
 
-func TestLiveLetsEncryptTiledLogLastEntry(t *testing.T) {
+func TestLiveLetsEncryptTiledLogFirstEntry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 
@@ -97,7 +97,7 @@ func TestLiveLetsEncryptTiledLogLastEntry(t *testing.T) {
 	var failures []string
 	for i := len(leLogs) - 1; i >= 0; i-- {
 		log := leLogs[i]
-		le, err := fetchLastLogEntry(ctx, log)
+		le, err := fetchFirstLogEntry(ctx, log)
 		if err != nil {
 			failures = append(failures, log.Description+": "+err.Error())
 			continue
@@ -123,12 +123,12 @@ func TestLiveLetsEncryptTiledLogLastEntry(t *testing.T) {
 	t.Skipf("no usable Let's Encrypt tiled log found: %v", failures)
 }
 
-func fetchLastLogEntry(ctx context.Context, log *loglist3.TiledLog) (*LogEntry, error) {
-	le, err := fetchLastLogEntryWithClient(ctx, log)
+func fetchFirstLogEntry(ctx context.Context, log *loglist3.TiledLog) (*LogEntry, error) {
+	le, err := fetchFirstLogEntryWithClient(ctx, log)
 	return le, err
 }
 
-func fetchLastLogEntryWithClient(ctx context.Context, log *loglist3.TiledLog) (*LogEntry, error) {
+func fetchFirstLogEntryWithClient(ctx context.Context, log *loglist3.TiledLog) (*LogEntry, error) {
 	client, err := newTesseraClient(log, http.DefaultClient)
 	if err != nil {
 		return nil, err
@@ -141,8 +141,7 @@ func fetchLastLogEntryWithClient(ctx context.Context, log *loglist3.TiledLog) (*
 		return nil, fmt.Errorf("checkpoint has zero size")
 	}
 
-	lastIndex := int64(checkpoint.Size - 1)
-	entryData, err := (&tileEntryCache{}).entryAt(ctx, client, uint64(lastIndex), checkpoint.Size)
+	entryData, err := (&tileEntryCache{}).entryAt(ctx, client, 0, checkpoint.Size)
 	if err != nil {
 		return nil, err
 	}
@@ -150,5 +149,5 @@ func fetchLastLogEntryWithClient(ctx context.Context, log *loglist3.TiledLog) (*
 	if err != nil {
 		return nil, err
 	}
-	return (&LogStream{}).makeTileLogEntry(lastIndex, entry, false), nil
+	return (&LogStream{}).makeTileLogEntry(0, entry, false), nil
 }
