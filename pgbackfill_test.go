@@ -33,10 +33,8 @@ func TestPgDB_BackfillStartIndex_UsesStoredIndex(t *testing.T) {
 					ls.LastIndex.Store(100)
 					var minIndex int64
 					var stored bool
-					if minIndex, stored, err = db.backfillStartIndex(ctx, ls); err != nil {
+					if minIndex, err = db.backfillGetGapStartIndex(ctx, ls); err != nil {
 						t.Fatalf("backfillStartIndex failed: %v", err)
-					} else if !stored {
-						t.Fatalf("stored = false, want true")
 					} else if minIndex != 42 {
 						t.Fatalf("minIndex = %d, want 42", minIndex)
 					} else {
@@ -44,7 +42,7 @@ func TestPgDB_BackfillStartIndex_UsesStoredIndex(t *testing.T) {
 							streamID,
 						); err != nil {
 							t.Fatalf("clear backfill_logindex failed: %v", err)
-						} else if minIndex, stored, err = db.backfillStartIndex(ctx, ls); err != nil {
+						} else if minIndex, err = db.backfillGetGapStartIndex(ctx, ls); err != nil {
 							t.Fatalf("backfillStartIndex without stored failed: %v", err)
 						} else if stored {
 							t.Fatalf("stored = true, want false")
@@ -89,7 +87,7 @@ func TestPgDB_BackfillGapsUpdatesBackfillIndex(t *testing.T) {
 						gapcounter.Add(-((end - start) + 1))
 					}
 					wanted = true
-					next = end
+					next = end + 1
 					return
 				}
 

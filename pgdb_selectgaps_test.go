@@ -71,9 +71,9 @@ func TestPgDB_SelectAllGapsPerStream(t *testing.T) {
 						cs.operators = map[string]*LogOperator{
 							logop.Domain: logop,
 						}
-						if err = db.updateBackfillIndex(ctx, lsA, 1); err != nil {
+						if err = db.backfillSetGapStartIndex(ctx, lsA, 1); err != nil {
 							t.Fatalf("update stream A backfill failed: %v", err)
-						} else if err = db.updateBackfillIndex(ctx, lsB, 10); err != nil {
+						} else if err = db.backfillSetGapStartIndex(ctx, lsB, 10); err != nil {
 							t.Fatalf("update stream B backfill failed: %v", err)
 						} else {
 							chA := lsA.gapCh
@@ -194,7 +194,7 @@ func TestPgDB_SelectStreamGapsClosesGapCh(t *testing.T) {
 					logop.Domain: logop,
 				}
 
-				if err = db.updateBackfillIndex(ctx, ls, 1); err != nil {
+				if err = db.backfillSetGapStartIndex(ctx, ls, 1); err != nil {
 					t.Fatalf("set backfill index failed: %v", err)
 				} else {
 					var wg sync.WaitGroup
@@ -262,7 +262,7 @@ func TestPgDB_SelectStreamGapsExample(t *testing.T) {
 					logop.Domain: logop,
 				}
 
-				if err = db.updateBackfillIndex(ctx, ls, 1); err != nil {
+				if err = db.backfillSetGapStartIndex(ctx, ls, 1); err != nil {
 					t.Fatalf("set backfill index failed: %v", err)
 				} else {
 					var wg sync.WaitGroup
@@ -464,7 +464,7 @@ func TestPgDB_SelectStreamGapsUsesBackfillIndex(t *testing.T) {
 					logop.Domain: logop,
 				}
 
-				if err = db.updateBackfillIndex(ctx, ls, 4); err != nil {
+				if err = db.backfillSetGapStartIndex(ctx, ls, 4); err != nil {
 					t.Fatalf("set backfill index failed: %v", err)
 				} else {
 					var wg sync.WaitGroup
