@@ -25,6 +25,12 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 		stopIndex := rawEntriesStopIndex(start, end)
 		var resp *ct.GetEntriesResponse
 		if err = ls.backoff.Retry(ctx, func() (e error) {
+			if sleeptime := min(500, ls.Status429.Load()*2); sleeptime > 0 {
+				if historical {
+					sleeptime *= 2
+				}
+				_ = sleep(ctx, time.Millisecond*time.Duration(sleeptime))
+			}
 			ls.adjustTailLimiter(historical)
 			if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
 				if !ls.handleStreamError(e, "GetRawEntries") {
