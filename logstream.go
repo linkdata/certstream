@@ -215,7 +215,7 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 				ls.LastIndex.Store(lastIndex)
 				return
 			}
-			err = sleep(ctx, time.Second*10)
+			err = sleep(ctx, time.Millisecond*time.Duration(8000+rand.IntN(4000)))
 		}
 	}
 	return
@@ -358,7 +358,7 @@ func (ls *LogStream) getEntries(ctx context.Context, start, end int64, historica
 	if start <= end {
 		if sleeptime := min(100, ls.Status429.Load()); sleeptime > 0 {
 			if historical {
-				sleeptime *= 10
+				sleeptime *= 2
 			}
 			_ = sleep(ctx, time.Millisecond*time.Duration(sleeptime))
 		}
