@@ -55,13 +55,21 @@ type tileClient struct {
 func newTesseraClient(log *loglist3.TiledLog, httpClient *http.Client) (client *tileClient, err error) {
 	var pub any
 	if log != nil {
+		originURL := log.MonitoringURL
+		if log.SubmissionURL != "" {
+			originURL = log.SubmissionURL
+		}
+		baseURLStr := log.MonitoringURL
+		if baseURLStr == "" {
+			baseURLStr = log.SubmissionURL
+		}
 		if pub, err = x509.ParsePKIXPublicKey(log.Key); err == nil {
 			var vkey string
-			if vkey, err = formatnote.RFC6962VerifierString(log.MonitoringURL, pub); err == nil {
+			if vkey, err = formatnote.RFC6962VerifierString(originURL, pub); err == nil {
 				var verifier note.Verifier
 				if verifier, err = formatnote.NewRFC6962Verifier(vkey); err == nil {
 					var baseURL *url.URL
-					if baseURL, err = url.Parse(log.MonitoringURL); err == nil {
+					if baseURL, err = url.Parse(baseURLStr); err == nil {
 						client = &tileClient{
 							baseURL:   baseURL,
 							http:      httpClient,

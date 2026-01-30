@@ -32,6 +32,7 @@ import (
 type tileRoundTripper struct {
 	entryBundle []byte
 	checkpoint  []byte
+	entryHits   int
 }
 
 type injectedSigner struct {
@@ -143,6 +144,7 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 		if parseErr != nil {
 			status = http.StatusNotFound
 		} else if index == 0 {
+			rt.entryHits++
 			data = rt.entryBundle
 		} else {
 			status = http.StatusNotFound
@@ -227,5 +229,81 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	}
 	if next != 3 {
 		t.Fatalf("next = %d, want 3", next)
+	}
+}
+
+func TestTileEntryCacheReadsSequentialEntries(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	cert := makeTestCertificate(t, now)
+	entries := []*ctonly.Entry{
+		{
+			Certificate: cert,
+			Timestamp:   uint64(now.UnixMilli()),
+		},
+		{
+			Certificate: cert,
+			Timestamp:   uint64(now.Add(time.Second).UnixMilli()),
+		},
+	}
+	entryBundle := []byte{}
+	for i, entry := range entries {
+		var bundleErr error
+		entryBundle, bundleErr = appendEntryBundle(entryBundle, entry.LeafData(uint64(i)))
+		if bundleErr != nil {
+			t.Fatalf("appendEntryBundle: %v", bundleErr)
+		}
+	}
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	vkey, err := formatnote.RFC6962VerifierString("https://example.test/", &priv.PublicKey)
+	if err != nil {
+		t.Fatalf("RFC6962VerifierString: %v", err)
+	}
+	verifier, err := formatnote.NewRFC6962Verifier(vkey)
+	if err != nil {
+		t.Fatalf("NewRFC6962Verifier: %v", err)
+	}
+	treeHash := sha256.Sum256([]byte("tile-entries"))
+	checkpoint := mustSignedCheckpoint(t, "example.test", verifier, priv, uint64(len(entries)), treeHash[:])
+	rt := &tileRoundTripper{
+		entryBundle: entryBundle,
+		checkpoint:  checkpoint,
+	}
+	client, err := newTesseraClient(&loglist3.TiledLog{
+		MonitoringURL: "https://example.test/",
+		Key:           mustMarshalPKIXPublicKey(t, &priv.PublicKey),
+	}, &http.Client{Transport: rt})
+	if err != nil {
+		t.Fatalf("newTesseraClient: %v", err)
+	}
+	cache := &tileEntryCache{}
+	ctx := t.Context()
+	logSize := uint64(len(entries))
+	entry0, err := cache.entryAt(ctx, client, 0, logSize)
+	if err != nil {
+		t.Fatalf("entryAt(0): %v", err)
+	}
+	entry1, err := cache.entryAt(ctx, client, 1, logSize)
+	if err != nil {
+		t.Fatalf("entryAt(1): %v", err)
+	}
+	parsed0, err := parseTileEntry(entry0)
+	if err != nil {
+		t.Fatalf("parseTileEntry(0): %v", err)
+	}
+	parsed1, err := parseTileEntry(entry1)
+	if err != nil {
+		t.Fatalf("parseTileEntry(1): %v", err)
+	}
+	if parsed0.Timestamp != entries[0].Timestamp {
+		t.Fatalf("entry 0 timestamp = %d, want %d", parsed0.Timestamp, entries[0].Timestamp)
+	}
+	if parsed1.Timestamp != entries[1].Timestamp {
+		t.Fatalf("entry 1 timestamp = %d, want %d", parsed1.Timestamp, entries[1].Timestamp)
+	}
+	if rt.entryHits != 1 {
+		t.Fatalf("entry bundle fetches = %d, want 1", rt.entryHits)
 	}
 }
