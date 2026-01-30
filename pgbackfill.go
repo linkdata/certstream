@@ -66,6 +66,7 @@ func (cdb *PgDB) backfillMinIndex(ctx context.Context, ls *LogStream) (minIndex 
 	if err = cdb.LogError(row.Scan(&minIndexRow), "Backfill/MinIndex", "url", ls.URL()); err == nil {
 		if minIndexRow.Valid {
 			minIndex = minIndexRow.Int64
+			ls.seeIndex(minIndex)
 		}
 	}
 	return
