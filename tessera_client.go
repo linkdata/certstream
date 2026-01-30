@@ -136,9 +136,9 @@ func (tc *tileClient) checkpoint(ctx context.Context) (*log.Checkpoint, []byte, 
 
 func (tc *tileClient) entryBundle(ctx context.Context, index uint64, logSize uint64) (api.EntryBundle, error) {
 	p := layout.PartialTileSize(0, index, logSize)
-	raw, err := tc.fetch(ctx, layout.EntriesPath(index, p))
+	raw, err := tc.fetch(ctx, layout.TilePath(8, index, p))
 	if err != nil && p > 0 && errors.Is(err, os.ErrNotExist) {
-		raw, err = tc.fetch(ctx, layout.EntriesPath(index, 0))
+		raw, err = tc.fetch(ctx, layout.TilePath(8, index, 0))
 	}
 	if err != nil {
 		return api.EntryBundle{}, err
