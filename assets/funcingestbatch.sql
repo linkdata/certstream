@@ -203,6 +203,7 @@ WITH certs_with_since AS (
           AND c.commonname = t.commonname
           AND c.notafter >= t.notbefore
           AND c.notbefore < t.notbefore
+          AND c.precert = t.precert
         ORDER BY c.notbefore DESC
         LIMIT 1
     ) overlap ON TRUE

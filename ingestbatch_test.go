@@ -347,6 +347,48 @@ func TestIngestBatch_SinceSkipsEmptyCommonName(t *testing.T) {
 	}
 }
 
+func TestIngestBatch_SinceRespectsPrecert(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	firstSeen := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	secondSeen := firstSeen.Add(2 * time.Hour)
+	firstNotBefore := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	firstNotAfter := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	secondNotBefore := time.Date(2021, 6, 1, 0, 0, 0, 0, time.UTC)
+	secondNotAfter := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	firstRow := ingestRowWithSHA(streamID, 1, "example.com", firstSeen, ingestSha256Hex)
+	firstRow["notbefore"] = firstNotBefore
+	firstRow["notafter"] = firstNotAfter
+	firstRow["precert"] = false
+
+	secondRow := ingestRowWithSHA(streamID, 2, "example.com", secondSeen, ingestSha256HexAlt)
+	secondRow["notbefore"] = secondNotBefore
+	secondRow["notafter"] = secondNotAfter
+	secondRow["precert"] = true
+
+	if err := callIngestBatch(ctx, conn, firstRow); err != nil {
+		t.Fatalf("first ingest batch failed: %v", err)
+	} else if err = callIngestBatch(ctx, conn, secondRow); err != nil {
+		t.Fatalf("second ingest batch failed: %v", err)
+	} else {
+		var sinceFirst time.Time
+		if sinceFirst, err = certSince(ctx, conn, ingestSha256Hex); err != nil {
+			t.Fatalf("fetch first cert since failed: %v", err)
+		} else if sinceFirst.Format(ingestTimestampFmt) != firstNotBefore.Format(ingestTimestampFmt) {
+			t.Fatalf("first cert since = %s, want %s", sinceFirst.Format(ingestTimestampFmt), firstNotBefore.Format(ingestTimestampFmt))
+		} else {
+			var sinceSecond time.Time
+			if sinceSecond, err = certSince(ctx, conn, ingestSha256HexAlt); err != nil {
+				t.Fatalf("fetch second cert since failed: %v", err)
+			} else if sinceSecond.Format(ingestTimestampFmt) != secondNotBefore.Format(ingestTimestampFmt) {
+				t.Fatalf("second cert since = %s, want %s", sinceSecond.Format(ingestTimestampFmt), secondNotBefore.Format(ingestTimestampFmt))
+			}
+		}
+	}
+}
+
 func TestIngestBatch_SplitDomainOncePerFQDN(t *testing.T) {
 	t.Parallel()
 

@@ -501,3 +501,77 @@ RETURNING id;`,
 		}
 	}
 }
+
+func TestSetSinceRespectsPrecert(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn := setupSubdomainTest(t)
+	if conn != nil {
+		var subjectID int
+		var issuerID int
+		if err := conn.QueryRow(ctx,
+			"INSERT INTO CERTDB_ident (organization, province, country) VALUES ($1, $2, $3) RETURNING id;",
+			"Subject Org", "CA", "US").Scan(&subjectID); err != nil {
+			t.Fatalf("insert subject failed: %v", err)
+		} else {
+			if err = conn.QueryRow(ctx,
+				"INSERT INTO CERTDB_ident (organization, province, country) VALUES ($1, $2, $3) RETURNING id;",
+				"Issuer Org", "CA", "US").Scan(&issuerID); err != nil {
+				t.Fatalf("insert issuer failed: %v", err)
+			} else {
+				firstNotBefore := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+				firstNotAfter := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+				secondNotBefore := time.Date(2021, 6, 1, 0, 0, 0, 0, time.UTC)
+				secondNotAfter := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+				var firstCertID int64
+				if err = conn.QueryRow(ctx, `
+INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+VALUES ($1, $2, $3, $4, $5, $6, decode($7, 'hex'), $8)
+RETURNING id;`,
+					firstNotBefore,
+					firstNotAfter,
+					firstNotBefore,
+					"example.com",
+					subjectID,
+					issuerID,
+					subdomainSha256Hex,
+					false).Scan(&firstCertID); err != nil {
+					t.Fatalf("insert first cert failed: %v", err)
+				} else {
+					var secondCertID int64
+					if err = conn.QueryRow(ctx, `
+INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+VALUES ($1, $2, $3, $4, $5, $6, decode($7, 'hex'), $8)
+RETURNING id;`,
+						secondNotBefore,
+						secondNotAfter,
+						firstNotBefore,
+						"example.com",
+						subjectID,
+						issuerID,
+						subdomainSha256HexAlt,
+						true).Scan(&secondCertID); err != nil {
+						t.Fatalf("insert second cert failed: %v", err)
+					} else {
+						var gotSince time.Time
+						if err = conn.QueryRow(ctx, "SELECT CERTDB_set_since($1);", secondCertID).Scan(&gotSince); err != nil {
+							t.Fatalf("set since failed: %v", err)
+						} else if gotSince.Format(ingestTimestampFmt) != secondNotBefore.Format(ingestTimestampFmt) {
+							t.Fatalf("set since = %s, want %s", gotSince.Format(ingestTimestampFmt), secondNotBefore.Format(ingestTimestampFmt))
+						} else {
+							var storedSince time.Time
+							if err = conn.QueryRow(ctx,
+								"SELECT since FROM CERTDB_cert WHERE id = $1;",
+								secondCertID).Scan(&storedSince); err != nil {
+								t.Fatalf("fetch since failed: %v", err)
+							} else if storedSince.Format(ingestTimestampFmt) != secondNotBefore.Format(ingestTimestampFmt) {
+								t.Fatalf("stored since = %s, want %s", storedSince.Format(ingestTimestampFmt), secondNotBefore.Format(ingestTimestampFmt))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
