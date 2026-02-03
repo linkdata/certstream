@@ -172,17 +172,16 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 		LogOperator: lo,
 		tiledLog:    log,
 	}
-	if logger, err = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle); err == nil {
-		if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, logger, lo.Config.Concurrency); err == nil {
-			if lo.TailClient != nil {
-				tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, logger, lo.Config.Concurrency)
-			}
-			if err == nil {
-				ls = tmpls
-				ls.MinIndex.Store(-1)
-				ls.MaxIndex.Store(-1)
-				ls.LastIndex.Store(-1)
-			}
+	logger = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle)
+	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, logger, lo.Config.Concurrency); err == nil {
+		if lo.TailClient != nil {
+			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, logger, lo.Config.Concurrency)
+		}
+		if err == nil {
+			ls = tmpls
+			ls.MinIndex.Store(-1)
+			ls.MaxIndex.Store(-1)
+			ls.LastIndex.Store(-1)
 		}
 	}
 	return

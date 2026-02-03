@@ -1,12 +1,15 @@
 package certstream
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func readLogFile(t *testing.T, path string) string {
@@ -18,28 +21,31 @@ func readLogFile(t *testing.T, path string) string {
 	return string(data)
 }
 
+func assertFileMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("expected log file to be missing at %s", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("Stat: %v", err)
+	}
+}
+
 func TestToggledLoggerToggle(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "toggle.log")
 
 	var toggle atomic.Bool
-	logger, err := newToggledLogger(logPath, &toggle)
-	if err != nil {
-		t.Fatalf("newToggledLogger: %v", err)
-	}
+	logger := newToggledLogger(logPath, &toggle)
 	if logger == nil {
 		t.Fatalf("newToggledLogger returned nil logger")
 	}
 
 	logger.Info("first", "state", "off")
-	logText := readLogFile(t, logPath)
-	if logText != "" {
-		t.Fatalf("log output when toggle is false: %q", logText)
-	}
+	assertFileMissing(t, logPath)
 
 	toggle.Store(true)
 	logger.Info("second", "state", "on")
-	logText = readLogFile(t, logPath)
+	logText := readLogFile(t, logPath)
 	if !strings.Contains(logText, "second") || !strings.Contains(logText, "state=on") {
 		t.Fatalf("log output missing expected fields: %q", logText)
 	}
@@ -54,15 +60,12 @@ func TestToggledLoggerToggle(t *testing.T) {
 
 func TestToggledLoggerErrors(t *testing.T) {
 	var toggle atomic.Bool
-	if _, err := newToggledLogger("", &toggle); !errors.Is(err, ErrToggledLoggerPathEmpty) {
-		t.Fatalf("newToggledLogger path err = %v; want %v", err, ErrToggledLoggerPathEmpty)
-	}
-	if _, err := newToggledLogger("path.log", nil); !errors.Is(err, ErrToggledLoggerToggleMissing) {
-		t.Fatalf("newToggledLogger toggle err = %v; want %v", err, ErrToggledLoggerToggleMissing)
-	}
-
+	toggle.Store(true)
 	tempDir := t.TempDir()
-	if _, err := newToggledLogger(tempDir, &toggle); !errors.Is(err, ErrToggledLogOpen) {
-		t.Fatalf("newToggledLogger open err = %v; want %v", err, ErrToggledLogOpen)
+	logger := newToggledLogger(tempDir, &toggle)
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "open-fail", 0)
+	err := logger.Handler().Handle(context.Background(), record)
+	if !errors.Is(err, ErrToggledLogOpen) {
+		t.Fatalf("log handle err = %v; want %v", err, ErrToggledLogOpen)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 )
 
@@ -26,6 +27,37 @@ func (e errToggledLogOpen) Unwrap() error {
 
 func (e errToggledLogOpen) Is(target error) bool {
 	return target == ErrToggledLogOpen
+}
+
+type lazyFileWriter struct {
+	path string
+	perm os.FileMode
+	once sync.Once
+	file *os.File
+	err  error
+}
+
+func newLazyFileWriter(path string) *lazyFileWriter {
+	return &lazyFileWriter{
+		path: path,
+		perm: 0o644,
+	}
+}
+
+func (lw *lazyFileWriter) open() {
+	lw.file, lw.err = os.OpenFile(lw.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, lw.perm)
+}
+
+func (lw *lazyFileWriter) Write(p []byte) (n int, err error) {
+	lw.once.Do(lw.open)
+	err = lw.err
+	if err == nil {
+		n, err = lw.file.Write(p)
+	}
+	if lw.err != nil {
+		err = errToggledLogOpen{err: lw.err}
+	}
+	return
 }
 
 type toggledHandler struct {
@@ -58,20 +90,8 @@ func (th *toggledHandler) WithGroup(name string) slog.Handler {
 	return &toggledHandler{toggle: th.toggle, handler: handler}
 }
 
-func newToggledLogger(filepath string, toggle *atomic.Bool) (l *slog.Logger, err error) {
-	err = ErrToggledLoggerPathEmpty
-	if filepath != "" {
-		err = ErrToggledLoggerToggleMissing
-		if toggle != nil {
-			var file *os.File
-			file, err = os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-			if err == nil {
-				handler := newToggledHandler(toggle, slog.NewTextHandler(file, nil))
-				l = slog.New(handler)
-			} else {
-				err = errToggledLogOpen{err: err}
-			}
-		}
-	}
+func newToggledLogger(filepath string, toggle *atomic.Bool) (l *slog.Logger) {
+	handler := newToggledHandler(toggle, slog.NewTextHandler(newLazyFileWriter(filepath), nil))
+	l = slog.New(handler)
 	return
 }
