@@ -2,6 +2,9 @@ package certstream
 
 import (
 	"net"
+	"os"
+	"path"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
@@ -22,6 +25,8 @@ type Config struct {
 	PgNoSSL      bool                // if true, do not use SSL
 	PgSyncCommit bool                // if true, do not set synchronous_commit=off
 	Concurrency  int                 // number of concurrent requests per stream, default is 4
+	CacheDir     string              // cache directory; set to "none" to disable
+	CacheMaxAge  time.Duration       // remove cache files older than this age; zero disables
 	TailLog      string              // log HTTP requests using the tail dialer to this file
 }
 
@@ -40,5 +45,7 @@ func NewConfig() *Config {
 		PgWorkerBits: 5,
 		PgMaxAge:     90,
 		Concurrency:  4,
+		CacheDir:     path.Join(os.TempDir(), "certstream"),
+		CacheMaxAge:  time.Hour,
 	}
 }

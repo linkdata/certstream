@@ -173,9 +173,10 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 		tiledLog:    log,
 	}
 	logger = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle)
-	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, logger, lo.Config.Concurrency); err == nil {
+	cacheDir := cacheDirForMonitoring(lo.Config.CacheDir, log.MonitoringURL)
+	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, logger, lo.Config.Concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
-			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, logger, lo.Config.Concurrency)
+			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, logger, lo.Config.Concurrency, cacheDir)
 		}
 		if err == nil {
 			ls = tmpls

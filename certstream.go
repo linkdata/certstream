@@ -225,6 +225,13 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 	}
 
 	if err == nil {
+		cfg.CacheDir = normalizeCacheDir(cfg.CacheDir)
+		if cfg.CacheDir != "" {
+			err = ensureCacheDir(cfg.CacheDir)
+		}
+	}
+
+	if err == nil {
 		cs = &CertStream{
 			Config: *cfg,
 			HeadClient: &http.Client{
@@ -249,6 +256,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			cs.sendEntryCh = make(chan *LogEntry, 1024*8)
 			cs.C = cs.sendEntryCh
 			cs.mu.Unlock()
+			cs.startCachePruner(ctx, wg)
 			wg.Add(1)
 			go cs.run(ctx, wg)
 		}
