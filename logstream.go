@@ -53,6 +53,10 @@ type LogStream struct {
 	backoff    *logStreamBackoff
 }
 
+func (ls *LogStream) HTTPCalls() int64 {
+	return GetHTTPCalls(ls.URL())
+}
+
 func (ls *LogStream) URL() string {
 	if ls.log != nil {
 		return ls.log.URL

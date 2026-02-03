@@ -70,6 +70,9 @@ func testIntegrationMain(t *testing.T, hostPort string) {
 				break
 			}
 		}
+		for k, v := range certstream.GetHTTPCallsMap() {
+			t.Logf("%q: %v\n", k, v)
+		}
 	}
 }
 

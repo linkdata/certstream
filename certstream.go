@@ -229,11 +229,11 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			Config: *cfg,
 			HeadClient: &http.Client{
 				Timeout:   10 * time.Second,
-				Transport: headTransport,
+				Transport: httpCallCounter{headTransport},
 			},
 			TailClient: &http.Client{
 				Timeout:   10 * time.Second,
-				Transport: tailTransport,
+				Transport: httpCallCounter{tailTransport},
 			},
 			tailLimiter: tailLimiter,
 			subLimiter:  subLimiter,

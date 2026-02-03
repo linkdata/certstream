@@ -125,8 +125,12 @@ func TestStartOpensTailLogFile(t *testing.T) {
 	if cs.getTailLogFile() == nil {
 		t.Fatalf("tail log file was not stored on CertStream")
 	}
-	if _, ok := cs.TailClient.Transport.(*tailLogTransport); !ok {
-		t.Fatalf("TailClient transport = %T; want *tailLogTransport", cs.TailClient.Transport)
+	countTransport, ok := cs.TailClient.Transport.(httpCallCounter)
+	if !ok {
+		t.Fatalf("TailClient transport = %T; want httpCallCounter", cs.TailClient.Transport)
+	}
+	if _, ok := countTransport.next.(*tailLogTransport); !ok {
+		t.Fatalf("TailClient transport = %T; want *tailLogTransport", countTransport.next)
 	}
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("tail log file missing: %v", err)
@@ -157,8 +161,12 @@ func TestStartOpensHeadLogFile(t *testing.T) {
 	if cs.getHeadLogFile() == nil {
 		t.Fatalf("head log file was not stored on CertStream")
 	}
-	if _, ok := cs.HeadClient.Transport.(*headLogTransport); !ok {
-		t.Fatalf("HeadClient transport = %T; want *headLogTransport", cs.HeadClient.Transport)
+	countTransport, ok := cs.HeadClient.Transport.(httpCallCounter)
+	if !ok {
+		t.Fatalf("HeadClient transport = %T; want httpCallCounter", cs.HeadClient.Transport)
+	}
+	if _, ok := countTransport.next.(*headLogTransport); !ok {
+		t.Fatalf("HeadClient transport = %T; want *headLogTransport", countTransport.next)
 	}
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("head log file missing: %v", err)
