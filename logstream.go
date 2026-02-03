@@ -42,8 +42,9 @@ type LogStream struct {
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	Backfill   atomic.Int64 // atomic: number of remaining entries to backfill until we reach head
-	Id         int32        // database ID, if available
-	gapCh      chan gap     // protected by LogOperator.mu
+	LogToggle  atomic.Bool
+	Id         int32    // database ID, if available
+	gapCh      chan gap // protected by LogOperator.mu
 	log        *loglist3.Log
 	tiledLog   *loglist3.TiledLog
 	headClient *client.LogClient

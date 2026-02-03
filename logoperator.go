@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -10,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
@@ -167,22 +167,22 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 }
 
 func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) {
-	var headTile *sunlight.Client
-	if headTile, err = newSunlightClient(log, lo.HeadClient, lo.Config.Concurrency); err == nil {
-		var tailTile *sunlight.Client
-		if lo.TailClient != nil {
-			tailTile, err = newSunlightClient(log, lo.TailClient, lo.Config.Concurrency)
-		}
-		if err == nil {
-			ls = &LogStream{
-				LogOperator: lo,
-				tiledLog:    log,
-				headTile:    headTile,
-				tailTile:    tailTile,
+	var logger *slog.Logger
+	tmpls := &LogStream{
+		LogOperator: lo,
+		tiledLog:    log,
+	}
+	if logger, err = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle); err == nil {
+		if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, logger, lo.Config.Concurrency); err == nil {
+			if lo.TailClient != nil {
+				tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, logger, lo.Config.Concurrency)
 			}
-			ls.MinIndex.Store(-1)
-			ls.MaxIndex.Store(-1)
-			ls.LastIndex.Store(-1)
+			if err == nil {
+				ls = tmpls
+				ls.MinIndex.Store(-1)
+				ls.MaxIndex.Store(-1)
+				ls.LastIndex.Store(-1)
+			}
 		}
 	}
 	return

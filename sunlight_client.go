@@ -3,6 +3,7 @@ package certstream
 import (
 	"crypto/x509"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"filippo.io/sunlight"
@@ -13,7 +14,7 @@ const sunlightUserAgent = "certstream (+https://github.com/linkdata/certstream)"
 
 var ErrSunlightClientMissing = errors.New("sunlight client missing")
 
-func newSunlightClient(log *loglist3.TiledLog, httpClient *http.Client, concurrency int) (client *sunlight.Client, err error) {
+func newSunlightClient(log *loglist3.TiledLog, httpClient *http.Client, logger *slog.Logger, concurrency int) (client *sunlight.Client, err error) {
 	var pub any
 	if log != nil {
 		if pub, err = x509.ParsePKIXPublicKey(log.Key); err == nil {
@@ -23,6 +24,7 @@ func newSunlightClient(log *loglist3.TiledLog, httpClient *http.Client, concurre
 				HTTPClient:       httpClient,
 				UserAgent:        sunlightUserAgent,
 				ConcurrencyLimit: max(concurrency, 1),
+				Logger:           logger,
 			}
 			client, err = sunlight.NewClient(cfg)
 		}
