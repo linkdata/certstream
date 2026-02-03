@@ -9,8 +9,6 @@ import (
 	"sync/atomic"
 )
 
-var ErrToggledLoggerPathEmpty = errors.New("toggled logger path empty")
-var ErrToggledLoggerToggleMissing = errors.New("toggled logger toggle missing")
 var ErrToggledLogOpen = errors.New("toggled log open failed")
 
 type errToggledLogOpen struct {
