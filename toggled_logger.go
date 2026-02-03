@@ -68,7 +68,7 @@ func newToggledHandler(toggle *atomic.Bool, handler slog.Handler) slog.Handler {
 }
 
 func (th *toggledHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return th.toggle.Load() && th.handler.Enabled(ctx, level)
+	return th.toggle.Load()
 }
 
 func (th *toggledHandler) Handle(ctx context.Context, record slog.Record) (err error) {
