@@ -12,40 +12,224 @@ RETURNS TABLE (
   notbefore timestamp,
   notafter timestamp,
   since timestamp,
-  sha256 text,
-  precert boolean
+  sha256 text
 )
-LANGUAGE sql
-STABLE
+LANGUAGE plpgsql
+VOLATILE
 AS $$
-SELECT
-  substring(cd.domain for char_length(cd.domain) - char_length($1)) AS subdomain,
-  cd.wild,
-  cd.www,
-  cd.tld,
-  iss.organization AS issuer,
-  subj.organization AS subject,
-  cc.notbefore,
-  cc.notafter,
-  cc.since,
-  encode(cc.sha256, 'hex'::text) AS sha256,
-  cc.precert AS precert
-FROM CERTDB_domain cd
-JOIN CERTDB_cert cc ON cc.id = cd.cert
-JOIN CERTDB_ident subj ON subj.id = cc.subject
-JOIN CERTDB_ident iss ON iss.id = cc.issuer
-WHERE reverse(cd.domain) LIKE $1 || '%'
-  AND cd.tld = ANY(string_to_array($2, ' '))
-  AND NOT EXISTS (
+DECLARE
+  needs_recalc boolean;
+BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS tmp_certdb_subdomain_results (
+    cert_id bigint,
+    commonname text,
+    subject_id integer,
+    issuer_id integer,
+    precert boolean,
+    subdomain text,
+    wild boolean,
+    www smallint,
+    tld text,
+    issuer text,
+    subject text,
+    notbefore timestamp,
+    notafter timestamp,
+    since timestamp,
+    sha256 text
+  ) ON COMMIT DROP;
+
+  TRUNCATE tmp_certdb_subdomain_results;
+
+  INSERT INTO tmp_certdb_subdomain_results
+  SELECT
+    cc.id AS cert_id,
+    cc.commonname,
+    cc.subject AS subject_id,
+    cc.issuer AS issuer_id,
+    cc.precert,
+    substring(cd.domain for char_length(cd.domain) - char_length(p_rev_domain)) AS subdomain,
+    cd.wild,
+    cd.www,
+    cd.tld,
+    iss.organization AS issuer,
+    subj.organization AS subject,
+    cc.notbefore,
+    cc.notafter,
+    cc.since,
+    encode(cc.sha256, 'hex'::text) AS sha256
+  FROM CERTDB_domain cd
+  JOIN CERTDB_cert cc ON cc.id = cd.cert
+  JOIN CERTDB_ident subj ON subj.id = cc.subject
+  JOIN CERTDB_ident iss ON iss.id = cc.issuer
+  WHERE reverse(cd.domain) LIKE p_rev_domain || '%'
+    AND cd.tld = ANY(string_to_array(p_tlds, ' '))
+    AND cc.precert = false
+    AND NOT EXISTS (
+      SELECT 1
+      FROM CERTDB_cert newer
+      WHERE newer.commonname = cc.commonname
+        AND newer.subject = cc.subject
+        AND newer.issuer = cc.issuer
+        AND newer.precert = false
+        AND cc.since IS NOT NULL
+        AND newer.since = cc.since
+        AND (
+          newer.notbefore > cc.notbefore
+          OR (newer.notbefore = cc.notbefore AND newer.id > cc.id)
+        )
+    );
+
+  SELECT EXISTS (
     SELECT 1
-    FROM CERTDB_cert newer
-    WHERE newer.commonname = cc.commonname
-      AND newer.subject = cc.subject
-      AND newer.issuer = cc.issuer
-      AND newer.since IS NOT DISTINCT FROM cc.since
-      AND (
-        newer.notbefore > cc.notbefore
-        OR (newer.notbefore = cc.notbefore AND newer.id > cc.id)
-      )
-  );
+    FROM tmp_certdb_subdomain_results r
+    WHERE r.since IS NULL
+  ) INTO needs_recalc;
+
+  IF needs_recalc THEN
+    UPDATE CERTDB_cert c
+    SET since = c.notbefore
+    WHERE c.id IN (
+      SELECT r.cert_id
+      FROM tmp_certdb_subdomain_results r
+      WHERE r.since IS NULL
+        AND r.commonname = ''
+    );
+
+    WITH affected_keys AS (
+      SELECT DISTINCT r.commonname, r.subject_id, r.issuer_id, r.precert
+      FROM tmp_certdb_subdomain_results r
+      WHERE r.since IS NULL
+        AND r.commonname <> ''
+    ),
+    ordered AS (
+      SELECT
+        c.id,
+        c.commonname,
+        c.subject,
+        c.issuer,
+        c.precert,
+        c.notbefore,
+        c.notafter,
+        c.since,
+        max(c.notafter) OVER (
+          PARTITION BY c.commonname, c.subject, c.issuer, c.precert
+          ORDER BY c.notbefore
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS max_notafter
+      FROM CERTDB_cert c
+      JOIN affected_keys k
+        ON c.commonname = k.commonname
+       AND c.subject = k.subject_id
+       AND c.issuer = k.issuer_id
+       AND c.precert = k.precert
+    ),
+    marked AS (
+      SELECT
+        o.*,
+        lag(o.max_notafter) OVER (
+          PARTITION BY o.commonname, o.subject, o.issuer, o.precert
+          ORDER BY o.notbefore
+        ) AS prev_max
+      FROM ordered o
+    ),
+    groups AS (
+      SELECT
+        m.*,
+        sum(
+          CASE
+            WHEN m.prev_max IS NULL THEN 0
+            WHEN m.notbefore > m.prev_max THEN 1
+            ELSE 0
+          END
+        ) OVER (
+          PARTITION BY m.commonname, m.subject, m.issuer, m.precert
+          ORDER BY m.notbefore
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS grp
+      FROM marked m
+    ),
+    chain_min AS (
+      SELECT
+        g.commonname,
+        g.subject,
+        g.issuer,
+        g.precert,
+        g.grp,
+        min(g.notbefore) AS since_calc,
+        bool_or(g.since IS NULL) AS has_null
+      FROM groups g
+      GROUP BY g.commonname, g.subject, g.issuer, g.precert, g.grp
+    ),
+    targets AS (
+      SELECT g.id, c.since_calc
+      FROM groups g
+      JOIN chain_min c
+        ON g.commonname = c.commonname
+       AND g.subject = c.subject
+       AND g.issuer = c.issuer
+       AND g.precert = c.precert
+       AND g.grp = c.grp
+      WHERE c.has_null
+    )
+    UPDATE CERTDB_cert c
+    SET since = t.since_calc
+    FROM targets t
+    WHERE c.id = t.id;
+
+    TRUNCATE tmp_certdb_subdomain_results;
+
+    INSERT INTO tmp_certdb_subdomain_results
+    SELECT
+      cc.id AS cert_id,
+      cc.commonname,
+      cc.subject AS subject_id,
+      cc.issuer AS issuer_id,
+      cc.precert,
+      substring(cd.domain for char_length(cd.domain) - char_length(p_rev_domain)) AS subdomain,
+      cd.wild,
+      cd.www,
+      cd.tld,
+      iss.organization AS issuer,
+      subj.organization AS subject,
+      cc.notbefore,
+      cc.notafter,
+      cc.since,
+      encode(cc.sha256, 'hex'::text) AS sha256
+    FROM CERTDB_domain cd
+    JOIN CERTDB_cert cc ON cc.id = cd.cert
+    JOIN CERTDB_ident subj ON subj.id = cc.subject
+    JOIN CERTDB_ident iss ON iss.id = cc.issuer
+    WHERE reverse(cd.domain) LIKE p_rev_domain || '%'
+      AND cd.tld = ANY(string_to_array(p_tlds, ' '))
+      AND cc.precert = false
+      AND NOT EXISTS (
+        SELECT 1
+        FROM CERTDB_cert newer
+        WHERE newer.commonname = cc.commonname
+          AND newer.subject = cc.subject
+          AND newer.issuer = cc.issuer
+          AND newer.precert = false
+          AND cc.since IS NOT NULL
+          AND newer.since = cc.since
+          AND (
+            newer.notbefore > cc.notbefore
+            OR (newer.notbefore = cc.notbefore AND newer.id > cc.id)
+          )
+      );
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    r.subdomain,
+    r.wild,
+    r.www,
+    r.tld,
+    r.issuer,
+    r.subject,
+    r.notbefore,
+    r.notafter,
+    r.since,
+    r.sha256
+  FROM tmp_certdb_subdomain_results r;
+END;
 $$;
