@@ -282,6 +282,151 @@ FROM CERTDB_subdomain($1, $2);`, "elpmaxe", "com")
 	}
 }
 
+func TestSubdomainRecomputesSinceMismatch(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn := setupSubdomainTest(t)
+	if conn != nil {
+		var subjectID int
+		var issuerID int
+		if err := conn.QueryRow(ctx,
+			"INSERT INTO CERTDB_ident (organization, province, country) VALUES ($1, $2, $3) RETURNING id;",
+			"Subject Org", "CA", "US").Scan(&subjectID); err != nil {
+			t.Fatalf("insert subject failed: %v", err)
+		} else {
+			if err = conn.QueryRow(ctx,
+				"INSERT INTO CERTDB_ident (organization, province, country) VALUES ($1, $2, $3) RETURNING id;",
+				"Issuer Org", "CA", "US").Scan(&issuerID); err != nil {
+				t.Fatalf("insert issuer failed: %v", err)
+			} else {
+				chainSince := time.Date(2024, 8, 29, 7, 45, 39, 0, time.UTC)
+				firstNotBefore := chainSince
+				firstNotAfter := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+				secondNotBefore := time.Date(2024, 12, 15, 0, 0, 0, 0, time.UTC)
+				secondNotAfter := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
+				thirdNotBefore := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+				thirdNotAfter := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+
+				var firstCertID int64
+				if err = conn.QueryRow(ctx, `
+INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+VALUES ($1, $2, $3, $4, $5, $6, decode($7, 'hex'), $8)
+RETURNING id;`,
+					firstNotBefore,
+					firstNotAfter,
+					chainSince,
+					"example.com",
+					subjectID,
+					issuerID,
+					subdomainSha256Hex,
+					false).Scan(&firstCertID); err != nil {
+					t.Fatalf("insert first cert failed: %v", err)
+				} else {
+					var secondCertID int64
+					if err = conn.QueryRow(ctx, `
+INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+VALUES ($1, $2, $3, $4, $5, $6, decode($7, 'hex'), $8)
+RETURNING id;`,
+						secondNotBefore,
+						secondNotAfter,
+						chainSince,
+						"example.com",
+						subjectID,
+						issuerID,
+						subdomainSha256HexAlt,
+						false).Scan(&secondCertID); err != nil {
+						t.Fatalf("insert second cert failed: %v", err)
+					} else {
+						var thirdCertID int64
+						if err = conn.QueryRow(ctx, `
+INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+VALUES ($1, $2, $3, $4, $5, $6, decode($7, 'hex'), $8)
+RETURNING id;`,
+							thirdNotBefore,
+							thirdNotAfter,
+							thirdNotBefore,
+							"example.com",
+							subjectID,
+							issuerID,
+							subdomainSha256HexPre,
+							false).Scan(&thirdCertID); err != nil {
+							t.Fatalf("insert third cert failed: %v", err)
+						} else {
+							if _, err = conn.Exec(ctx,
+								"INSERT INTO CERTDB_domain (cert, wild, www, domain, tld) VALUES ($1, $2, $3, $4, $5);",
+								thirdCertID, false, 0, "foo.example", "com"); err != nil {
+								t.Fatalf("insert third cert domain failed: %v", err)
+							} else {
+								rows, err := conn.Query(ctx, `
+SELECT subdomain, wild, www, tld, issuer, subject, notbefore, notafter, since, sha256
+FROM CERTDB_subdomain($1, $2);`, "elpmaxe", "com")
+								if err != nil {
+									t.Fatalf("query subdomain failed: %v", err)
+								} else {
+									if rows != nil {
+										defer rows.Close()
+									}
+
+									type result struct {
+										subdomain string
+										wild      bool
+										www       int16
+										tld       string
+										issuer    string
+										subject   string
+										notbefore time.Time
+										notafter  time.Time
+										since     time.Time
+										sha256    string
+									}
+
+									var results []result
+									for rows.Next() {
+										var r result
+										if err = rows.Scan(
+											&r.subdomain,
+											&r.wild,
+											&r.www,
+											&r.tld,
+											&r.issuer,
+											&r.subject,
+											&r.notbefore,
+											&r.notafter,
+											&r.since,
+											&r.sha256,
+										); err != nil {
+											t.Fatalf("scan subdomain row failed: %v", err)
+										} else {
+											results = append(results, r)
+										}
+									}
+
+									if err = rows.Err(); err != nil {
+										t.Fatalf("subdomain rows error: %v", err)
+									} else if len(results) != 1 {
+										t.Fatalf("subdomain rows = %d, want 1", len(results))
+									} else if results[0].since.Format(ingestTimestampFmt) != chainSince.Format(ingestTimestampFmt) {
+										t.Fatalf("since = %s, want %s", results[0].since.Format(ingestTimestampFmt), chainSince.Format(ingestTimestampFmt))
+									} else {
+										var updatedSince time.Time
+										if err = conn.QueryRow(ctx,
+											"SELECT since FROM CERTDB_cert WHERE id = $1;",
+											thirdCertID).Scan(&updatedSince); err != nil {
+											t.Fatalf("fetch updated since failed: %v", err)
+										} else if updatedSince.Format(ingestTimestampFmt) != chainSince.Format(ingestTimestampFmt) {
+											t.Fatalf("updated since = %s, want %s", updatedSince.Format(ingestTimestampFmt), chainSince.Format(ingestTimestampFmt))
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestSetSinceRecomputesChain(t *testing.T) {
 	t.Parallel()
 

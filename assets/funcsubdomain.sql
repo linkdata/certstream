@@ -18,7 +18,8 @@ LANGUAGE plpgsql
 VOLATILE
 AS $$
 DECLARE
-  needs_recalc boolean;
+  cn_rows integer := 0;
+  recalc_rows integer := 0;
 BEGIN
   CREATE TEMP TABLE IF NOT EXISTS tmp_certdb_subdomain_results (
     cert_id bigint,
@@ -79,28 +80,19 @@ BEGIN
         )
     );
 
-  SELECT EXISTS (
-    SELECT 1
+  UPDATE CERTDB_cert c
+  SET since = c.notbefore
+  FROM tmp_certdb_subdomain_results r
+  WHERE c.id = r.cert_id
+    AND r.commonname = ''
+    AND c.since IS DISTINCT FROM c.notbefore;
+  GET DIAGNOSTICS cn_rows = ROW_COUNT;
+
+  WITH affected_keys AS (
+    SELECT DISTINCT r.commonname, r.subject_id, r.issuer_id, r.precert
     FROM tmp_certdb_subdomain_results r
-    WHERE r.since IS NULL
-  ) INTO needs_recalc;
-
-  IF needs_recalc THEN
-    UPDATE CERTDB_cert c
-    SET since = c.notbefore
-    WHERE c.id IN (
-      SELECT r.cert_id
-      FROM tmp_certdb_subdomain_results r
-      WHERE r.since IS NULL
-        AND r.commonname = ''
-    );
-
-    WITH affected_keys AS (
-      SELECT DISTINCT r.commonname, r.subject_id, r.issuer_id, r.precert
-      FROM tmp_certdb_subdomain_results r
-      WHERE r.since IS NULL
-        AND r.commonname <> ''
-    ),
+    WHERE r.commonname <> ''
+  ),
     ordered AS (
       SELECT
         c.id,
@@ -155,8 +147,7 @@ BEGIN
         g.issuer,
         g.precert,
         g.grp,
-        min(g.notbefore) AS since_calc,
-        bool_or(g.since IS NULL) AS has_null
+        min(g.notbefore) AS since_calc
       FROM groups g
       GROUP BY g.commonname, g.subject, g.issuer, g.precert, g.grp
     ),
@@ -169,12 +160,15 @@ BEGIN
        AND g.issuer = c.issuer
        AND g.precert = c.precert
        AND g.grp = c.grp
-      WHERE c.has_null
     )
     UPDATE CERTDB_cert c
     SET since = t.since_calc
     FROM targets t
-    WHERE c.id = t.id;
+    WHERE c.id = t.id
+      AND c.since IS DISTINCT FROM t.since_calc;
+  GET DIAGNOSTICS recalc_rows = ROW_COUNT;
+
+  IF cn_rows + recalc_rows > 0 THEN
 
     TRUNCATE tmp_certdb_subdomain_results;
 
