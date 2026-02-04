@@ -33,7 +33,7 @@ var DefaultTransport = &http.Transport{
 	ResponseHeaderTimeout: 30 * time.Second,
 	MaxIdleConnsPerHost:   2,
 	DisableKeepAlives:     false,
-	ExpectContinueTimeout: 1 * time.Second,
+	ExpectContinueTimeout: 10 * time.Second,
 	ForceAttemptHTTP2:     true,
 }
 
