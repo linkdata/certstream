@@ -26,18 +26,19 @@ func (e errLogEntriesTooOld) Unwrap() error {
 }
 
 func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher) {
-	var lastgap gap
-	var lastindex int64
 	if cdb != nil && ls != nil {
-		if lastindex = ls.LastIndex.Load(); lastindex != -1 {
-			row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
-			var nullableMaxIndex sql.NullInt64
-			if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGapsWithFetcher/MaxIndex", "url", ls.URL()) == nil {
-				if nullableMaxIndex.Valid {
-					ls.seeIndex(nullableMaxIndex.Int64)
-					if nullableMaxIndex.Int64 < lastindex {
-						lastgap = gap{start: nullableMaxIndex.Int64 + 1, end: lastindex}
-					}
+		var lastgap gap
+		var nullableMaxIndex sql.NullInt64
+		lastindex := ls.LastIndex.Load()
+		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
+		if err := row.Scan(&nullableMaxIndex); cdb.LogError(err, "backfillGapsWithFetcher/MaxIndex", "url", ls.URL()) == nil {
+			if nullableMaxIndex.Valid {
+				ls.seeIndex(nullableMaxIndex.Int64)
+				if lastindex < nullableMaxIndex.Int64 {
+					lastindex = nullableMaxIndex.Int64
+				}
+				if nullableMaxIndex.Int64 < lastindex {
+					lastgap = gap{start: nullableMaxIndex.Int64 + 1, end: lastindex}
 				}
 			}
 		}
