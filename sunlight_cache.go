@@ -140,7 +140,7 @@ func (cs *CertStream) startCachePruner(ctx context.Context, wg *sync.WaitGroup) 
 }
 
 func (cs *CertStream) runCachePruner(ctx context.Context, wg *sync.WaitGroup, cacheDir string, maxAge time.Duration) {
-	ticker := time.NewTicker(maxAge)
+	ticker := time.NewTicker(min(time.Minute, maxAge))
 	defer func() {
 		ticker.Stop()
 		wg.Done()

@@ -46,6 +46,6 @@ func NewConfig() *Config {
 		PgMaxAge:     90,
 		Concurrency:  4,
 		CacheDir:     path.Join(os.TempDir(), "certstream"),
-		CacheMaxAge:  time.Hour,
+		CacheMaxAge:  time.Minute * 10,
 	}
 }
