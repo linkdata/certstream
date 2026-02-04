@@ -1,17 +1,16 @@
 package certstream
 
 import (
+	"bufio"
 	"context"
 	"log/slog"
 	"os"
-	"sync"
 	"sync/atomic"
 )
 
 type lazyFileWriter struct {
 	path string
 	perm os.FileMode
-	once sync.Once
 }
 
 func newLazyFileWriter(path string) *lazyFileWriter {
@@ -61,7 +60,7 @@ func (th *toggledHandler) WithGroup(name string) slog.Handler {
 }
 
 func newToggledLogger(filepath string, toggle *atomic.Bool) (l *slog.Logger) {
-	handler := newToggledHandler(toggle, slog.NewTextHandler(newLazyFileWriter(filepath), nil))
+	handler := newToggledHandler(toggle, slog.NewTextHandler(bufio.NewWriter(newLazyFileWriter(filepath)), nil))
 	l = slog.New(handler)
 	return
 }
