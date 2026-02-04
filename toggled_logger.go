@@ -2,37 +2,16 @@ package certstream
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
 )
 
-var ErrToggledLogOpen = errors.New("toggled log open failed")
-
-type errToggledLogOpen struct {
-	err error
-}
-
-func (e errToggledLogOpen) Error() string {
-	return ErrToggledLogOpen.Error() + ": " + e.err.Error()
-}
-
-func (e errToggledLogOpen) Unwrap() error {
-	return e.err
-}
-
-func (e errToggledLogOpen) Is(target error) bool {
-	return target == ErrToggledLogOpen
-}
-
 type lazyFileWriter struct {
 	path string
 	perm os.FileMode
 	once sync.Once
-	file *os.File
-	err  error
 }
 
 func newLazyFileWriter(path string) *lazyFileWriter {
@@ -42,18 +21,11 @@ func newLazyFileWriter(path string) *lazyFileWriter {
 	}
 }
 
-func (lw *lazyFileWriter) open() {
-	lw.file, lw.err = os.OpenFile(lw.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, lw.perm)
-}
-
 func (lw *lazyFileWriter) Write(p []byte) (n int, err error) {
-	lw.once.Do(lw.open)
-	err = lw.err
-	if err == nil {
-		n, err = lw.file.Write(p)
-	}
-	if lw.err != nil {
-		err = errToggledLogOpen{err: lw.err}
+	var file *os.File
+	if file, err = os.OpenFile(lw.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, lw.perm); err == nil {
+		defer file.Close()
+		n, err = file.Write(p)
 	}
 	return
 }

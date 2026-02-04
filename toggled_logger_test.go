@@ -1,15 +1,11 @@
 package certstream
 
 import (
-	"context"
-	"errors"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func readLogFile(t *testing.T, path string) string {
@@ -55,17 +51,5 @@ func TestToggledLoggerToggle(t *testing.T) {
 	logText = readLogFile(t, logPath)
 	if strings.Contains(logText, "third") {
 		t.Fatalf("log output present after toggle off: %q", logText)
-	}
-}
-
-func TestToggledLoggerErrors(t *testing.T) {
-	var toggle atomic.Bool
-	toggle.Store(true)
-	tempDir := t.TempDir()
-	logger := newToggledLogger(tempDir, &toggle)
-	record := slog.NewRecord(time.Now(), slog.LevelInfo, "open-fail", 0)
-	err := logger.Handler().Handle(context.Background(), record)
-	if !errors.Is(err, ErrToggledLogOpen) {
-		t.Fatalf("log handle err = %v; want %v", err, ErrToggledLogOpen)
 	}
 }
