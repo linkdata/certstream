@@ -54,13 +54,11 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 			for gap := range gapCh {
 				fillGap(gap)
 			}
-			if ctx.Err() == nil {
-				if lastgap.end != 0 {
-					fillGap(lastgap)
-				}
-				if ctx.Err() == nil && lastindex > 0 {
-					_ = cdb.backfillSetGapStartIndex(ctx, ls, lastindex)
-				}
+			if lastgap.end != 0 {
+				fillGap(lastgap)
+			}
+			if lastindex > 0 {
+				_ = cdb.backfillSetGapStartIndex(ctx, ls, lastindex)
 			}
 		}
 	}
