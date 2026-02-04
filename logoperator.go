@@ -127,19 +127,21 @@ func (lo *LogOperator) GetStreamByID(id int32) (ls *LogStream) {
 }
 
 func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) {
-	var headLogClient *client.LogClient
-	if headLogClient, err = client.New(log.URL, lo.HeadClient, jsonclient.Options{}); err == nil {
-		var tailLogClient *client.LogClient
+	tmpls := &LogStream{
+		LogOperator: lo,
+		log:         log,
+		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
+	}
+	logfile := strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.URL, "https://"), "/", "_"), "_") + ".log"
+	if home, e := os.UserHomeDir(); e == nil {
+		logfile = path.Join(home, logfile)
+	}
+	tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
+	if tmpls.headClient, err = client.New(log.URL, lo.HeadClient, jsonclient.Options{}); err == nil {
 		if lo.TailClient != nil {
-			tailLogClient, err = client.New(log.URL, lo.TailClient, jsonclient.Options{})
+			tmpls.tailClient, err = client.New(log.URL, lo.TailClient, jsonclient.Options{})
 		}
-		ls = &LogStream{
-			LogOperator: lo,
-			log:         log,
-			headClient:  headLogClient,
-			tailClient:  tailLogClient,
-			backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
-		}
+		ls = tmpls
 		ls.MinIndex.Store(-1)
 		ls.MaxIndex.Store(-1)
 		ls.LastIndex.Store(-1)
@@ -171,6 +173,7 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 	tmpls := &LogStream{
 		LogOperator: lo,
 		tiledLog:    log,
+		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
 	}
 	logfile := strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_") + ".log"
 	if home, e := os.UserHomeDir(); e == nil {
