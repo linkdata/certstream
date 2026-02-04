@@ -80,57 +80,55 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 					if end > maxIndex {
 						end = maxIndex
 					}
-					if start <= end {
-						for start <= end {
-							if ctx.Err() == nil {
-								lastIndex := int64(-1)
-								entryErr := ls.backoff.Retry(ctx, func() error {
-									lastIndex = -1
-									ls.adjustTailLimiter(historical)
-									now := time.Now()
-									for i, entry := range client.Entries(ctx, checkpoint.Tree, start) {
-										if i > end {
-											break
-										}
-										le := ls.makeTileLogEntry(i, entry, historical)
-										ls.seeIndex(i)
-										if handleFn(ctx, now, le) {
-											wanted = true
-										}
-										lastIndex = i
-										next = i + 1
-										if gapcounter != nil {
-											gapcounter.Add(-1)
-										}
+					for start <= end {
+						if ctx.Err() == nil {
+							lastIndex := int64(-1)
+							entryErr := ls.backoff.Retry(ctx, func() error {
+								lastIndex = -1
+								ls.adjustTailLimiter(historical)
+								now := time.Now()
+								for i, entry := range client.Entries(ctx, checkpoint.Tree, start) {
+									if i > end {
+										break
 									}
-									err := client.Err()
-									if err == nil {
-										return nil
+									le := ls.makeTileLogEntry(i, entry, historical)
+									ls.seeIndex(i)
+									if handleFn(ctx, now, le) {
+										wanted = true
 									}
-									if ls.handleStreamError(err, "Entries") {
-										return err
+									lastIndex = i
+									next = i + 1
+									if gapcounter != nil {
+										gapcounter.Add(-1)
 									}
-									return wrapLogStreamRetryable(err)
-								})
-								if entryErr == nil {
-									if lastIndex >= start {
-										start = lastIndex + 1
-									} else {
-										start = end + 1
-									}
-								} else if gapcounter != nil && ctx.Err() == nil {
-									if lastIndex >= start {
-										start = lastIndex + 1
-									}
-									_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
-									gapcounter.Add(start - (end + 1))
-									start = end + 1
+								}
+								err := client.Err()
+								if err == nil {
+									return nil
+								}
+								if ls.handleStreamError(err, "Entries") {
+									return err
+								}
+								return wrapLogStreamRetryable(err)
+							})
+							if entryErr == nil {
+								if lastIndex >= start {
+									start = lastIndex + 1
 								} else {
 									start = end + 1
 								}
+							} else if gapcounter != nil && ctx.Err() == nil {
+								if lastIndex >= start {
+									start = lastIndex + 1
+								}
+								_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", start, "end", end)
+								gapcounter.Add(start - (end + 1))
+								start = end + 1
 							} else {
 								start = end + 1
 							}
+						} else {
+							start = end + 1
 						}
 					}
 				}
