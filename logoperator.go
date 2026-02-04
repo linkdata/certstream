@@ -4,6 +4,8 @@ import (
 	"context"
 	"maps"
 	"net/http"
+	"os"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -170,7 +172,11 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 		LogOperator: lo,
 		tiledLog:    log,
 	}
-	tmpls.Logger = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle)
+	logfile := strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_") + ".log"
+	if home, e := os.UserHomeDir(); e == nil {
+		logfile = path.Join(home, logfile)
+	}
+	tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	cacheDir := cacheDirForMonitoring(lo.Config.CacheDir, log.MonitoringURL)
 	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, tmpls.Logger, lo.Config.Concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
