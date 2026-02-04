@@ -323,7 +323,7 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 		case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
 			fallthrough
 		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest, http.StatusConflict:
-			if ls.LogToggle.Load() {
+			if ls.LogToggle.Load() && ls.Logger != nil {
 				ls.Logger.Error(from, "url", ls.URL(), "error", err)
 			}
 			ls.addStatus(statusCode)
