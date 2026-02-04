@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"context"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -167,16 +166,15 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 }
 
 func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) {
-	var logger *slog.Logger
 	tmpls := &LogStream{
 		LogOperator: lo,
 		tiledLog:    log,
 	}
-	logger = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle)
+	tmpls.Logger = newToggledLogger(strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_")+".log", &tmpls.LogToggle)
 	cacheDir := cacheDirForMonitoring(lo.Config.CacheDir, log.MonitoringURL)
-	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, logger, lo.Config.Concurrency, cacheDir); err == nil {
+	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, tmpls.Logger, lo.Config.Concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
-			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, logger, lo.Config.Concurrency, cacheDir)
+			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Config.Concurrency, cacheDir)
 		}
 		if err == nil {
 			ls = tmpls

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -43,8 +44,9 @@ type LogStream struct {
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
 	Backfill   atomic.Int64 // atomic: number of remaining entries to backfill until we reach head
 	LogToggle  atomic.Bool
-	Id         int32    // database ID, if available
-	gapCh      chan gap // protected by LogOperator.mu
+	Logger     *slog.Logger // toggled by LogToggle
+	Id         int32        // database ID, if available
+	gapCh      chan gap     // protected by LogOperator.mu
 	log        *loglist3.Log
 	tiledLog   *loglist3.TiledLog
 	headClient *client.LogClient
@@ -313,16 +315,18 @@ func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	} else {
 		statusCode := ls.statusCodeFromError(err)
 		switch statusCode {
-		case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
-			fallthrough
-		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest, http.StatusConflict:
-			// ignored and not reported, just counted
-			ls.addStatus(statusCode)
 		default:
-			ls.addStatus(statusCode)
 			if ls.addError(ls, wrapErr(err, from)) >= MaxErrors {
 				fatal = true
 			}
+			fallthrough
+		case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
+			fallthrough
+		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest, http.StatusConflict:
+			if ls.LogToggle.Load() {
+				ls.Logger.Error(from, "url", ls.URL(), "error", err)
+			}
+			ls.addStatus(statusCode)
 		}
 	}
 	return
