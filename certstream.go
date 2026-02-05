@@ -227,7 +227,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 	}
 
 	if cfg.DataDir != "" {
-		cfg.DataDir = os.ExpandEnv(cfg.DataDir)
+		cfg.DataDir = strings.TrimSpace(os.ExpandEnv(cfg.DataDir))
 	}
 
 	if err == nil && cfg.DataDir != "" {
