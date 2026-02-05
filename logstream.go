@@ -307,28 +307,26 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 }
 
 func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
-	if err != nil {
-		errTxt := err.Error()
-		if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrInvalid) || errors.Is(err, io.ErrNoProgress) || strings.Contains(errTxt, "context canceled") {
-			fatal = true
-		} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
-			fatal = false
-		} else {
-			statusCode := ls.statusCodeFromError(err)
-			switch statusCode {
-			default:
-				if ls.addError(ls, wrapErr(err, from)) >= MaxErrors {
-					fatal = true
-				}
-				fallthrough
-			case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
-				fallthrough
-			case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest, http.StatusConflict:
-				if ls.LogToggle.Load() && ls.Logger != nil {
-					ls.Logger.Error(from, "url", ls.URL(), "error", err)
-				}
-				ls.addStatus(statusCode)
+	errTxt := err.Error()
+	if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrInvalid) || errors.Is(err, io.ErrNoProgress) || strings.Contains(errTxt, "context canceled") {
+		fatal = true
+	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
+		fatal = false
+	} else {
+		statusCode := ls.statusCodeFromError(err)
+		switch statusCode {
+		default:
+			if ls.addError(ls, wrapErr(err, from)) >= MaxErrors {
+				fatal = true
 			}
+			fallthrough
+		case 530: // https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-530/
+			fallthrough
+		case http.StatusTooManyRequests, http.StatusGatewayTimeout, http.StatusNotFound, http.StatusBadRequest, http.StatusConflict:
+			if ls.LogToggle.Load() && ls.Logger != nil {
+				ls.Logger.Error(from, "url", ls.URL(), "error", err)
+			}
+			ls.addStatus(statusCode)
 		}
 	}
 	return

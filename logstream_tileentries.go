@@ -80,8 +80,10 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 				}
 				err = client.Err()
 			}
-			if !ls.handleStreamError(err, "getTileEntries") {
-				err = wrapLogStreamRetryable(err)
+			if err != nil {
+				if !ls.handleStreamError(err, "getTileEntries") {
+					err = wrapLogStreamRetryable(err)
+				}
 			}
 			return
 		})
