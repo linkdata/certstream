@@ -409,6 +409,7 @@ func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int
   WHERE stream = $1
   ORDER BY logindex ASC
   LIMIT $2
+  FOR UPDATE SKIP LOCKED
 )
 DELETE FROM CERTDB_entry
 USING CERTDB_clean_stream
