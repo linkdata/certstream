@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"net/http"
-	"os"
 	"path"
 	"slices"
 	"strings"
@@ -132,11 +131,12 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 		log:         log,
 		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
 	}
-	logfile := strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.URL, "https://"), "/", "_"), "_") + ".log"
-	if home, e := os.UserHomeDir(); e == nil {
-		logfile = path.Join(home, logfile)
+
+	if lo.Config.DataDir != "" {
+		logfile := path.Join(lo.Config.DataDir, urlToFileString(log.URL)+".log")
+		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
-	tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
+
 	if tmpls.headClient, err = client.New(log.URL, lo.HeadClient, jsonclient.Options{}); err == nil {
 		if lo.TailClient != nil {
 			tmpls.tailClient, err = client.New(log.URL, lo.TailClient, jsonclient.Options{})
