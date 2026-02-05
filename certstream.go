@@ -227,6 +227,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 	}
 
 	if err == nil && cfg.DataDir != "" {
+		cfg.DataDir = os.ExpandEnv(cfg.DataDir)
 		if cfg.CacheMaxAge > 0 {
 			err = os.MkdirAll(getCacheDir(cfg.DataDir, ""), 0o755)
 		}
