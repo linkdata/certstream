@@ -73,7 +73,7 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 					if gapcounter != nil {
 						gapcounter.Add(-1)
 					}
-					if next >= end {
+					if logindex >= end {
 						break
 					}
 					ls.adjustTailLimiter(historical)
