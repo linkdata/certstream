@@ -387,6 +387,7 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
   WHERE notafter <= $1
   ORDER BY notafter DESC
   LIMIT $2
+  FOR UPDATE SKIP LOCKED
 )
 DELETE FROM CERTDB_cert
 USING CERTDB_clean_cert
