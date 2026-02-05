@@ -263,7 +263,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			cs.mu.Unlock()
 			if cs.Config.DataDir != "" && cs.Config.CacheMaxAge > 0 {
 				wg.Add(1)
-				go cs.runCachePruner(ctx, wg, cs.Config.DataDir, cs.Config.CacheMaxAge)
+				go cs.runCachePruner(ctx, wg, getCacheDir(cs.Config.DataDir, ""), cs.Config.CacheMaxAge)
 			}
 			wg.Add(1)
 			go cs.run(ctx, wg)
