@@ -169,18 +169,23 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 	return
 }
 
+func urlToFileString(urlstr string) (s string) {
+	return strings.Trim(strings.ReplaceAll(strings.TrimPrefix(urlstr, "https://"), "/", "_"), "_")
+}
+
 func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, err error) {
 	tmpls := &LogStream{
 		LogOperator: lo,
 		tiledLog:    log,
 		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
 	}
-	logfile := strings.Trim(strings.ReplaceAll(strings.TrimPrefix(log.MonitoringURL, "https://"), "/", "_"), "_") + ".log"
-	if home, e := os.UserHomeDir(); e == nil {
-		logfile = path.Join(home, logfile)
+
+	if lo.Config.DataDir != "" {
+		logfile := path.Join(lo.Config.DataDir, urlToFileString(log.MonitoringURL)+".log")
+		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
-	tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
-	cacheDir := cacheDirForMonitoring(lo.Config.CacheDir, log.MonitoringURL)
+
+	cacheDir := getCacheDir(lo.Config.DataDir, log.MonitoringURL)
 	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, tmpls.Logger, lo.Config.Concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
 			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Config.Concurrency, cacheDir)

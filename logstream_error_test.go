@@ -32,7 +32,9 @@ func TestStatusCodeFromError(t *testing.T) {
 
 func TestHandleStreamErrorTreatsNotFoundAsTransient(t *testing.T) {
 	ls := &LogStream{
-		LogOperator: &LogOperator{},
+		LogOperator: &LogOperator{
+			CertStream: &CertStream{},
+		},
 	}
 	if ls.handleStreamError(errors.New("tile/1/000: unexpected status code 404"), "Entries") {
 		t.Fatalf("handleStreamError returned fatal for 404")

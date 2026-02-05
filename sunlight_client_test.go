@@ -49,7 +49,7 @@ func TestNewSunlightClientCacheDir(t *testing.T) {
 }
 
 func TestNewSunlightClientCacheNone(t *testing.T) {
-	client, err := newSunlightClient(newTestTiledLog(t), http.DefaultClient, nil, 1, "none")
+	client, err := newSunlightClient(newTestTiledLog(t), http.DefaultClient, nil, 1, "")
 	if err != nil {
 		t.Fatalf("newSunlightClient: %v", err)
 	}

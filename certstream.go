@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/linkdata/bwlimit"
@@ -18,6 +19,7 @@ type CertStream struct {
 	C           <-chan *LogEntry // log entry channel
 	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
 	TailClient  *http.Client     // may be nil if not backfilling
+	LogToggle   atomic.Bool      // if true, log stream activity
 	tailLimiter *bwlimit.Limiter // master tail limiter, if known
 	subLimiter  *bwlimit.Limiter // sub tail limiter
 	headLogFile *os.File         // head HTTP request log
@@ -224,10 +226,9 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 		}
 	}
 
-	if err == nil {
-		cfg.CacheDir = normalizeCacheDir(cfg.CacheDir)
-		if cfg.CacheDir != "" {
-			err = ensureCacheDir(cfg.CacheDir)
+	if err == nil && cfg.DataDir != "" {
+		if cfg.CacheMaxAge > 0 {
+			err = os.MkdirAll(getCacheDir(cfg.DataDir, ""), 0o755)
 		}
 	}
 
@@ -256,7 +257,10 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			cs.sendEntryCh = make(chan *LogEntry, 1024*8)
 			cs.C = cs.sendEntryCh
 			cs.mu.Unlock()
-			cs.startCachePruner(ctx, wg)
+			if cs.Config.DataDir != "" && cs.Config.CacheMaxAge > 0 {
+				wg.Add(1)
+				go cs.runCachePruner(ctx, wg, cs.Config.DataDir, cs.Config.CacheMaxAge)
+			}
 			wg.Add(1)
 			go cs.run(ctx, wg)
 		}

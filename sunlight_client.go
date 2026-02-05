@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/loglist3"
@@ -16,9 +17,8 @@ var ErrSunlightClientMissing = errors.New("sunlight client missing")
 
 func newSunlightClient(log *loglist3.TiledLog, httpClient *http.Client, logger *slog.Logger, concurrency int, cacheDir string) (client *sunlight.Client, err error) {
 	var pub any
-	cacheDir = normalizeCacheDir(cacheDir)
 	if cacheDir != "" {
-		err = ensureCacheDir(cacheDir)
+		err = os.MkdirAll(cacheDir, 0o755)
 	}
 	if err == nil {
 		if log != nil {

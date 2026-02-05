@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"os"
-	"path"
 	"path/filepath"
 	"testing"
 	"time"
@@ -45,20 +44,5 @@ func TestPruneCacheFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(newPath); err != nil {
 		t.Fatalf("new file missing: %v", err)
-	}
-}
-
-func TestCacheDirForMonitoring(t *testing.T) {
-	baseDir := path.Join(os.TempDir(), "certstream")
-	monitoringURL := "https://example.com/ct"
-	got := cacheDirForMonitoring(baseDir, monitoringURL)
-	want := path.Join(baseDir, "example.com_ct")
-	if got != want {
-		t.Fatalf("cacheDirForMonitoring = %q; want %q", got, want)
-	}
-
-	disabled := cacheDirForMonitoring("none", monitoringURL)
-	if disabled != "" {
-		t.Fatalf("cacheDirForMonitoring with none = %q; want empty", disabled)
 	}
 }
