@@ -170,7 +170,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 
 	for err == nil {
-		if start < end {
+		if start <= end {
 			startBefore := start
 			start, _ = ls.getEntries(ctx, start, end, false, ls.sendEntry, nil)
 			if end-startBefore <= LogBatchSize/2 {
