@@ -21,8 +21,9 @@ func rawEntriesStopIndex(start, end int64) (stop int64) {
 // Returns 'wanted' set to true if handleFn returned true for any logentry.
 // Returns an error if not all entries could be fetched and processed.
 func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, next int64, err error) {
-	for start <= end && err == nil {
-		stopIndex := rawEntriesStopIndex(start, end)
+	next = start
+	for next <= end && err == nil {
+		stopIndex := rawEntriesStopIndex(next, end)
 		var resp *ct.GetEntriesResponse
 		if err = ls.backoff.Retry(ctx, func() (e error) {
 			if ls.LogOperator != nil {
@@ -34,7 +35,7 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 				}
 			}
 			ls.adjustTailLimiter(historical)
-			if resp, e = client.GetRawEntries(ctx, start, stopIndex); e != nil {
+			if resp, e = client.GetRawEntries(ctx, next, stopIndex); e != nil {
 				if !ls.handleStreamError(e, "GetRawEntries") {
 					e = wrapLogStreamRetryable(e)
 				}
@@ -43,22 +44,22 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 		}); err == nil {
 			now := time.Now()
 			for i := range resp.Entries {
-				le := ls.makeLogEntry(start, resp.Entries[i], historical)
+				le := ls.makeLogEntry(next, resp.Entries[i], historical)
 				if handleFn(ctx, now, le) {
 					wanted = true
 				}
-				ls.seeIndex(start)
-				start++
+				ls.seeIndex(next)
+				next++
 				if gapcounter != nil {
 					gapcounter.Add(-1)
 				}
 			}
 		} else {
 			if ctx.Err() == nil {
-				_ = ls.LogError(err, "GetRawEntries", "url", ls.URL(), "start", start, "end", end)
+				_ = ls.LogError(err, "GetRawEntries", "url", ls.URL(), "start", next, "end", end)
 			}
 			if gapcounter != nil {
-				gapcounter.Add(start - (end + 1))
+				gapcounter.Add(next - (end + 1))
 			}
 		}
 	}

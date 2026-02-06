@@ -524,8 +524,21 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 					var startIndex sql.NullInt64
 					if err = cdb.QueryRow(ctx, cdb.stmtSelectMinIdxFrom, ls.Id, lastIndex).Scan(&startIndex); err == nil {
 						if startIndex.Valid {
-							if startIndex.Int64 != lastIndex && ctx.Err() == nil {
-								_ = cdb.backfillSetGapStartIndex(ctx, ls, startIndex.Int64)
+							hadGaps := false
+							if startIndex.Int64 > lastIndex {
+								if lastIndex > 0 && ctx.Err() == nil {
+									g := gap{start: lastIndex, end: startIndex.Int64 - 1}
+									select {
+									case <-ctx.Done():
+									case gapCh <- g:
+										hadGaps = true
+										if totals != nil {
+											totals.add(g)
+										}
+									}
+								} else if ctx.Err() == nil {
+									_ = cdb.backfillSetGapStartIndex(ctx, ls, startIndex.Int64)
+								}
 								lastIndex = startIndex.Int64
 							}
 							stmt := cdb.stmtFindGap
@@ -540,13 +553,16 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 										case <-ctx.Done():
 										case gapCh <- g:
 											lastIndex = gapEnd.Int64 + 1
+											hadGaps = true
 											if totals != nil {
 												totals.add(g)
 											}
 										}
 									} else if ctx.Err() == nil {
-										if err = cdb.backfillSetGapStartIndex(ctx, ls, endIndex); err == nil {
-											lastIndex = endIndex
+										if !hadGaps {
+											if err = cdb.backfillSetGapStartIndex(ctx, ls, endIndex); err == nil {
+												lastIndex = endIndex
+											}
 										}
 										break
 									}

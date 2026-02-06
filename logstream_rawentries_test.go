@@ -163,10 +163,14 @@ func TestGetRawEntriesProcessesEntries(t *testing.T) {
 	gapcounter.Store(5)
 
 	var wanted bool
+	var next int64
 	var err error
-	if wanted, _, err = ls.getRawEntries(ctx, client, 0, 4, false, handleFn, &gapcounter); err == nil {
+	if wanted, next, err = ls.getRawEntries(ctx, client, 0, 4, false, handleFn, &gapcounter); err == nil {
 		if !wanted {
 			t.Fatalf("wanted = false, want true")
+		}
+		if got := next; got != 5 {
+			t.Fatalf("next = %d, want 5", got)
 		}
 		if got := gapcounter.Load(); got != 0 {
 			t.Fatalf("gapcounter = %d, want 0", got)
@@ -209,10 +213,14 @@ func TestGetRawEntriesStopsOnFatalError(t *testing.T) {
 	gapcounter.Store(3)
 
 	var wanted bool
+	var next int64
 	var err error
-	if wanted, _, err = ls.getRawEntries(ctx, client, 10, 12, false, handleFn, &gapcounter); err != nil {
+	if wanted, next, err = ls.getRawEntries(ctx, client, 10, 12, false, handleFn, &gapcounter); err != nil {
 		if wanted {
 			t.Fatalf("wanted = true, want false")
+		}
+		if got := next; got != 10 {
+			t.Fatalf("next = %d, want 10", got)
 		}
 		if handled != 0 {
 			t.Fatalf("handled = %d, want 0", handled)

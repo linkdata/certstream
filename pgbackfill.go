@@ -43,12 +43,20 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 			}
 		}
 		if gapCh := ls.getGapCh(); gapCh != nil {
+			allGapsFilled := true
 			fillGap := func(g gap) {
 				if ctx.Err() == nil {
 					ls.Backfill.Add((g.end - g.start) + 1)
 					cdb.LogInfo("gap", "url", ls.URL(), "stream", ls.Id, "logindex", g.start, "length", (g.end-g.start)+1)
 					next, _ := fetchFn(ctx, g.start, g.end, true, ls.sendEntry, &ls.Backfill)
-					_ = cdb.backfillSetGapStartIndex(ctx, ls, next)
+					if allGapsFilled {
+						_ = cdb.backfillSetGapStartIndex(ctx, ls, next)
+					}
+					if next < g.end+1 {
+						allGapsFilled = false
+					}
+				} else {
+					allGapsFilled = false
 				}
 			}
 			for gap := range gapCh {
@@ -57,7 +65,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 			if lastgap.end != 0 {
 				fillGap(lastgap)
 			}
-			if lastindex > 0 {
+			if lastindex > 0 && allGapsFilled {
 				_ = cdb.backfillSetGapStartIndex(ctx, ls, lastindex)
 			}
 		}
