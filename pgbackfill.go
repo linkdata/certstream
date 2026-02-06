@@ -118,7 +118,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 	cdb.backfillGapsWithFetcher(ctx, ls, ls.getEntries)
 	if minIndex, err = cdb.backfillMinIndex(ctx, ls); err == nil && minIndex > 0 {
 		cdb.LogInfo("backlog start", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
-		ls.Backfill.Add(minIndex - 1)
+		ls.Backfill.Add(minIndex)
 		for minIndex > 0 {
 			start := max(0, minIndex-LogBatchSize)
 			stop := minIndex - 1
