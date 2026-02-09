@@ -1,5 +1,5 @@
 CREATE OR REPLACE FUNCTION CERTDB_subdomain(
-  p_rev_domain text,
+  p_domain text,
   p_tlds text
 )
 RETURNS TABLE (
@@ -18,6 +18,7 @@ LANGUAGE plpgsql
 VOLATILE
 AS $$
 DECLARE
+  p_rev_domain text := reverse(p_domain);
   cn_rows integer := 0;
   recalc_rows integer := 0;
 BEGIN
