@@ -176,7 +176,7 @@ RETURNING id;`,
 													} else {
 														rows, err := conn.Query(ctx, `
 SELECT subdomain, wild, www, tld, issuer, subject, notbefore, notafter, since, sha256
-FROM CERTDB_subdomain($1, $2);`, "elpmaxe", "com")
+FROM CERTDB_subdomain($1, $2);`, "example", "com")
 														if err != nil {
 															t.Fatalf("query subdomain failed: %v", err)
 														} else {
@@ -359,7 +359,7 @@ RETURNING id;`,
 							} else {
 								rows, err := conn.Query(ctx, `
 SELECT subdomain, wild, www, tld, issuer, subject, notbefore, notafter, since, sha256
-FROM CERTDB_subdomain($1, $2);`, "elpmaxe", "com")
+FROM CERTDB_subdomain($1, $2);`, "example", "com")
 								if err != nil {
 									t.Fatalf("query subdomain failed: %v", err)
 								} else {

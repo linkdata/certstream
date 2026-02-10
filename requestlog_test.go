@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type staticTransport struct {
@@ -137,6 +138,9 @@ func TestStartOpensTailLogFile(t *testing.T) {
 	}
 	cancel()
 	wg.Wait()
+	if cs.getTailLogFile() != nil {
+		t.Fatalf("tail log file was not cleared after cancellation")
+	}
 }
 
 func TestStartOpensHeadLogFile(t *testing.T) {
@@ -173,4 +177,35 @@ func TestStartOpensHeadLogFile(t *testing.T) {
 	}
 	cancel()
 	wg.Wait()
+	if cs.getHeadLogFile() != nil {
+		t.Fatalf("head log file was not cleared after cancellation")
+	}
+}
+
+func TestStartCancelClosesOutputChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cfg := NewConfig()
+	cfg.HeadDialer = noDialer{}
+	cfg.TailDialer = noDialer{}
+
+	wg := &sync.WaitGroup{}
+	cs, err := Start(ctx, wg, cfg)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if cs == nil {
+		t.Fatalf("Start returned nil CertStream")
+	}
+
+	cancel()
+	wg.Wait()
+
+	select {
+	case _, ok := <-cs.C:
+		if ok {
+			t.Fatalf("output channel still open after cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for output channel to close")
+	}
 }

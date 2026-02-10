@@ -120,7 +120,7 @@ func (cs *CertStream) DB() (db *PgDB) {
 	return
 }
 
-func (cs *CertStream) Close() {
+func (cs *CertStream) close() {
 	cs.mu.Lock()
 	seCh := cs.sendEntryCh
 	cs.sendEntryCh = nil
@@ -155,24 +155,26 @@ func (cs *CertStream) Close() {
 }
 
 func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
-	var wg sync.WaitGroup
+	var streamWG sync.WaitGroup
+	var dbWG sync.WaitGroup
 	ticker := time.NewTicker(time.Hour * 24)
 
 	defer func() {
 		ticker.Stop()
-		wg.Wait()
-		cs.Close()
+		streamWG.Wait()
+		dbWG.Wait()
+		cs.close()
 		pwg.Done()
 	}()
 
-	wg.Add(1)
-	_ = cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@1")
+	streamWG.Add(1)
+	_ = cs.LogError(cs.updateStreams(ctx, &streamWG), "CertStream:run@1")
 
 	if db := cs.DB(); db != nil {
-		wg.Add(3)
-		go db.runWorkers(ctx, &wg)
-		go db.estimator(ctx, &wg)
-		go db.selectAllGaps(ctx, &wg)
+		dbWG.Add(3)
+		go db.runWorkers(ctx, &dbWG)
+		go db.estimator(ctx, &dbWG)
+		go db.selectAllGaps(ctx, &dbWG)
 	}
 
 	for {
@@ -180,8 +182,8 @@ func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			wg.Add(1)
-			_ = cs.LogError(cs.updateStreams(ctx, &wg), "CertStream:run@2")
+			streamWG.Add(1)
+			_ = cs.LogError(cs.updateStreams(ctx, &streamWG), "CertStream:run@2")
 		}
 	}
 }
