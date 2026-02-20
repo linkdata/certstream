@@ -41,6 +41,9 @@ type PgDB struct {
 	stmtSelectMinIdxFrom  string
 	stmtSelectBackfillIdx string
 	stmtUpdateBackfillIdx string
+	closeMu               sync.RWMutex   // blocks new tracked calls while Close is waiting
+	closeWG               sync.WaitGroup // tracks exported DB operations
+	closeOnce             sync.Once
 	mu                    sync.Mutex // protects following
 	batchCh               []chan *LogEntry
 	workerBits            int
@@ -133,17 +136,38 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	return
 }
 
-func (cdb *PgDB) Close() {
-	cdb.mu.Lock()
-	chans := cdb.batchCh
-	cdb.batchCh = nil
-	cdb.mu.Unlock()
-	for _, ch := range chans {
-		if ch != nil {
-			close(ch)
-		}
+func (cdb *PgDB) beginCall() {
+	if cdb != nil {
+		cdb.closeMu.RLock()
+		cdb.closeWG.Add(1)
+		cdb.closeMu.RUnlock()
 	}
-	cdb.Pool.Close()
+}
+
+func (cdb *PgDB) endCall() {
+	if cdb != nil {
+		cdb.closeWG.Done()
+	}
+}
+
+func (cdb *PgDB) Close() {
+	if cdb != nil {
+		cdb.closeOnce.Do(func() {
+			cdb.closeMu.Lock()
+			cdb.mu.Lock()
+			chans := cdb.batchCh
+			cdb.batchCh = nil
+			cdb.mu.Unlock()
+			for _, ch := range chans {
+				if ch != nil {
+					close(ch)
+				}
+			}
+			cdb.closeWG.Wait()
+			cdb.Pool.Close()
+			cdb.closeMu.Unlock()
+		})
+	}
 }
 
 func (cdb *PgDB) QueueUsage() (pct int) {
@@ -263,7 +287,21 @@ func (cdb *PgDB) getCertificate(ctx context.Context, dbcert *PgCertificate) (cer
 }
 
 func (cdb *PgDB) GetCertificateByLogEntry(ctx context.Context, entry *PgLogEntry) (cert *JsonCertificate, err error) {
-	return cdb.GetCertificateByID(ctx, entry.CertID)
+	cert, err = cdb.getCertificateByID(ctx, entry.CertID)
+	return
+}
+
+func (cdb *PgDB) getCertificateByID(ctx context.Context, id int64) (cert *JsonCertificate, err error) {
+	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
+		row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE id=$1;`), id)
+		var dbcert PgCertificate
+		if err = ScanCertificate(row, &dbcert); err == nil {
+			cert, err = cdb.getCertificate(ctx, &dbcert)
+		}
+	}
+	return
 }
 
 func RenderSQL(query string, args ...any) string {
@@ -283,45 +321,51 @@ func RenderSQL(query string, args ...any) string {
 }
 
 func (cdb *PgDB) GetCertificatesByCommonName(ctx context.Context, commonname string) (certs []*JsonCertificate, err error) {
-	var rows pgx.Rows
-	if rows, err = cdb.Query(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE commonname=$1 ORDER BY notbefore DESC;`), commonname); err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var dbcert PgCertificate
-			e := ScanCertificate(rows, &dbcert)
-			if e == nil {
-				var cert *JsonCertificate
-				if cert, e = cdb.getCertificate(ctx, &dbcert); e == nil {
-					certs = append(certs, cert)
+	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
+		var rows pgx.Rows
+		if rows, err = cdb.Query(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE commonname=$1 ORDER BY notbefore DESC;`), commonname); err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var dbcert PgCertificate
+				e := ScanCertificate(rows, &dbcert)
+				if e == nil {
+					var cert *JsonCertificate
+					if cert, e = cdb.getCertificate(ctx, &dbcert); e == nil {
+						certs = append(certs, cert)
+					}
 				}
+				err = errors.Join(err, e)
 			}
-			err = errors.Join(err, e)
+			err = errors.Join(err, rows.Err())
 		}
-		err = errors.Join(err, rows.Err())
 	}
 	return
 }
 
 func (cdb *PgDB) GetCertificateByHash(ctx context.Context, hash []byte) (cert *JsonCertificate, err error) {
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE sha256=$1;`), hash)
-	var dbcert PgCertificate
-	if err = ScanCertificate(row, &dbcert); err == nil {
-		cert, err = cdb.getCertificate(ctx, &dbcert)
+	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
+		row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE sha256=$1;`), hash)
+		var dbcert PgCertificate
+		if err = ScanCertificate(row, &dbcert); err == nil {
+			cert, err = cdb.getCertificate(ctx, &dbcert)
+		}
 	}
 	return
 }
 
 func (cdb *PgDB) GetCertificateByID(ctx context.Context, id int64) (cert *JsonCertificate, err error) {
-	row := cdb.QueryRow(ctx, cdb.Pfx(`SELECT id, notbefore, notafter, commonname, subject, issuer, sha256, precert, since FROM CERTDB_cert WHERE id=$1;`), id)
-	var dbcert PgCertificate
-	if err = ScanCertificate(row, &dbcert); err == nil {
-		cert, err = cdb.getCertificate(ctx, &dbcert)
-	}
+	cert, err = cdb.getCertificateByID(ctx, id)
 	return
 }
 
 func (cdb *PgDB) GetHistoricalCertificates(ctx context.Context, expiresAfter time.Time, callback func(ctx context.Context, cert *JsonCertificate) (err error)) (err error) {
 	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
 		expiresAfter = expiresAfter.UTC()
 		var maxNotAfter *time.Time
 		if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT MAX(notafter) FROM CERTDB_cert;`)).Scan(&maxNotAfter); err == nil {
@@ -379,6 +423,8 @@ LIMIT $5;
 
 func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
 		if batchSize > 0 {
 			cutoff = cutoff.UTC()
 			query := cdb.Pfx(`WITH CERTDB_clean_cert AS (
@@ -403,6 +449,8 @@ WHERE CERTDB_cert.ctid = CERTDB_clean_cert.ctid;`)
 
 func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
 		if batchSize > 0 {
 			query := cdb.Pfx(`WITH CERTDB_clean_stream AS (
   SELECT ctid
