@@ -514,9 +514,11 @@ func (cdb *PgDB) refreshEstimates(ctx context.Context) {
 }
 
 func (cdb *PgDB) estimator(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
 	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
+	defer func() {
+		wg.Done()
+		ticker.Stop()
+	}()
 	for {
 		select {
 		case <-ctx.Done():

@@ -67,8 +67,8 @@ func pruneCacheFiles(cacheDir string, maxAge time.Duration, now time.Time) (remo
 func (cs *CertStream) runCachePruner(ctx context.Context, wg *sync.WaitGroup, cacheDir string, maxAge time.Duration) {
 	ticker := time.NewTicker(min(time.Minute, maxAge))
 	defer func() {
-		ticker.Stop()
 		wg.Done()
+		ticker.Stop()
 	}()
 	for {
 		if _, err := pruneCacheFiles(cacheDir, maxAge, time.Now()); err != nil {

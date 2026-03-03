@@ -59,32 +59,34 @@ func (cs *CertStream) ensureOperatorAndTiledLog(ctx context.Context, op *loglist
 
 func (cs *CertStream) updateStreams(ctx context.Context, wg *sync.WaitGroup) (err error) {
 	defer wg.Done()
-	var logList *loglist3.LogList
-	if logList, err = getLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
-		for _, op := range logList.Operators {
-			for _, log := range op.Logs {
-				if log.State.LogStatus() == loglist3.UsableLogStatus {
-					if e := cs.ensureOperatorAndLog(ctx, op, log, wg); e != nil {
-						err = errors.Join(err, e)
+	if ctx.Err() == nil {
+		var logList *loglist3.LogList
+		if logList, err = getLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
+			for _, op := range logList.Operators {
+				for _, log := range op.Logs {
+					if log.State.LogStatus() == loglist3.UsableLogStatus {
+						if e := cs.ensureOperatorAndLog(ctx, op, log, wg); e != nil {
+							err = errors.Join(err, e)
+						}
 					}
 				}
-			}
-			for _, log := range op.TiledLogs {
-				if log.State.LogStatus() == loglist3.UsableLogStatus {
-					if e := cs.ensureOperatorAndTiledLog(ctx, op, log, wg); e != nil {
-						err = errors.Join(err, e)
+				for _, log := range op.TiledLogs {
+					if log.State.LogStatus() == loglist3.UsableLogStatus {
+						if e := cs.ensureOperatorAndTiledLog(ctx, op, log, wg); e != nil {
+							err = errors.Join(err, e)
+						}
 					}
 				}
 			}
 		}
-	}
 
-	var operators []string
-	for _, lo := range cs.Operators() {
-		operators = append(operators, fmt.Sprintf("%s*%d", lo.Domain, len(lo.Streams())))
+		var operators []string
+		for _, lo := range cs.Operators() {
+			operators = append(operators, fmt.Sprintf("%s*%d", lo.Domain, len(lo.Streams())))
+		}
+		slices.Sort(operators)
+		cs.LogInfo("active", "streams", operators)
 	}
-	slices.Sort(operators)
-	cs.LogInfo("active", "streams", operators)
 	return
 }
 

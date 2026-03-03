@@ -160,11 +160,11 @@ func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
 	ticker := time.NewTicker(time.Hour * 24)
 
 	defer func() {
-		ticker.Stop()
 		streamWG.Wait()
 		dbWG.Wait()
 		cs.close()
 		pwg.Done()
+		ticker.Stop()
 	}()
 
 	streamWG.Add(1)
