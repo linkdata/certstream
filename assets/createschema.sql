@@ -257,6 +257,34 @@ IF to_regclass('CERTDB_dnsnames') IS NULL THEN
   ;
 END IF;
 
+IF to_regclass('CERTDB_view') IS NULL THEN
+  CREATE OR REPLACE VIEW CERTDB_view AS
+  SELECT
+    cert,
+    CERTDB_fqdn(cd.wild, cd.www, cd.domain, cd.tld) as fqdn,
+    cc.commonname AS commonname,
+    cc.notbefore AS notbefore,
+    cc.notafter AS notafter,
+    cc.since AS since,
+    cc.precert AS precert,
+    cc.sha256 AS sha256,
+    iss.organization as iss_organization,
+    iss.province as iss_province,
+    iss.country as iss_country,
+    subj.organization as subj_organization,
+    subj.province as subj_province,
+    subj.country as subj_country,
+    cd.wild,
+    cd.www,
+    cd.domain,
+    cd.tld
+  FROM CERTDB_domain cd
+  INNER JOIN CERTDB_cert cc on cc.id = cd.cert 
+  INNER JOIN CERTDB_ident subj on subj.id = cc.subject
+  INNER JOIN CERTDB_ident iss on iss.id = cc.issuer
+  ;
+END IF;
+
 IF to_regclass('CERTDB_entries') IS NULL THEN
   CREATE OR REPLACE VIEW CERTDB_entries AS
   SELECT
