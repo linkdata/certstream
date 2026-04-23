@@ -26,13 +26,15 @@ type PgView struct {
 }
 
 func ScanView(row Scanner, v *PgView) (err error) {
-	return row.Scan(
+	var since *time.Time
+
+	err = row.Scan(
 		&v.CertID,
 		&v.FQDN,
 		&v.CommonName,
 		&v.NotBefore,
 		&v.NotAfter,
-		&v.Since,
+		&since,
 		&v.PreCert,
 		&v.Sha256,
 		&v.IssuerOrganization,
@@ -46,4 +48,8 @@ func ScanView(row Scanner, v *PgView) (err error) {
 		&v.Domain,
 		&v.Tld,
 	)
+	if since != nil {
+		v.Since = *since
+	}
+	return
 }
