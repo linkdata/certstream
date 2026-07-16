@@ -41,9 +41,6 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out .
 
-      - name: Go report card
-        uses: creekorful/goreportcard-action@v1.0
-
       - name: Calculate code coverage
         id: coverage
         run: |
