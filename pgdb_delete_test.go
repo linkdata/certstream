@@ -115,6 +115,27 @@ func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int32) 
 	return
 }
 
+// waitForBlockedLock waits until some backend is waiting on a lock. The test
+// database serves only this test, so the only candidate is the call under test
+// blocking on the stream row.
+func waitForBlockedLock(ctx context.Context, tb testing.TB, q queryer) {
+	tb.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var blocked int
+		if err := q.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted;`).Scan(&blocked); err != nil {
+			tb.Fatalf("pg_locks query failed: %v", err)
+		}
+		if blocked > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			tb.Fatal("no backend became blocked on a lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func testSHA256Hex(seed byte) string {
 	buf := make([]byte, 32)
 	buf[len(buf)-1] = seed
@@ -531,6 +552,82 @@ func TestPgDB_DeleteStream_LockedEntriesKeepStream(t *testing.T) {
 				t.Fatalf("counts failed: %v", err)
 			} else if streamCount != 0 || entryCount != 0 {
 				t.Fatalf("after unlock stream=%d entries=%d, want 0 and 0", streamCount, entryCount)
+			}
+		}
+	}
+}
+
+func TestPgDB_DeleteStream_ConcurrentInsertKeepsStream(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if db, err := newPgDBFromConn(ctx, conn); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		t.Cleanup(func() {
+			db.Close()
+		})
+
+		if identID, err := defaultIdentID(ctx, db, db.Pfx); err != nil {
+			t.Fatalf("default ident lookup failed: %v", err)
+		} else {
+			now := time.Now().UTC()
+			notBefore := now.Add(-24 * time.Hour)
+			notAfter := now.Add(24 * time.Hour)
+
+			// The stream is empty, so DeleteStream would otherwise remove it.
+			// Start an entry insert that has not committed yet: the foreign key
+			// makes it hold FOR KEY SHARE on the stream row.
+			certID, err := insertTestCert(ctx, db, db.Pfx, identID, notBefore, notAfter, testSHA256Hex(1))
+			if err != nil {
+				t.Fatalf("insert cert failed: %v", err)
+			}
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin failed: %v", err)
+			}
+			if err = insertTestEntry(ctx, tx, db.Pfx, certID, 1, streamID, now); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("insert entry failed: %v", err)
+			}
+
+			// DeleteStream must not decide the stream is empty using a snapshot
+			// taken before that insert commits.
+			type result struct {
+				rows int64
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				rows, err := db.DeleteStream(ctx, streamID, 10)
+				done <- result{rows, err}
+			}()
+
+			// Wait until it is actually blocked on the stream row before
+			// letting the insert commit, rather than guessing at a delay.
+			waitForBlockedLock(ctx, t, db)
+			if err = tx.Commit(ctx); err != nil {
+				t.Fatalf("commit failed: %v", err)
+			}
+
+			select {
+			case r := <-done:
+				if r.err != nil {
+					t.Fatalf("DeleteStream failed: %v", r.err)
+				}
+				if r.rows != 0 {
+					t.Fatalf("rows deleted = %d, want 0: the entry committed before the stream was dropped", r.rows)
+				}
+			case <-time.After(time.Minute):
+				t.Fatal("DeleteStream did not return")
+			}
+
+			if streamCount, entryCount, err := streamEntryCounts(ctx, db, streamID); err != nil {
+				t.Fatalf("counts failed: %v", err)
+			} else if streamCount != 1 {
+				t.Fatalf("stream count = %d, want 1", streamCount)
+			} else if entryCount != 1 {
+				t.Fatalf("entry count = %d, want 1: the committed entry was cascade deleted", entryCount)
 			}
 		}
 	}

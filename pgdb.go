@@ -523,9 +523,9 @@ func (cdb *PgDB) CleanCertificates(ctx context.Context) {
 // already deleted. Reaching the end of the stream restarts the scan at its
 // first entry, so entries backfilled below the cursor are still found.
 //
-// The stream itself is deleted only once it holds no entries at all, which is
-// checked in the same statement as the delete. A batch deleting nothing is not
-// on its own proof of that, since rows locked by another deleter are skipped.
+// The stream itself is deleted only once it holds no entries at all, checked
+// under a lock on the stream row. A batch deleting nothing is not on its own
+// proof of that, since rows locked by another deleter are skipped.
 //
 // A batchSize below one deletes nothing.
 func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
@@ -574,26 +574,50 @@ SELECT count(*), max(logindex) FROM CERTDB_deleted_entry;`)
 					cdb.cleanStream[streamId] = next
 					cdb.mu.Unlock()
 					if rowsDeleted == 0 {
-						// An empty batch only means nothing unlocked was found,
-						// so confirm the stream really holds no entries in the
-						// same statement as the delete. Otherwise a concurrent
-						// drainer holding row locks makes this drop the stream
-						// and cascade its remaining entries away in one
-						// unbatched statement.
-						var tag pgconn.CommandTag
-						if tag, err = cdb.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream s
-WHERE s.id = $1
-  AND NOT EXISTS (SELECT 1 FROM CERTDB_entry e WHERE e.stream = s.id);`), streamId); err == nil {
-							rowsDeleted = tag.RowsAffected()
-							if rowsDeleted > 0 {
-								cdb.mu.Lock()
-								delete(cdb.cleanStream, streamId)
-								cdb.mu.Unlock()
-							}
+						if rowsDeleted, err = cdb.deleteEmptyStream(ctx, streamId); err == nil && rowsDeleted > 0 {
+							cdb.mu.Lock()
+							delete(cdb.cleanStream, streamId)
+							cdb.mu.Unlock()
 						}
 					}
 				}
 			}
+		}
+	}
+	return
+}
+
+// deleteEmptyStream deletes the stream, and reports how many rows that removed,
+// but only once it holds no entries.
+//
+// The stream row is locked before the check, so that inserting an entry, which
+// takes a FOR KEY SHARE lock on that row for the foreign key, cannot commit
+// between the check and the delete. Testing inside a single
+// DELETE ... WHERE NOT EXISTS is not enough: the subquery sees the statement
+// snapshot, so an entry committed after that snapshot is taken is invisible to
+// it and still removed by the cascade.
+func (cdb *PgDB) deleteEmptyStream(ctx context.Context, streamId int32) (rowsDeleted int64, err error) {
+	var tx pgx.Tx
+	if tx, err = cdb.Begin(ctx); err == nil {
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
+		var lockedId int32
+		if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT id FROM CERTDB_stream WHERE id = $1 FOR UPDATE;`), streamId).Scan(&lockedId); err == nil {
+			var hasEntries bool
+			if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT EXISTS (SELECT 1 FROM CERTDB_entry WHERE stream = $1);`), streamId).Scan(&hasEntries); err == nil {
+				if !hasEntries {
+					var tag pgconn.CommandTag
+					if tag, err = tx.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
+						rowsDeleted = tag.RowsAffected()
+					}
+				}
+				if err == nil {
+					err = tx.Commit(ctx)
+				}
+			}
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			err = nil
 		}
 	}
 	return
