@@ -245,21 +245,56 @@ func TestPgDB_DeleteStream_PersistsCursor(t *testing.T) {
 	}
 }
 
+// Not parallel: it writes CleanEmptyCheckTimeout, which the other DeleteStream
+// tests read.
 func TestPgDB_DeleteStream_EmptyCheckTimeoutKeepsStream(t *testing.T) {
-	t.Parallel()
-	ctx, db, _, streamID, _ := cleanTestFixture(t)
+	ctx, db, _, streamID, identID := cleanTestFixture(t)
+
+	// Drain the stream so the cursor sits past the end, which is what makes the
+	// next call restart the scan at the first entry.
+	now := time.Now().UTC()
+	for i := range 3 {
+		if err := insertCleanTestEntry(ctx, db, streamID, identID, int64(i+1), now); err != nil {
+			t.Fatalf("insert entry failed: %v", err)
+		}
+	}
+	if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+		t.Fatalf("draining DeleteStream failed: %v", err)
+	} else if rowsDeleted != 3 {
+		t.Fatalf("rows deleted = %d, want 3", rowsDeleted)
+	}
 
 	// An unreachable budget stands in for a drained stream whose index entries
-	// autovacuum has not removed yet, where proving emptiness takes minutes.
+	// autovacuum has not removed yet, where both the restart scan and proving
+	// emptiness take minutes.
 	saved := CleanEmptyCheckTimeout
 	CleanEmptyCheckTimeout = time.Nanosecond
 	t.Cleanup(func() { CleanEmptyCheckTimeout = saved })
+
+	cursor := func() (v int64) {
+		if err := db.QueryRow(ctx, db.Pfx(`SELECT clean_logindex FROM CERTDB_stream WHERE id = $1;`), streamID).Scan(&v); err != nil {
+			t.Fatalf("reading clean_logindex failed: %v", err)
+		}
+		return
+	}
+	drained := cursor()
+	if drained == 0 {
+		t.Fatal("cursor should sit past the drained entries")
+	}
 
 	if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
 		t.Fatalf("DeleteStream failed: %v", err)
 	} else if rowsDeleted != 0 {
 		t.Fatalf("rows deleted = %d, want 0", rowsDeleted)
 	}
+
+	// The restart scan gave up, so the cursor must be left where it was. An
+	// unbounded restart would have run to the end and reset it to 0, which is
+	// how this distinguishes the two without depending on how slow the scan is.
+	if v := cursor(); v != drained {
+		t.Fatalf("cursor = %d, want %d unchanged: the restart scan was not bounded", v, drained)
+	}
+
 	var streamCount int64
 	if err := db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM CERTDB_stream WHERE id = $1;`), streamID).Scan(&streamCount); err != nil {
 		t.Fatalf("count failed: %v", err)
@@ -311,5 +346,56 @@ SELECT now(), g, g, $1 FROM generate_series(0, $2) g;`), streamID, total-1); err
 		if rowsDeleted == 0 {
 			b.Fatal("stream exhausted; raise total or lower -benchtime")
 		}
+	}
+}
+
+// BenchmarkPgDB_DeleteStreamAfterRestart measures the first batch a new process
+// deletes from a stream that is already partly drained. That batch is the one
+// the persisted cursor exists for: without it the scan starts at the first
+// entry and walks everything already deleted. Compare revisions with benchstat.
+func BenchmarkPgDB_DeleteStreamAfterRestart(b *testing.B) {
+	ctx, db, cs, streamID, _ := cleanTestFixture(b)
+	const (
+		total = 400000
+		gap   = 300000
+		batch = 100
+	)
+	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream)
+SELECT now(), g, g, $1 FROM generate_series(0, $2) g;`), streamID, total-1); err != nil {
+		b.Fatalf("insert entries failed: %v", err)
+	}
+	for drained := int64(0); drained < gap; {
+		rowsDeleted, err := db.DeleteStream(ctx, streamID, 10000)
+		if err != nil {
+			b.Fatalf("building the emptied prefix failed: %v", err)
+		}
+		if rowsDeleted == 0 {
+			b.Fatal("stream drained while building the prefix")
+		}
+		drained += rowsDeleted
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		// A fresh handle stands in for a restarted process: it has no cursor of
+		// its own and must find where to resume.
+		b.StopTimer()
+		restarted, err := NewPgDB(ctx, cs)
+		if err != nil {
+			b.Fatalf("NewPgDB failed: %v", err)
+		}
+		b.StartTimer()
+
+		rowsDeleted, err := restarted.DeleteStream(ctx, streamID, batch)
+
+		b.StopTimer()
+		restarted.Close()
+		if err != nil {
+			b.Fatalf("DeleteStream failed: %v", err)
+		}
+		if rowsDeleted == 0 {
+			b.Fatal("stream exhausted; raise total or lower -benchtime")
+		}
+		b.StartTimer()
 	}
 }
