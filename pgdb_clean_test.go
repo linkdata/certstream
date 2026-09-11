@@ -29,6 +29,12 @@ VALUES ($1, $2, $1, 'example.com', $3, $3, decode(lpad(to_hex($4::int), 64, '0')
 	return
 }
 
+func insertCleanTestEntry(ctx context.Context, db *PgDB, streamID int32, cert int32, logIndex int64, seen time.Time) (err error) {
+	_, err = db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream) VALUES ($1, $2, $3, $4);`),
+		seen, cert, logIndex, streamID)
+	return
+}
+
 func countCerts(ctx context.Context, db *PgDB) (n int64, err error) {
 	err = db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM CERTDB_cert;`)).Scan(&n)
 	return
@@ -164,6 +170,59 @@ func BenchmarkPgDB_DeleteCertificates(b *testing.B) {
 		if _, err := db.DeleteCertificates(ctx, cutoff, CleanBatchSize); err != nil {
 			b.Fatalf("DeleteCertificates failed: %v", err)
 		}
+	}
+}
+
+func TestPgDB_DeleteStream_KeepsNoCursorForEmptyOrMissing(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, streamID, identID := cleanTestFixture(t)
+
+	cursorCount := func() (n int) {
+		db.mu.Lock()
+		n = len(db.cleanStream)
+		db.mu.Unlock()
+		return
+	}
+
+	// Stream ids that were never created must not accumulate cursors.
+	for id := int32(10000); id < 10100; id++ {
+		if rowsDeleted, err := db.DeleteStream(ctx, id, 10); err != nil {
+			t.Fatalf("DeleteStream(%d) failed: %v", id, err)
+		} else if rowsDeleted != 0 {
+			t.Fatalf("rows deleted for missing stream %d = %d, want 0", id, rowsDeleted)
+		}
+	}
+	if n := cursorCount(); n != 0 {
+		t.Fatalf("cursors retained for missing streams = %d, want 0", n)
+	}
+
+	// A partly drained stream keeps its cursor, otherwise the next call starts
+	// over from the beginning.
+	now := time.Now().UTC()
+	for i := range 4 {
+		if err := insertCleanTestEntry(ctx, db, streamID, identID, int64(i+1), now); err != nil {
+			t.Fatalf("insert entry failed: %v", err)
+		}
+	}
+	if rowsDeleted, err := db.DeleteStream(ctx, streamID, 2); err != nil {
+		t.Fatalf("DeleteStream failed: %v", err)
+	} else if rowsDeleted != 2 {
+		t.Fatalf("rows deleted = %d, want 2", rowsDeleted)
+	}
+	if n := cursorCount(); n != 1 {
+		t.Fatalf("cursors after a partial drain = %d, want 1", n)
+	}
+
+	// Draining it fully and removing the stream leaves nothing behind.
+	for range 5 {
+		if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+			t.Fatalf("DeleteStream failed: %v", err)
+		} else if rowsDeleted == 0 {
+			break
+		}
+	}
+	if n := cursorCount(); n != 0 {
+		t.Fatalf("cursors after the stream was removed = %d, want 0", n)
 	}
 }
 

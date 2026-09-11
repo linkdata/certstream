@@ -568,17 +568,20 @@ SELECT count(*), max(logindex) FROM CERTDB_deleted_entry;`)
 				}
 				if err == nil {
 					cdb.mu.Lock()
-					if cdb.cleanStream == nil {
-						cdb.cleanStream = make(map[int32]int64)
+					// A zero cursor means the same as no cursor at all, so drop
+					// the entry rather than keeping one per stream id ever asked
+					// about, including ids that do not exist.
+					if next == 0 {
+						delete(cdb.cleanStream, streamId)
+					} else {
+						if cdb.cleanStream == nil {
+							cdb.cleanStream = make(map[int32]int64)
+						}
+						cdb.cleanStream[streamId] = next
 					}
-					cdb.cleanStream[streamId] = next
 					cdb.mu.Unlock()
 					if rowsDeleted == 0 {
-						if rowsDeleted, err = cdb.deleteEmptyStream(ctx, streamId); err == nil && rowsDeleted > 0 {
-							cdb.mu.Lock()
-							delete(cdb.cleanStream, streamId)
-							cdb.mu.Unlock()
-						}
+						rowsDeleted, err = cdb.deleteEmptyStream(ctx, streamId)
 					}
 				}
 			}
