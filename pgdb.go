@@ -51,7 +51,6 @@ type PgDB struct {
 	estimates             map[string]float64 // row count estimates
 	cleanFrom             time.Time          // lowest notafter DeleteCertificates has yet to consider
 	cleanResetAt          time.Time          // when cleanFrom was last restarted
-	cleanStream           map[int32]int64    // per stream, lowest logindex DeleteStream has yet to consider
 	newentrytime          time.Duration
 	newentrycount         int64
 	avgentrytime          time.Duration
@@ -431,6 +430,16 @@ var CleanBatchSize = 10000
 // oldest certificate instead of resuming from its cursor.
 var CleanResetInterval = time.Hour
 
+// CleanEmptyCheckTimeout bounds each scan [PgDB.DeleteStream] makes over a
+// stream's already deleted entries: restarting the cursor at the first entry,
+// and confirming the stream holds none before deleting it.
+//
+// A drained stream keeps its index entries until autovacuum removes them, and
+// on a large table walking them to find that none are live takes minutes. When
+// the check runs out of time the stream is left in place for a later call
+// rather than deleted without proof.
+var CleanEmptyCheckTimeout = 30 * time.Second
+
 // DeleteCertificates deletes up to batchSize certificates that expired at or
 // before cutoff, oldest first, cascading to the domain, IP address, email and
 // URI rows that reference them. Rows in CERTDB_entry are left alone: they
@@ -518,10 +527,11 @@ func (cdb *PgDB) CleanCertificates(ctx context.Context) {
 // DeleteStream deletes up to batchSize log entries belonging to the stream,
 // oldest first, and deletes the stream itself once it holds none.
 //
-// Deletion resumes where the previous call stopped, so repeated calls walk
+// Deletion resumes from CERTDB_stream.clean_logindex, so repeated calls walk
 // forward in logindex order instead of rescanning the index entries of rows
-// already deleted. Reaching the end of the stream restarts the scan at its
-// first entry, so entries backfilled below the cursor are still found.
+// already deleted, and a restart picks up where the last one stopped rather
+// than from the first entry. Reaching the end of the stream restarts the scan
+// at its first entry, so entries backfilled below the cursor are still found.
 //
 // The stream itself is deleted only once it holds no entries at all, checked
 // under a lock on the stream row. A batch deleting nothing is not on its own
@@ -547,43 +557,44 @@ func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int
   RETURNING CERTDB_entry.logindex
 )
 SELECT count(*), max(logindex) FROM CERTDB_deleted_entry;`)
-			deleteBatch := func(from int64) (deleted int64, next int64, batchErr error) {
+			deleteBatch := func(batchCtx context.Context, from int64) (deleted int64, next int64, batchErr error) {
 				var highest sql.NullInt64
-				if batchErr = cdb.QueryRow(ctx, query, streamId, from, batchSize).Scan(&deleted, &highest); batchErr == nil {
+				if batchErr = cdb.QueryRow(batchCtx, query, streamId, from, batchSize).Scan(&deleted, &highest); batchErr == nil {
 					if highest.Valid {
 						next = highest.Int64 + 1
 					}
 				}
 				return
 			}
-			cdb.mu.Lock()
-			from := cdb.cleanStream[streamId]
-			cdb.mu.Unlock()
-			var next int64
-			if rowsDeleted, next, err = deleteBatch(from); err == nil {
-				if rowsDeleted == 0 && from != 0 {
-					// Nothing above the cursor, so look again from the start in
-					// case backfill added entries below it.
-					rowsDeleted, next, err = deleteBatch(0)
-				}
-				if err == nil {
-					cdb.mu.Lock()
-					// A zero cursor means the same as no cursor at all, so drop
-					// the entry rather than keeping one per stream id ever asked
-					// about, including ids that do not exist.
-					if next == 0 {
-						delete(cdb.cleanStream, streamId)
-					} else {
-						if cdb.cleanStream == nil {
-							cdb.cleanStream = make(map[int32]int64)
+			var from int64
+			if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT clean_logindex FROM CERTDB_stream WHERE id = $1;`), streamId).Scan(&from); err == nil {
+				var next int64
+				if rowsDeleted, next, err = deleteBatch(ctx, from); err == nil {
+					unproven := false
+					if rowsDeleted == 0 && from != 0 {
+						// Nothing above the cursor, so look again from the start
+						// in case backfill added entries below it. That walks
+						// the entries already deleted from this stream, the
+						// same unbounded scan deleteEmptyStream faces, so give
+						// it the same budget.
+						restartCtx, cancel := context.WithTimeout(ctx, CleanEmptyCheckTimeout)
+						rowsDeleted, next, err = deleteBatch(restartCtx, 0)
+						cancel()
+						if errors.Is(err, context.DeadlineExceeded) {
+							rowsDeleted, next, err, unproven = 0, from, ctx.Err(), true
 						}
-						cdb.cleanStream[streamId] = next
 					}
-					cdb.mu.Unlock()
-					if rowsDeleted == 0 {
+					if err == nil && next != from {
+						_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_stream SET clean_logindex = $2 WHERE id = $1;`), streamId, next)
+					}
+					// Only worth asking whether the stream is empty when the
+					// scan that would have found entries actually finished.
+					if err == nil && rowsDeleted == 0 && !unproven {
 						rowsDeleted, err = cdb.deleteEmptyStream(ctx, streamId)
 					}
 				}
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				err = nil
 			}
 		}
 	}
@@ -607,15 +618,23 @@ func (cdb *PgDB) deleteEmptyStream(ctx context.Context, streamId int32) (rowsDel
 		}()
 		var lockedId int32
 		if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT id FROM CERTDB_stream WHERE id = $1 FOR UPDATE;`), streamId).Scan(&lockedId); err == nil {
+			checkCtx, cancel := context.WithTimeout(ctx, CleanEmptyCheckTimeout)
+			defer cancel()
 			var hasEntries bool
-			if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT EXISTS (SELECT 1 FROM CERTDB_entry WHERE stream = $1);`), streamId).Scan(&hasEntries); err == nil {
-				if !hasEntries {
-					var tag pgconn.CommandTag
-					if tag, err = tx.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
-						rowsDeleted = tag.RowsAffected()
-					}
-				}
-				if err == nil {
+			err = tx.QueryRow(checkCtx, cdb.Pfx(`SELECT EXISTS (SELECT 1 FROM CERTDB_entry WHERE stream = $1);`), streamId).Scan(&hasEntries)
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				// Too many index entries still to walk to prove it empty.
+				// Leave the stream alone; a later call will be cheaper once
+				// autovacuum has removed them.
+				err = ctx.Err()
+			case err != nil:
+			case hasEntries:
+				err = tx.Commit(ctx)
+			default:
+				var tag pgconn.CommandTag
+				if tag, err = tx.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
+					rowsDeleted = tag.RowsAffected()
 					err = tx.Commit(ctx)
 				}
 			}

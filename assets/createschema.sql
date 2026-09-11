@@ -16,7 +16,8 @@ IF to_regclass('CERTDB_stream') IS NULL THEN
     url TEXT NOT NULL UNIQUE,
     operator INTEGER NOT NULL REFERENCES CERTDB_operator (id) ON DELETE CASCADE,
     json TEXT NOT NULL,
-    backfill_logindex BIGINT NOT NULL DEFAULT 0
+    backfill_logindex BIGINT NOT NULL DEFAULT 0,
+    clean_logindex BIGINT NOT NULL DEFAULT 0
   );
   CREATE UNIQUE INDEX IF NOT EXISTS CERTDB_stream_url_idx ON CERTDB_stream (url);
 END IF;
