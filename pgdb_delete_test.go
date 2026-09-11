@@ -382,6 +382,79 @@ func TestPgDB_DeleteStream_BatchOrder(t *testing.T) {
 	}
 }
 
+func TestPgDB_DeleteStream_ResumesAndFindsBackfilled(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if db, err := newPgDBFromConn(ctx, conn); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		t.Cleanup(func() {
+			db.Close()
+		})
+
+		if identID, err := defaultIdentID(ctx, db, db.Pfx); err != nil {
+			t.Fatalf("default ident lookup failed: %v", err)
+		} else {
+			now := time.Now().UTC()
+			notBefore := now.Add(-24 * time.Hour)
+			notAfter := now.Add(24 * time.Hour)
+
+			for _, logIndex := range []int64{10, 11, 12} {
+				if _, err := insertTestCertWithEntry(ctx, db, streamID, identID, logIndex, notBefore, notAfter, testSHA256Hex(byte(logIndex))); err != nil {
+					t.Fatalf("insert entry %d failed: %v", logIndex, err)
+				}
+			}
+
+			// Oldest first, leaving the cursor above logindex 11.
+			if rowsDeleted, err := db.DeleteStream(ctx, streamID, 2); err != nil {
+				t.Fatalf("DeleteStream failed: %v", err)
+			} else if rowsDeleted != 2 {
+				t.Fatalf("rows deleted = %d, want 2", rowsDeleted)
+			} else if indices, err := streamLogIndices(ctx, db, streamID); err != nil {
+				t.Fatalf("index listing failed: %v", err)
+			} else if len(indices) != 1 || indices[0] != 12 {
+				t.Fatalf("remaining indices = %v, want [12]", indices)
+			}
+
+			// Backfill an entry below where the cursor stopped.
+			if _, err := insertTestCertWithEntry(ctx, db, streamID, identID, 1, notBefore, notAfter, testSHA256Hex(99)); err != nil {
+				t.Fatalf("insert backfilled entry failed: %v", err)
+			}
+
+			// The cursor still clears what is above it.
+			if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+				t.Fatalf("DeleteStream above cursor failed: %v", err)
+			} else if rowsDeleted != 1 {
+				t.Fatalf("rows deleted above cursor = %d, want 1", rowsDeleted)
+			}
+
+			// Reaching the end restarts the scan and finds the backfilled entry,
+			// rather than dropping the stream while it still holds one.
+			if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+				t.Fatalf("DeleteStream restart failed: %v", err)
+			} else if rowsDeleted != 1 {
+				t.Fatalf("rows deleted after restart = %d, want 1", rowsDeleted)
+			} else if indices, err := streamLogIndices(ctx, db, streamID); err != nil {
+				t.Fatalf("index listing failed: %v", err)
+			} else if len(indices) != 0 {
+				t.Fatalf("remaining indices = %v, want none", indices)
+			}
+
+			// Only now is the stream itself removed.
+			if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+				t.Fatalf("DeleteStream on empty stream failed: %v", err)
+			} else if rowsDeleted != 1 {
+				t.Fatalf("rows deleted removing stream = %d, want 1", rowsDeleted)
+			} else if count, err := countRows(ctx, db, `SELECT COUNT(*) FROM CERTDB_stream WHERE id=$1;`, streamID); err != nil {
+				t.Fatalf("stream count failed: %v", err)
+			} else if count != 0 {
+				t.Fatalf("stream count = %d, want 0", count)
+			}
+		}
+	}
+}
+
 func TestPgDB_DeleteStream_NoEntriesDeletesStream(t *testing.T) {
 	t.Parallel()
 
