@@ -49,6 +49,9 @@ type PgDB struct {
 	workerBits            int
 	workerCount           int
 	estimates             map[string]float64 // row count estimates
+	cleanFrom             time.Time          // lowest notafter DeleteCertificates has yet to consider
+	cleanResetAt          time.Time          // when cleanFrom was last restarted
+	cleanStream           map[int32]int64    // per stream, lowest logindex DeleteStream has yet to consider
 	newentrytime          time.Duration
 	newentrycount         int64
 	avgentrytime          time.Duration
@@ -421,6 +424,25 @@ LIMIT $5;
 	return
 }
 
+// CleanBatchSize is the number of certificates the automatic cleanup deletes per statement.
+var CleanBatchSize = 10000
+
+// CleanResetInterval is how often [PgDB.DeleteCertificates] restarts at the
+// oldest certificate instead of resuming from its cursor.
+var CleanResetInterval = time.Hour
+
+// DeleteCertificates deletes up to batchSize certificates that expired at or
+// before cutoff, oldest first, cascading to the domain, IP address, email and
+// URI rows that reference them. Rows in CERTDB_entry are left alone: they
+// record log positions and have no foreign key to CERTDB_cert.
+//
+// Deletion resumes where the previous call stopped, so repeated calls walk
+// forward in notafter order instead of rescanning the index entries of rows
+// already deleted. Finding nothing to delete moves the cursor up to cutoff,
+// and at most once every [CleanResetInterval] restarts it at the oldest
+// certificate to pick up any inserted below it.
+//
+// A batchSize below one deletes nothing.
 func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
 		cdb.beginCall()
@@ -430,23 +452,82 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
 			query := cdb.Pfx(`WITH CERTDB_clean_cert AS (
   SELECT ctid
   FROM CERTDB_cert
-  WHERE notafter <= $1
+  WHERE notafter >= $1 AND notafter <= $2
   ORDER BY notafter ASC
-  LIMIT $2
+  LIMIT $3
   FOR UPDATE SKIP LOCKED
+), CERTDB_deleted_cert AS (
+  DELETE FROM CERTDB_cert
+  USING CERTDB_clean_cert
+  WHERE CERTDB_cert.ctid = CERTDB_clean_cert.ctid
+  RETURNING CERTDB_cert.notafter
 )
-DELETE FROM CERTDB_cert
-USING CERTDB_clean_cert
-WHERE CERTDB_cert.ctid = CERTDB_clean_cert.ctid;`)
-			var tag pgconn.CommandTag
-			if tag, err = cdb.Exec(ctx, query, cutoff, batchSize); err == nil {
-				rowsDeleted = tag.RowsAffected()
+SELECT count(*), max(notafter) FROM CERTDB_deleted_cert;`)
+			cdb.mu.Lock()
+			cleanFrom := cdb.cleanFrom
+			cdb.mu.Unlock()
+			var highest sql.NullTime
+			row := cdb.QueryRow(ctx, query, cleanFrom, cutoff, batchSize)
+			if err = row.Scan(&rowsDeleted, &highest); err == nil {
+				now := time.Now()
+				cdb.mu.Lock()
+				switch {
+				case highest.Valid && highest.Time.After(cdb.cleanFrom):
+					cdb.cleanFrom = highest.Time
+				case rowsDeleted > 0:
+				case now.Sub(cdb.cleanResetAt) >= CleanResetInterval:
+					// Sweep back for certificates inserted below the cursor. The
+					// scan that follows has to walk whatever the range still holds,
+					// so it happens on an interval rather than every idle cycle.
+					cdb.cleanFrom = time.Time{}
+					cdb.cleanResetAt = now
+				case cutoff.After(cdb.cleanFrom):
+					// Nothing left at or above the cursor, so start the next scan at
+					// the cutoff instead of walking the emptied range again.
+					cdb.cleanFrom = cutoff
+				}
+				cdb.mu.Unlock()
 			}
 		}
 	}
 	return
 }
 
+// CleanCertificates deletes expired certificates until ctx is done.
+//
+// A certificate is deleted once Config.PgCertMaxAge has passed since it
+// expired. A PgCertMaxAge of zero or less returns immediately without
+// deleting anything. [Start] runs this for the lifetime of the CertStream,
+// so callers need it only when driving a [PgDB] themselves.
+func (cdb *PgDB) CleanCertificates(ctx context.Context) {
+	maxAge := cdb.CertStream.Config.PgCertMaxAge
+	if maxAge <= 0 {
+		return
+	}
+	for ctx.Err() == nil {
+		rowsDeleted, err := cdb.DeleteCertificates(ctx, time.Now().UTC().Add(-maxAge), CleanBatchSize)
+		if cdb.LogError(err, "CleanCertificates") != nil || rowsDeleted == 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Minute):
+			}
+		}
+	}
+}
+
+// DeleteStream deletes up to batchSize log entries belonging to the stream,
+// oldest first, and deletes the stream itself once it holds none.
+//
+// Deletion resumes where the previous call stopped, so repeated calls walk
+// forward in logindex order instead of rescanning the index entries of rows
+// already deleted. Reaching the end of the stream restarts the scan at its
+// first entry, so entries backfilled below the cursor are still found.
+//
+// The stream itself is deleted only once it holds no entries at all, checked
+// under a lock on the stream row. A batch deleting nothing is not on its own
+// proof of that, since rows locked by another deleter are skipped.
+//
+// A batchSize below one deletes nothing.
 func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
 		cdb.beginCall()
@@ -455,23 +536,91 @@ func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int
 			query := cdb.Pfx(`WITH CERTDB_clean_stream AS (
   SELECT ctid
   FROM CERTDB_entry
-  WHERE stream = $1
+  WHERE stream = $1 AND logindex >= $2
   ORDER BY logindex ASC
-  LIMIT $2
+  LIMIT $3
   FOR UPDATE SKIP LOCKED
+), CERTDB_deleted_entry AS (
+  DELETE FROM CERTDB_entry
+  USING CERTDB_clean_stream
+  WHERE CERTDB_entry.ctid = CERTDB_clean_stream.ctid
+  RETURNING CERTDB_entry.logindex
 )
-DELETE FROM CERTDB_entry
-USING CERTDB_clean_stream
-WHERE CERTDB_entry.ctid = CERTDB_clean_stream.ctid;`)
-			var tag pgconn.CommandTag
-			if tag, err = cdb.Exec(ctx, query, streamId, batchSize); err == nil {
-				rowsDeleted = tag.RowsAffected()
-				if rowsDeleted == 0 {
-					if tag, err = cdb.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
-						rowsDeleted = tag.RowsAffected()
+SELECT count(*), max(logindex) FROM CERTDB_deleted_entry;`)
+			deleteBatch := func(from int64) (deleted int64, next int64, batchErr error) {
+				var highest sql.NullInt64
+				if batchErr = cdb.QueryRow(ctx, query, streamId, from, batchSize).Scan(&deleted, &highest); batchErr == nil {
+					if highest.Valid {
+						next = highest.Int64 + 1
+					}
+				}
+				return
+			}
+			cdb.mu.Lock()
+			from := cdb.cleanStream[streamId]
+			cdb.mu.Unlock()
+			var next int64
+			if rowsDeleted, next, err = deleteBatch(from); err == nil {
+				if rowsDeleted == 0 && from != 0 {
+					// Nothing above the cursor, so look again from the start in
+					// case backfill added entries below it.
+					rowsDeleted, next, err = deleteBatch(0)
+				}
+				if err == nil {
+					cdb.mu.Lock()
+					// A zero cursor means the same as no cursor at all, so drop
+					// the entry rather than keeping one per stream id ever asked
+					// about, including ids that do not exist.
+					if next == 0 {
+						delete(cdb.cleanStream, streamId)
+					} else {
+						if cdb.cleanStream == nil {
+							cdb.cleanStream = make(map[int32]int64)
+						}
+						cdb.cleanStream[streamId] = next
+					}
+					cdb.mu.Unlock()
+					if rowsDeleted == 0 {
+						rowsDeleted, err = cdb.deleteEmptyStream(ctx, streamId)
 					}
 				}
 			}
+		}
+	}
+	return
+}
+
+// deleteEmptyStream deletes the stream, and reports how many rows that removed,
+// but only once it holds no entries.
+//
+// The stream row is locked before the check, so that inserting an entry, which
+// takes a FOR KEY SHARE lock on that row for the foreign key, cannot commit
+// between the check and the delete. Testing inside a single
+// DELETE ... WHERE NOT EXISTS is not enough: the subquery sees the statement
+// snapshot, so an entry committed after that snapshot is taken is invisible to
+// it and still removed by the cascade.
+func (cdb *PgDB) deleteEmptyStream(ctx context.Context, streamId int32) (rowsDeleted int64, err error) {
+	var tx pgx.Tx
+	if tx, err = cdb.Begin(ctx); err == nil {
+		defer func() {
+			_ = tx.Rollback(ctx)
+		}()
+		var lockedId int32
+		if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT id FROM CERTDB_stream WHERE id = $1 FOR UPDATE;`), streamId).Scan(&lockedId); err == nil {
+			var hasEntries bool
+			if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT EXISTS (SELECT 1 FROM CERTDB_entry WHERE stream = $1);`), streamId).Scan(&hasEntries); err == nil {
+				if !hasEntries {
+					var tag pgconn.CommandTag
+					if tag, err = tx.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
+						rowsDeleted = tag.RowsAffected()
+					}
+				}
+				if err == nil {
+					err = tx.Commit(ctx)
+				}
+			}
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			err = nil
 		}
 	}
 	return
