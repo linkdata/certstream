@@ -51,7 +51,6 @@ type PgDB struct {
 	estimates             map[string]float64 // row count estimates
 	cleanFrom             time.Time          // lowest notafter DeleteCertificates has yet to consider
 	cleanResetAt          time.Time          // when cleanFrom was last restarted
-	cleanStream           map[int32]int64    // per stream, lowest logindex DeleteStream has yet to consider
 	newentrytime          time.Duration
 	newentrycount         int64
 	avgentrytime          time.Duration
@@ -527,10 +526,11 @@ func (cdb *PgDB) CleanCertificates(ctx context.Context) {
 // DeleteStream deletes up to batchSize log entries belonging to the stream,
 // oldest first, and deletes the stream itself once it holds none.
 //
-// Deletion resumes where the previous call stopped, so repeated calls walk
+// Deletion resumes from CERTDB_stream.clean_logindex, so repeated calls walk
 // forward in logindex order instead of rescanning the index entries of rows
-// already deleted. Reaching the end of the stream restarts the scan at its
-// first entry, so entries backfilled below the cursor are still found.
+// already deleted, and a restart picks up where the last one stopped rather
+// than from the first entry. Reaching the end of the stream restarts the scan
+// at its first entry, so entries backfilled below the cursor are still found.
 //
 // The stream itself is deleted only once it holds no entries at all, checked
 // under a lock on the stream row. A batch deleting nothing is not on its own
@@ -565,34 +565,24 @@ SELECT count(*), max(logindex) FROM CERTDB_deleted_entry;`)
 				}
 				return
 			}
-			cdb.mu.Lock()
-			from := cdb.cleanStream[streamId]
-			cdb.mu.Unlock()
-			var next int64
-			if rowsDeleted, next, err = deleteBatch(from); err == nil {
-				if rowsDeleted == 0 && from != 0 {
-					// Nothing above the cursor, so look again from the start in
-					// case backfill added entries below it.
-					rowsDeleted, next, err = deleteBatch(0)
-				}
-				if err == nil {
-					cdb.mu.Lock()
-					// A zero cursor means the same as no cursor at all, so drop
-					// the entry rather than keeping one per stream id ever asked
-					// about, including ids that do not exist.
-					if next == 0 {
-						delete(cdb.cleanStream, streamId)
-					} else {
-						if cdb.cleanStream == nil {
-							cdb.cleanStream = make(map[int32]int64)
-						}
-						cdb.cleanStream[streamId] = next
+			var from int64
+			if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT clean_logindex FROM CERTDB_stream WHERE id = $1;`), streamId).Scan(&from); err == nil {
+				var next int64
+				if rowsDeleted, next, err = deleteBatch(from); err == nil {
+					if rowsDeleted == 0 && from != 0 {
+						// Nothing above the cursor, so look again from the start
+						// in case backfill added entries below it.
+						rowsDeleted, next, err = deleteBatch(0)
 					}
-					cdb.mu.Unlock()
-					if rowsDeleted == 0 {
+					if err == nil && next != from {
+						_, err = cdb.Exec(ctx, cdb.Pfx(`UPDATE CERTDB_stream SET clean_logindex = $2 WHERE id = $1;`), streamId, next)
+					}
+					if err == nil && rowsDeleted == 0 {
 						rowsDeleted, err = cdb.deleteEmptyStream(ctx, streamId)
 					}
 				}
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				err = nil
 			}
 		}
 	}

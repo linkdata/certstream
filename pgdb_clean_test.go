@@ -173,47 +173,63 @@ func BenchmarkPgDB_DeleteCertificates(b *testing.B) {
 	}
 }
 
-func TestPgDB_DeleteStream_KeepsNoCursorForEmptyOrMissing(t *testing.T) {
+func TestPgDB_DeleteStream_PersistsCursor(t *testing.T) {
 	t.Parallel()
 	ctx, db, _, streamID, identID := cleanTestFixture(t)
 
-	cursorCount := func() (n int) {
-		db.mu.Lock()
-		n = len(db.cleanStream)
-		db.mu.Unlock()
+	cursor := func() (v int64) {
+		if err := db.QueryRow(ctx, db.Pfx(`SELECT clean_logindex FROM CERTDB_stream WHERE id = $1;`), streamID).Scan(&v); err != nil {
+			t.Fatalf("reading clean_logindex failed: %v", err)
+		}
 		return
 	}
 
-	// Stream ids that were never created must not accumulate cursors.
-	for id := int32(10000); id < 10100; id++ {
+	// Stream ids that do not exist are not an error and leave no trace.
+	for id := int32(10000); id < 10010; id++ {
 		if rowsDeleted, err := db.DeleteStream(ctx, id, 10); err != nil {
 			t.Fatalf("DeleteStream(%d) failed: %v", id, err)
 		} else if rowsDeleted != 0 {
 			t.Fatalf("rows deleted for missing stream %d = %d, want 0", id, rowsDeleted)
 		}
 	}
-	if n := cursorCount(); n != 0 {
-		t.Fatalf("cursors retained for missing streams = %d, want 0", n)
-	}
 
-	// A partly drained stream keeps its cursor, otherwise the next call starts
-	// over from the beginning.
 	now := time.Now().UTC()
-	for i := range 4 {
+	for i := range 6 {
 		if err := insertCleanTestEntry(ctx, db, streamID, identID, int64(i+1), now); err != nil {
 			t.Fatalf("insert entry failed: %v", err)
 		}
 	}
+	if v := cursor(); v != 0 {
+		t.Fatalf("cursor before any deletion = %d, want 0", v)
+	}
+
+	// Draining part of the stream records where to resume, so that a later
+	// process does not start over at the first entry.
 	if rowsDeleted, err := db.DeleteStream(ctx, streamID, 2); err != nil {
 		t.Fatalf("DeleteStream failed: %v", err)
 	} else if rowsDeleted != 2 {
 		t.Fatalf("rows deleted = %d, want 2", rowsDeleted)
 	}
-	if n := cursorCount(); n != 1 {
-		t.Fatalf("cursors after a partial drain = %d, want 1", n)
+	if v := cursor(); v != 3 {
+		t.Fatalf("cursor after deleting logindex 1 and 2 = %d, want 3", v)
 	}
 
-	// Draining it fully and removing the stream leaves nothing behind.
+	// A fresh PgDB, standing in for a restarted process, resumes from it.
+	if other, err := NewPgDB(ctx, db.CertStream); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		defer other.Close()
+		if rowsDeleted, err := other.DeleteStream(ctx, streamID, 2); err != nil {
+			t.Fatalf("DeleteStream on a second handle failed: %v", err)
+		} else if rowsDeleted != 2 {
+			t.Fatalf("rows deleted by the second handle = %d, want 2", rowsDeleted)
+		}
+		if v := cursor(); v != 5 {
+			t.Fatalf("cursor after the second handle = %d, want 5", v)
+		}
+	}
+
+	// Draining the rest removes the stream, taking its cursor with it.
 	for range 5 {
 		if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
 			t.Fatalf("DeleteStream failed: %v", err)
@@ -221,8 +237,11 @@ func TestPgDB_DeleteStream_KeepsNoCursorForEmptyOrMissing(t *testing.T) {
 			break
 		}
 	}
-	if n := cursorCount(); n != 0 {
-		t.Fatalf("cursors after the stream was removed = %d, want 0", n)
+	var streamCount int64
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM CERTDB_stream WHERE id = $1;`), streamID).Scan(&streamCount); err != nil {
+		t.Fatalf("count failed: %v", err)
+	} else if streamCount != 0 {
+		t.Fatalf("stream count = %d, want 0", streamCount)
 	}
 }
 
