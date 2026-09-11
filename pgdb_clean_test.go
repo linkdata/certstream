@@ -166,3 +166,41 @@ func BenchmarkPgDB_DeleteCertificates(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkPgDB_DeleteStream measures deleting one batch of log entries from a
+// stream that already has a large emptied prefix, which is the walk the cursor
+// exists to skip. Compare revisions with benchstat.
+func BenchmarkPgDB_DeleteStream(b *testing.B) {
+	ctx, db, _, streamID, _ := cleanTestFixture(b)
+	const (
+		total = 600000
+		gap   = 200000
+		batch = 100
+	)
+	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream)
+SELECT now(), g, g, $1 FROM generate_series(0, $2) g;`), streamID, total-1); err != nil {
+		b.Fatalf("insert entries failed: %v", err)
+	}
+	for drained := int64(0); drained < gap; {
+		rowsDeleted, err := db.DeleteStream(ctx, streamID, 10000)
+		if err != nil {
+			b.Fatalf("building the emptied prefix failed: %v", err)
+		}
+		if rowsDeleted == 0 {
+			b.Fatal("stream drained while building the prefix")
+		}
+		drained += rowsDeleted
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		rowsDeleted, err := db.DeleteStream(ctx, streamID, batch)
+		if err != nil {
+			b.Fatalf("DeleteStream failed: %v", err)
+		}
+		if rowsDeleted == 0 {
+			b.Fatal("stream exhausted; raise total or lower -benchtime")
+		}
+	}
+}

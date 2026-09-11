@@ -455,6 +455,87 @@ func TestPgDB_DeleteStream_ResumesAndFindsBackfilled(t *testing.T) {
 	}
 }
 
+func TestPgDB_DeleteStream_LockedEntriesKeepStream(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if db, err := newPgDBFromConn(ctx, conn); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		t.Cleanup(func() {
+			db.Close()
+		})
+
+		if identID, err := defaultIdentID(ctx, db, db.Pfx); err != nil {
+			t.Fatalf("default ident lookup failed: %v", err)
+		} else {
+			now := time.Now().UTC()
+			notBefore := now.Add(-24 * time.Hour)
+			notAfter := now.Add(24 * time.Hour)
+			for logIndex := int64(1); logIndex <= 5; logIndex++ {
+				if _, err := insertTestCertWithEntry(ctx, db, streamID, identID, logIndex, notBefore, notAfter, testSHA256Hex(byte(logIndex))); err != nil {
+					t.Fatalf("insert entry %d failed: %v", logIndex, err)
+				}
+			}
+
+			// Hold every entry locked on a separate connection, so the batch
+			// below skips all of them and comes back empty.
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin failed: %v", err)
+			}
+			if _, err = tx.Exec(ctx, db.Pfx(`SELECT logindex FROM CERTDB_entry WHERE stream = $1 FOR UPDATE;`), streamID); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("locking entries failed: %v", err)
+			}
+
+			// Bounded, because a version that tries to drop the stream here
+			// blocks on those locks instead of returning: the cascade has to
+			// delete the very rows the transaction above is holding.
+			lockedCtx, cancelLocked := context.WithTimeout(ctx, 10*time.Second)
+			defer cancelLocked()
+			if rowsDeleted, err := db.DeleteStream(lockedCtx, streamID, 1); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("DeleteStream failed: %v", err)
+			} else if rowsDeleted != 0 {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("rows deleted with everything locked = %d, want 0", rowsDeleted)
+			}
+
+			// The stream and its entries must both survive: an empty batch only
+			// means nothing unlocked was found.
+			if streamCount, entryCount, err := streamEntryCounts(ctx, db, streamID); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("counts failed: %v", err)
+			} else if streamCount != 1 {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("stream count = %d, want 1", streamCount)
+			} else if entryCount != 5 {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("entry count = %d, want 5", entryCount)
+			}
+
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatalf("rollback failed: %v", err)
+			}
+
+			// Once the locks are gone the stream drains and is removed.
+			for range 10 {
+				if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+					t.Fatalf("DeleteStream after unlock failed: %v", err)
+				} else if rowsDeleted == 0 {
+					break
+				}
+			}
+			if streamCount, entryCount, err := streamEntryCounts(ctx, db, streamID); err != nil {
+				t.Fatalf("counts failed: %v", err)
+			} else if streamCount != 0 || entryCount != 0 {
+				t.Fatalf("after unlock stream=%d entries=%d, want 0 and 0", streamCount, entryCount)
+			}
+		}
+	}
+}
+
 func TestPgDB_DeleteStream_NoEntriesDeletesStream(t *testing.T) {
 	t.Parallel()
 

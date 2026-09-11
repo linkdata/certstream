@@ -521,8 +521,11 @@ func (cdb *PgDB) CleanCertificates(ctx context.Context) {
 // Deletion resumes where the previous call stopped, so repeated calls walk
 // forward in logindex order instead of rescanning the index entries of rows
 // already deleted. Reaching the end of the stream restarts the scan at its
-// first entry, so entries backfilled below the cursor are still found, and the
-// stream is removed only after a scan from the beginning deletes nothing.
+// first entry, so entries backfilled below the cursor are still found.
+//
+// The stream itself is deleted only once it holds no entries at all, which is
+// checked in the same statement as the delete. A batch deleting nothing is not
+// on its own proof of that, since rows locked by another deleter are skipped.
 //
 // A batchSize below one deletes nothing.
 func (cdb *PgDB) DeleteStream(ctx context.Context, streamId int32, batchSize int) (rowsDeleted int64, err error) {
@@ -571,12 +574,22 @@ SELECT count(*), max(logindex) FROM CERTDB_deleted_entry;`)
 					cdb.cleanStream[streamId] = next
 					cdb.mu.Unlock()
 					if rowsDeleted == 0 {
+						// An empty batch only means nothing unlocked was found,
+						// so confirm the stream really holds no entries in the
+						// same statement as the delete. Otherwise a concurrent
+						// drainer holding row locks makes this drop the stream
+						// and cascade its remaining entries away in one
+						// unbatched statement.
 						var tag pgconn.CommandTag
-						if tag, err = cdb.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
+						if tag, err = cdb.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream s
+WHERE s.id = $1
+  AND NOT EXISTS (SELECT 1 FROM CERTDB_entry e WHERE e.stream = s.id);`), streamId); err == nil {
 							rowsDeleted = tag.RowsAffected()
-							cdb.mu.Lock()
-							delete(cdb.cleanStream, streamId)
-							cdb.mu.Unlock()
+							if rowsDeleted > 0 {
+								cdb.mu.Lock()
+								delete(cdb.cleanStream, streamId)
+								cdb.mu.Unlock()
+							}
 						}
 					}
 				}
