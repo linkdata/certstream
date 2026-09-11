@@ -226,6 +226,37 @@ func TestPgDB_DeleteStream_KeepsNoCursorForEmptyOrMissing(t *testing.T) {
 	}
 }
 
+func TestPgDB_DeleteStream_EmptyCheckTimeoutKeepsStream(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, streamID, _ := cleanTestFixture(t)
+
+	// An unreachable budget stands in for a drained stream whose index entries
+	// autovacuum has not removed yet, where proving emptiness takes minutes.
+	saved := CleanEmptyCheckTimeout
+	CleanEmptyCheckTimeout = time.Nanosecond
+	t.Cleanup(func() { CleanEmptyCheckTimeout = saved })
+
+	if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+		t.Fatalf("DeleteStream failed: %v", err)
+	} else if rowsDeleted != 0 {
+		t.Fatalf("rows deleted = %d, want 0", rowsDeleted)
+	}
+	var streamCount int64
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM CERTDB_stream WHERE id = $1;`), streamID).Scan(&streamCount); err != nil {
+		t.Fatalf("count failed: %v", err)
+	} else if streamCount != 1 {
+		t.Fatalf("stream count = %d, want 1: it must not be deleted without proof", streamCount)
+	}
+
+	// With a workable budget the same call removes it.
+	CleanEmptyCheckTimeout = saved
+	if rowsDeleted, err := db.DeleteStream(ctx, streamID, 10); err != nil {
+		t.Fatalf("DeleteStream failed: %v", err)
+	} else if rowsDeleted != 1 {
+		t.Fatalf("rows deleted = %d, want 1", rowsDeleted)
+	}
+}
+
 // BenchmarkPgDB_DeleteStream measures deleting one batch of log entries from a
 // stream that already has a large emptied prefix, which is the walk the cursor
 // exists to skip. Compare revisions with benchstat.

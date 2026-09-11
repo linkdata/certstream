@@ -431,6 +431,15 @@ var CleanBatchSize = 10000
 // oldest certificate instead of resuming from its cursor.
 var CleanResetInterval = time.Hour
 
+// CleanEmptyCheckTimeout bounds how long [PgDB.DeleteStream] spends confirming
+// that a stream holds no entries before deleting it.
+//
+// A drained stream keeps its index entries until autovacuum removes them, and
+// on a large table walking them to find that none are live takes minutes. When
+// the check runs out of time the stream is left in place for a later call
+// rather than deleted without proof.
+var CleanEmptyCheckTimeout = 30 * time.Second
+
 // DeleteCertificates deletes up to batchSize certificates that expired at or
 // before cutoff, oldest first, cascading to the domain, IP address, email and
 // URI rows that reference them. Rows in CERTDB_entry are left alone: they
@@ -607,15 +616,23 @@ func (cdb *PgDB) deleteEmptyStream(ctx context.Context, streamId int32) (rowsDel
 		}()
 		var lockedId int32
 		if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT id FROM CERTDB_stream WHERE id = $1 FOR UPDATE;`), streamId).Scan(&lockedId); err == nil {
+			checkCtx, cancel := context.WithTimeout(ctx, CleanEmptyCheckTimeout)
+			defer cancel()
 			var hasEntries bool
-			if err = tx.QueryRow(ctx, cdb.Pfx(`SELECT EXISTS (SELECT 1 FROM CERTDB_entry WHERE stream = $1);`), streamId).Scan(&hasEntries); err == nil {
-				if !hasEntries {
-					var tag pgconn.CommandTag
-					if tag, err = tx.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
-						rowsDeleted = tag.RowsAffected()
-					}
-				}
-				if err == nil {
+			err = tx.QueryRow(checkCtx, cdb.Pfx(`SELECT EXISTS (SELECT 1 FROM CERTDB_entry WHERE stream = $1);`), streamId).Scan(&hasEntries)
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				// Too many index entries still to walk to prove it empty.
+				// Leave the stream alone; a later call will be cheaper once
+				// autovacuum has removed them.
+				err = ctx.Err()
+			case err != nil:
+			case hasEntries:
+				err = tx.Commit(ctx)
+			default:
+				var tag pgconn.CommandTag
+				if tag, err = tx.Exec(ctx, cdb.Pfx(`DELETE FROM CERTDB_stream WHERE id = $1;`), streamId); err == nil {
+					rowsDeleted = tag.RowsAffected()
 					err = tx.Commit(ctx)
 				}
 			}
