@@ -171,10 +171,14 @@ func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
 	_ = cs.LogError(cs.updateStreams(ctx, &streamWG), "CertStream:run@1")
 
 	if db := cs.DB(); db != nil {
-		dbWG.Add(3)
+		dbWG.Add(4)
 		go db.runWorkers(ctx, &dbWG)
 		go db.estimator(ctx, &dbWG)
 		go db.selectAllGaps(ctx, &dbWG)
+		go func() {
+			defer dbWG.Done()
+			db.CleanCertificates(ctx)
+		}()
 	}
 
 	for {

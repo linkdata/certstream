@@ -174,8 +174,8 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 							entryCount int
 						}
 						expectFirst := []expectedCount{
-							{name: "oldest", certCount: 1, entryCount: 1},
-							{name: "old", certCount: 0, entryCount: 1},
+							{name: "oldest", certCount: 0, entryCount: 1},
+							{name: "old", certCount: 1, entryCount: 1},
 							{name: "recent", certCount: 1, entryCount: 1},
 							{name: "future", certCount: 1, entryCount: 1},
 						}
@@ -220,6 +220,62 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 						}
 					}
 				}
+			}
+		}
+	}
+}
+
+func TestPgDB_DeleteCertificates_ResumesAndRestarts(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, streamID := setupIngestBatchTest(t)
+	if db, err := newPgDBFromConn(ctx, conn); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	} else {
+		t.Cleanup(func() {
+			db.Close()
+		})
+
+		if identID, err := defaultIdentID(ctx, db, db.Pfx); err != nil {
+			t.Fatalf("default ident lookup failed: %v", err)
+		} else {
+			now := time.Now().UTC()
+			cutoff := now.Add(-24 * time.Hour)
+			notBefore := now.Add(-480 * time.Hour)
+
+			for i, age := range []time.Duration{-72 * time.Hour, -48 * time.Hour} {
+				if _, err := insertTestCertWithEntry(ctx, db, streamID, identID, int64(i+1), notBefore, now.Add(age), testSHA256Hex(byte(i+1))); err != nil {
+					t.Fatalf("insert test cert failed: %v", err)
+				}
+			}
+
+			// One per call, oldest first, leaving the cursor above both.
+			for call := 1; call <= 2; call++ {
+				if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
+					t.Fatalf("DeleteCertificates call %d failed: %v", call, err)
+				} else if rowsDeleted != 1 {
+					t.Fatalf("rows deleted call %d = %d, want 1", call, rowsDeleted)
+				}
+			}
+
+			// An empty batch restarts the cursor.
+			if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
+				t.Fatalf("draining DeleteCertificates failed: %v", err)
+			} else if rowsDeleted != 0 {
+				t.Fatalf("rows deleted when drained = %d, want 0", rowsDeleted)
+			}
+
+			// A certificate older than where the cursor stopped is still found.
+			if certID, err := insertTestCertWithEntry(ctx, db, streamID, identID, 3, notBefore, now.Add(-96*time.Hour), testSHA256Hex(3)); err != nil {
+				t.Fatalf("insert test cert failed: %v", err)
+			} else if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
+				t.Fatalf("DeleteCertificates after restart failed: %v", err)
+			} else if rowsDeleted != 1 {
+				t.Fatalf("rows deleted after restart = %d, want 1", rowsDeleted)
+			} else if certCount, _, err := certEntryCounts(ctx, db, certID); err != nil {
+				t.Fatalf("count after restart failed: %v", err)
+			} else if certCount != 0 {
+				t.Fatalf("cert count after restart = %d, want 0", certCount)
 			}
 		}
 	}

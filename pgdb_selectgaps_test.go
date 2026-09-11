@@ -550,7 +550,7 @@ func TestPgDB_SelectStreamGapsKeepsLeadingGapBeforeBackfillIndex(t *testing.T) {
 	}
 }
 
-func setupSelectGapsDB(t *testing.T) (ctx context.Context, db *PgDB, cs *CertStream) {
+func setupSelectGapsDB(t testing.TB) (ctx context.Context, db *PgDB, cs *CertStream) {
 	t.Helper()
 
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -626,7 +626,7 @@ func insertEntries(ctx context.Context, db *PgDB, streamID int32, indices []int6
 	return
 }
 
-func addGapQuerySleep(t *testing.T, db *PgDB, seconds string) {
+func addGapQuerySleep(t testing.TB, db *PgDB, seconds string) {
 	t.Helper()
 
 	if db == nil {
@@ -682,7 +682,7 @@ func run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-func dockerMappedPort(ctx context.Context, t *testing.T, cname, containerPort string) string {
+func dockerMappedPort(ctx context.Context, t testing.TB, cname, containerPort string) string {
 	t.Helper()
 
 	deadline := time.Now().Add(60 * time.Second)
@@ -702,7 +702,7 @@ func dockerMappedPort(ctx context.Context, t *testing.T, cname, containerPort st
 	return ""
 }
 
-func waitForPostgresQueryReady(ctx context.Context, t *testing.T, cname, user, pass, dbname string, timeout time.Duration) {
+func waitForPostgresQueryReady(ctx context.Context, t testing.TB, cname, user, pass, dbname string, timeout time.Duration) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)

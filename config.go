@@ -22,6 +22,7 @@ type Config struct {
 	PgConns      int                 // max number of database connections, default 100
 	PgWorkerBits int                 // number of prefix bits that determine DB workers, default 5 (32 workers)
 	PgMaxAge     int                 // maximum age in days to backfill
+	PgCertMaxAge time.Duration       // delete certificates this long after they expire; zero disables cleanup
 	PgNoSSL      bool                // if true, do not use SSL
 	PgSyncCommit bool                // if true, do not set synchronous_commit=off
 	Concurrency  int                 // number of concurrent requests per stream, default is 4
