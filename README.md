@@ -8,6 +8,8 @@ Small library wrapping github.com/google/certificate-transparency-go and github.
 
 Requires a Postgres database to use.
 
+See [TUNING.md](TUNING.md) for PostgreSQL settings once the database grows past a few hundred GB.
+
 ```go
 func grabdata() {
 	fulllimiter := bwlimit.NewLimiter()
