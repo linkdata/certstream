@@ -62,9 +62,15 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 	next = start
 	for next <= end {
 		entryErr := ls.backoff.Retry(ctx, func() (err error) {
+			if err = ls.waitForQueue(ctx, historical); err != nil {
+				return
+			}
 			var checkpoint torchwood.Checkpoint
 			if checkpoint, _, err = client.Checkpoint(ctx); err == nil {
-				for logindex, entry := range client.Entries(ctx, checkpoint.Tree, next) {
+				if next >= checkpoint.N {
+					return wrapLogStreamRetryable(ErrSTHDiffTooLow)
+				}
+				processEntry := func(logindex int64, entry *sunlight.LogEntry) {
 					le := ls.makeTileLogEntry(logindex, entry, historical)
 					ls.seeIndex(logindex)
 					if handleFn(ctx, time.Now(), le) {
@@ -74,12 +80,29 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 					if gapcounter != nil {
 						gapcounter.Add(-1)
 					}
-					if logindex >= end {
-						break
-					}
-					ls.adjustTailLimiter(historical)
 				}
-				err = client.Err()
+				if err = ls.waitForQueue(ctx, historical); err != nil {
+					return
+				}
+				if next == end {
+					var entry *sunlight.LogEntry
+					if entry, _, err = client.Entry(ctx, checkpoint.Tree, next); err == nil {
+						processEntry(next, entry)
+					}
+				} else {
+					for logindex, entry := range client.Entries(ctx, checkpoint.Tree, next) {
+						if err = ls.waitForQueue(ctx, historical); err != nil {
+							break
+						}
+						processEntry(logindex, entry)
+						if logindex >= end {
+							break
+						}
+					}
+					if err == nil {
+						err = client.Err()
+					}
+				}
 			}
 			if err != nil {
 				if !ls.handleStreamError(err, "getTileEntries") {

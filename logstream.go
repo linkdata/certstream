@@ -25,11 +25,13 @@ import (
 	"github.com/google/certificate-transparency-go/loglist3"
 )
 
-var DbIngestBatchSize = 1000   // number of entries to send to ingest at a time
-var HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
-var LogBatchSize = int64(1024)
-var MaxErrors = 100
-var IdleCloseTime = time.Hour * 24 * 7
+var (
+	DbIngestBatchSize   = 1000 // number of entries to send to ingest at a time
+	HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
+	LogBatchSize        = int64(1024)
+	MaxErrors           = 100
+	IdleCloseTime       = time.Hour * 24 * 7
+)
 
 type handleLogEntryFn func(ctx context.Context, now time.Time, entry *LogEntry) (wanted bool)
 
@@ -90,22 +92,15 @@ func (ls *LogStream) isTiled() bool {
 	return ls != nil && ls.tiledLog != nil
 }
 
-func (ls *LogStream) adjustTailLimiter(historical bool) {
+func (ls *LogStream) waitForQueue(ctx context.Context, historical bool) (err error) {
 	if historical {
 		if db := ls.DB(); db != nil {
-			if qu := db.QueueUsage(); qu > 50 {
-				readLimit := int64(1) // 1 byte / sec
-				if ls.tailLimiter != nil {
-					// set rate limit according to queue size
-					scaleFactor := int64(50 - (qu - 50))
-					readLimit = ls.tailLimiter.Reads.Limit.Load() * scaleFactor / 50
-				}
-				ls.subLimiter.Reads.Limit.Store(readLimit)
-			} else {
-				ls.subLimiter.Reads.Limit.Store(0)
+			for db.QueueUsage() > 50 && err == nil {
+				err = sleep(ctx, 100*time.Millisecond)
 			}
 		}
 	}
+	return
 }
 
 func (ls *LogStream) getGapCh() (ch chan gap) {

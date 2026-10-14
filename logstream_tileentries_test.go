@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,9 +29,12 @@ type tileHashStore struct {
 }
 
 type tileRoundTripper struct {
-	entries    []*sunlight.LogEntry
-	hashStore  *tileHashStore
-	checkpoint []byte
+	entries         []*sunlight.LogEntry
+	hashStore       *tileHashStore
+	checkpoint      []byte
+	partialHashTile map[tlog.Tile]bool
+	requests        atomic.Int64
+	dataTileCalls   atomic.Int64
 }
 
 type injectedSigner struct {
@@ -118,7 +122,7 @@ func noteSignature(timestamp uint64, treeSignature []byte) (sig []byte, err erro
 	return
 }
 
-func mustSignedCheckpoint(t *testing.T, name string, priv *ecdsa.PrivateKey, tree tlog.Tree) (noteBytes []byte) {
+func mustSignedCheckpoint(t testing.TB, name string, priv *ecdsa.PrivateKey, tree tlog.Tree) (noteBytes []byte) {
 	t.Helper()
 	var err error
 	timestamp := uint64(time.Now().UnixMilli())
@@ -171,6 +175,7 @@ func (rt *tileRoundTripper) dataTile(tile tlog.Tile) (data []byte, err error) {
 }
 
 func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	rt.requests.Add(1)
 	path := strings.TrimPrefix(req.URL.Path, "/")
 	status := http.StatusOK
 	var data []byte
@@ -181,9 +186,14 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 		tile, err = sunlight.ParseTilePath(path)
 		if err == nil {
 			if tile.L == -1 {
+				rt.dataTileCalls.Add(1)
 				data, err = rt.dataTile(tile)
 			} else if tile.L >= 0 {
-				data, err = tlog.ReadTileData(tile, tlog.HashReaderFunc(rt.hashStore.readHashes))
+				if tile.W < sunlight.TileWidth && !rt.partialHashTile[tile] {
+					status = http.StatusNotFound
+				} else {
+					data, err = tlog.ReadTileData(tile, tlog.HashReaderFunc(rt.hashStore.readHashes))
+				}
 			} else {
 				status = http.StatusNotFound
 			}
@@ -207,29 +217,15 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 	return
 }
 
-func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
+func newTileTestStream(t testing.TB, count int) (*LogStream, *tileRoundTripper) {
+	t.Helper()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	cert := makeTestCertificate(t, now)
-	entries := []*sunlight.LogEntry{
-		{
-			Certificate: cert,
-			Timestamp:   now.UnixMilli(),
-			LeafIndex:   0,
-		},
-		{
-			Certificate: cert,
-			Timestamp:   now.UnixMilli(),
-			LeafIndex:   1,
-		},
-		{
-			Certificate: cert,
-			Timestamp:   now.UnixMilli(),
-			LeafIndex:   2,
-		},
-	}
+	entries := make([]*sunlight.LogEntry, count)
 	recordHashes := make([]tlog.Hash, len(entries))
-	for i, entry := range entries {
-		recordHashes[i] = tlog.RecordHash(entry.MerkleTreeLeaf())
+	for i := range entries {
+		entries[i] = &sunlight.LogEntry{Certificate: cert, Timestamp: now.UnixMilli(), LeafIndex: int64(i)}
+		recordHashes[i] = tlog.RecordHash(entries[i].MerkleTreeLeaf())
 	}
 	store, err := newTileHashStore(recordHashes)
 	if err != nil {
@@ -246,9 +242,15 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	}
 	checkpoint := mustSignedCheckpoint(t, "test-log", priv, tree)
 	rt := &tileRoundTripper{
-		entries:    entries,
-		hashStore:  store,
-		checkpoint: checkpoint,
+		entries:         entries,
+		hashStore:       store,
+		checkpoint:      checkpoint,
+		partialHashTile: make(map[tlog.Tile]bool),
+	}
+	for _, tile := range tlog.NewTiles(sunlight.TileHeight, 0, tree.N) {
+		if tile.W < sunlight.TileWidth {
+			rt.partialHashTile[tile] = true
+		}
 	}
 	client, err := sunlight.NewClient(&sunlight.ClientConfig{
 		MonitoringPrefix: "https://example.test/",
@@ -265,6 +267,11 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 		},
 		headTile: client,
 	}
+	return ls, rt
+}
+
+func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
+	ls, _ := newTileTestStream(t, 3)
 	handleFn := func(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
 		return true
 	}
@@ -275,4 +282,170 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	if next != 3 {
 		t.Fatalf("next = %d, want 3", next)
 	}
+}
+
+func TestGetTileEntriesSingleGapReadsOneTile(t *testing.T) {
+	ls, transport := newTileTestStream(t, 50*sunlight.TileWidth)
+	const index = sunlight.TileWidth + 17
+	var seen []int64
+	var remaining atomic.Int64
+	remaining.Store(1)
+	handleFn := func(_ context.Context, _ time.Time, entry *LogEntry) bool {
+		seen = append(seen, entry.LogIndex)
+		return true
+	}
+	next, wanted := ls.getTileEntries(t.Context(), index, index, true, handleFn, &remaining)
+	if next != index+1 || !wanted || len(seen) != 1 || seen[0] != index {
+		t.Fatalf("next=%d wanted=%v seen=%v", next, wanted, seen)
+	}
+	if got := remaining.Load(); got != 0 {
+		t.Fatalf("remaining=%d, want 0", got)
+	}
+	if got := transport.dataTileCalls.Load(); got != 1 {
+		t.Fatalf("data tile requests=%d, want 1", got)
+	}
+}
+
+func TestGetTileEntriesRangesOnPublishedTree(t *testing.T) {
+	tests := []struct {
+		name      string
+		count     int
+		start     int64
+		end       int64
+		wantTiles int64
+	}{
+		{"full tree", 50 * sunlight.TileWidth, 24*sunlight.TileWidth + 17, 28*sunlight.TileWidth + 16, 26},
+		{"partial tip", 4*sunlight.TileWidth + 7, 4*sunlight.TileWidth - 3, 4*sunlight.TileWidth + 6, 2},
+		{"before partial tip", 4*sunlight.TileWidth + 7, 2*sunlight.TileWidth + 7, 2*sunlight.TileWidth + 12, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ls, transport := newTileTestStream(t, tt.count)
+			var seen []int64
+			handleFn := func(_ context.Context, _ time.Time, entry *LogEntry) bool {
+				seen = append(seen, entry.LogIndex)
+				return true
+			}
+			next, wanted := ls.getTileEntries(t.Context(), tt.start, tt.end, true, handleFn, nil)
+			if !wanted || next != tt.end+1 || len(seen) != int(tt.end-tt.start+1) {
+				t.Fatalf("next=%d wanted=%v entries=%d", next, wanted, len(seen))
+			}
+			for i, index := range seen {
+				if index != tt.start+int64(i) {
+					t.Fatalf("entry %d index=%d, want %d", i, index, tt.start+int64(i))
+				}
+			}
+			if got := transport.dataTileCalls.Load(); got != tt.wantTiles {
+				t.Fatalf("data tile requests=%d, want %d", got, tt.wantTiles)
+			}
+		})
+	}
+}
+
+func TestGetTileEntriesUsesPublishedHashTiles(t *testing.T) {
+	ls, _ := newTileTestStream(t, 50*sunlight.TileWidth)
+	ls.backoff = newLogStreamBackoff(time.Millisecond, time.Millisecond, 2, false)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	start := int64(24*sunlight.TileWidth + 17)
+	end := start + LogBatchSize - 1
+	next, wanted := ls.getTileEntries(ctx, start, end, true,
+		func(context.Context, time.Time, *LogEntry) bool { return true }, nil)
+	if next != end+1 || !wanted {
+		t.Fatalf("next=%d wanted=%v, want next=%d wanted=true", next, wanted, end+1)
+	}
+}
+
+func TestGetTileEntriesReverseTraversalNoRefetch(t *testing.T) {
+	const count = 50*sunlight.TileWidth + 7
+	ls, transport := newTileTestStream(t, count)
+	seen := make([]bool, count)
+	handleFn := func(_ context.Context, _ time.Time, entry *LogEntry) bool {
+		index := entry.LogIndex
+		if index < 0 || index >= count || seen[index] {
+			t.Fatalf("duplicate or invalid entry index %d", index)
+		}
+		seen[index] = true
+		return true
+	}
+	for minIndex := int64(count); minIndex > 0; {
+		start := reverseBackfillStart(minIndex, true)
+		next, wanted := ls.getTileEntries(t.Context(), start, minIndex-1, true, handleFn, nil)
+		if next != minIndex || !wanted {
+			t.Fatalf("getTileEntries(%d, %d): next=%d wanted=%v", start, minIndex-1, next, wanted)
+		}
+		minIndex = start
+	}
+	for index, got := range seen {
+		if !got {
+			t.Fatalf("entry %d missing", index)
+		}
+	}
+	if got := transport.dataTileCalls.Load(); got != 51 {
+		t.Fatalf("data tile requests=%d, want 51", got)
+	}
+}
+
+func TestGetTileEntriesWaitsForCheckpointIndex(t *testing.T) {
+	ls, transport := newTileTestStream(t, 3)
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	ls.backoff = newLogStreamBackoff(time.Second, time.Second, 2, false)
+	ls.backoff.sleepFn = func(context.Context, time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	called := false
+	next, wanted := ls.getTileEntries(ctx, 3, 3, false, func(context.Context, time.Time, *LogEntry) bool {
+		called = true
+		return true
+	}, nil)
+	if next != 3 || wanted || called {
+		t.Fatalf("next=%d wanted=%v called=%v", next, wanted, called)
+	}
+	if got := ls.errcount; got != 0 {
+		t.Fatalf("stream errors=%d, want 0", got)
+	}
+	if got := transport.dataTileCalls.Load(); got != 0 {
+		t.Fatalf("data tile requests=%d, want 0", got)
+	}
+}
+
+func BenchmarkGetTileEntriesSingleGap(b *testing.B) {
+	ls, transport := newTileTestStream(b, 50*sunlight.TileWidth)
+	const index = sunlight.TileWidth + 17
+	handleFn := func(context.Context, time.Time, *LogEntry) bool { return true }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		next, wanted := ls.getTileEntries(b.Context(), index, index, false, handleFn, nil)
+		if next != index+1 || !wanted {
+			b.Fatalf("getTileEntries: next=%d wanted=%v", next, wanted)
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(transport.requests.Load())/float64(b.N), "http-requests/op")
+	b.ReportMetric(float64(transport.dataTileCalls.Load())/float64(b.N), "data-tiles/op")
+}
+
+func BenchmarkGetTileEntriesReverseTraversal(b *testing.B) {
+	const count = 50 * sunlight.TileWidth
+	ls, transport := newTileTestStream(b, count)
+	handleFn := func(context.Context, time.Time, *LogEntry) bool { return true }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		for minIndex := int64(count); minIndex > 0; {
+			start := reverseBackfillStart(minIndex, true)
+			end := minIndex - 1
+			next, wanted := ls.getTileEntries(b.Context(), start, end, true, handleFn, nil)
+			if next != minIndex || !wanted {
+				b.Fatalf("getTileEntries(%d, %d): next=%d wanted=%v", start, end, next, wanted)
+			}
+			minIndex = start
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(transport.requests.Load())/float64(b.N), "http-requests/op")
+	b.ReportMetric(float64(transport.dataTileCalls.Load())/float64(b.N), "data-tiles/op")
 }

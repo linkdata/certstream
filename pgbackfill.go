@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+
+	"filippo.io/sunlight"
 )
 
 var ErrLogEntriesTooOld = errors.New("log entries are older than max age")
@@ -118,6 +120,16 @@ func (cdb *PgDB) backfillSetGapStartIndex(ctx context.Context, ls *LogStream, lo
 	return
 }
 
+func reverseBackfillStart(minIndex int64, tiled bool) int64 {
+	if tiled {
+		// Torchwood reads up to 50 whole data tiles at once. Keep reverse
+		// windows on those boundaries so each tile is fetched only once.
+		const window = 50 * sunlight.TileWidth
+		return (minIndex - 1) / window * window
+	}
+	return max(0, minIndex-LogBatchSize)
+}
+
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {
 	defer wg.Done()
 	var minIndex int64
@@ -128,7 +140,7 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 		cdb.LogInfo("backlog start", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 		ls.Backfill.Add(minIndex)
 		for minIndex > 0 {
-			start := max(0, minIndex-LogBatchSize)
+			start := reverseBackfillStart(minIndex, ls.isTiled())
 			stop := minIndex - 1
 			minIndex = start
 			var wanted bool
