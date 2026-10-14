@@ -46,6 +46,12 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 		}); err == nil {
 			now := time.Now()
 			for i := range resp.Entries {
+				if historical {
+					if err = ls.waitForQueue(ctx, true); err != nil {
+						break
+					}
+					now = time.Now()
+				}
 				le := ls.makeLogEntry(next, resp.Entries[i], historical)
 				if handleFn(ctx, now, le) {
 					wanted = true
@@ -56,7 +62,8 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 					gapcounter.Add(-1)
 				}
 			}
-		} else {
+		}
+		if err != nil {
 			if ctx.Err() == nil {
 				_ = ls.LogError(err, "GetRawEntries", "url", ls.URL(), "start", next, "end", end)
 			}

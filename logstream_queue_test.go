@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -126,6 +127,137 @@ func TestGetRawEntriesWaitsForQueueBeforeHTTP(t *testing.T) {
 			t.Fatalf("getRawEntries: %v", err)
 		}
 	})
+}
+
+func TestGetRawEntriesPausesAndResumesAtUnprocessedIndex(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		queue := make(chan *LogEntry, 4)
+		ls := testQueueStream(queue)
+		client := &controlledRawEntriesClient{entry: makeTestLeafEntry(t, time.Now())}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var seen []int64
+		handle := func(_ context.Context, _ time.Time, entry *LogEntry) bool {
+			seen = append(seen, entry.LogIndex)
+			if entry.LogIndex == 0 {
+				for range 3 {
+					queue <- &LogEntry{}
+				}
+			}
+			return true
+		}
+		type result struct {
+			wanted bool
+			next   int64
+			err    error
+		}
+		var remaining atomic.Int64
+		remaining.Store(3)
+		done := make(chan result, 1)
+		go func() {
+			wanted, next, err := ls.getRawEntries(ctx, client, 0, 2, true, handle, &remaining)
+			done <- result{wanted, next, err}
+		}()
+		synctest.Wait()
+		if got, want := seen, []int64{0}; !slices.Equal(got, want) {
+			t.Fatalf("handled indexes before cancellation = %v, want %v", got, want)
+		}
+		ls.DB().sendToBatcher(t.Context(), &LogEntry{}) // live entry uses reserved space
+		if got := len(queue); got != 4 {
+			t.Fatalf("queue length after live entry = %d, want 4", got)
+		}
+		cancel()
+		synctest.Wait()
+		first := <-done
+		if !first.wanted || first.next != 1 || !errors.Is(first.err, context.Canceled) {
+			t.Fatalf("canceled result = %+v, want wanted, next 1, context.Canceled", first)
+		}
+		if got := remaining.Load(); got != 0 {
+			t.Fatalf("remaining after cancellation = %d, want 0", got)
+		}
+		<-queue
+		<-queue // 50% queue usage allows replay to resume
+		remaining.Store(2)
+		wanted, next, err := ls.getRawEntries(t.Context(), client, first.next, 2, true, handle, &remaining)
+		if !wanted || next != 3 || err != nil {
+			t.Fatalf("resumed result: wanted=%t next=%d error=%v", wanted, next, err)
+		}
+		if got, want := seen, []int64{0, 1, 2}; !slices.Equal(got, want) {
+			t.Fatalf("handled indexes = %v, want %v", got, want)
+		}
+		if got := remaining.Load(); got != 0 {
+			t.Fatalf("remaining after resume = %d, want 0", got)
+		}
+		if got, want := client.Calls(), []rawEntriesCall{{start: 0, end: 2}, {start: 1, end: 2}}; !slices.Equal(got, want) {
+			t.Fatalf("HTTP calls = %v, want %v", got, want)
+		}
+	})
+}
+
+// BenchmarkRawHistoricalHeadAdmission measures how long a live entry waits
+// when historical entries and a slow consumer contend for the same DB queue.
+func BenchmarkRawHistoricalHeadAdmission(b *testing.B) {
+	var totalHeadLatency atomic.Int64
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			queue := make(chan *LogEntry, 16)
+			for range 7 {
+				queue <- &LogEntry{}
+			}
+			ls := testQueueStream(queue)
+			ctx, cancel := context.WithCancel(b.Context())
+			producerDone := make(chan struct{})
+			ready := make(chan struct{})
+			go func() {
+				defer close(producerDone)
+				client := &stubRawEntriesClient{}
+				_, _, _ = ls.getRawEntries(ctx, client, 0, 15, true,
+					func(ctx context.Context, _ time.Time, entry *LogEntry) bool {
+						ls.DB().sendToBatcher(ctx, entry)
+						if entry.LogIndex == 1 {
+							close(ready)
+						}
+						return false
+					}, nil)
+			}()
+			select {
+			case <-ready:
+			case <-time.After(time.Second):
+				cancel()
+				<-producerDone
+				b.Fatal("historical producer did not reach queue threshold")
+			}
+			time.Sleep(250 * time.Microsecond)
+			headDone := make(chan struct{})
+			drainDone := make(chan struct{})
+			go func() {
+				defer close(drainDone)
+				timer := time.NewTimer(time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-headDone:
+					return
+				case <-timer.C:
+				}
+				for {
+					select {
+					case <-headDone:
+						return
+					case <-queue:
+					}
+				}
+			}()
+			started := time.Now()
+			ls.DB().sendToBatcher(ctx, &LogEntry{})
+			totalHeadLatency.Add(time.Since(started).Nanoseconds())
+			close(headDone)
+			<-drainDone
+			cancel()
+			<-producerDone
+		}
+	})
+	b.ReportMetric(float64(totalHeadLatency.Load())/float64(b.N), "ns/head")
 }
 
 func TestGetTileEntriesWaitsBetweenEntries(t *testing.T) {
