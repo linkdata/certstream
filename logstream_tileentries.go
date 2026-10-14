@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"filippo.io/sunlight"
+	"filippo.io/torchwood"
 	"github.com/google/certificate-transparency-go/x509"
 )
 
@@ -61,7 +62,7 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 	next = start
 	for next <= end {
 		entryErr := ls.backoff.Retry(ctx, func() (err error) {
-			var checkpoint sunlight.Checkpoint
+			var checkpoint torchwood.Checkpoint
 			if checkpoint, _, err = client.Checkpoint(ctx); err == nil {
 				for logindex, entry := range client.Entries(ctx, checkpoint.Tree, next) {
 					le := ls.makeTileLogEntry(logindex, entry, historical)

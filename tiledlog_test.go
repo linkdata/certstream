@@ -139,7 +139,7 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 	}
 
 	ctx := t.Context()
-	if _, err := ls.headTile.Fetcher().ReadEndpoint(ctx, "checkpoint"); err != nil {
+	if _, err := ls.headTile.TileReader().ReadEndpoint(ctx, "checkpoint"); err != nil {
 		t.Fatalf("head ReadEndpoint: %v", err)
 	}
 	if headTransport.Count() == 0 {
@@ -148,7 +148,7 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 	if tailTransport.Count() != 0 {
 		t.Fatalf("tail transport used for head client")
 	}
-	if _, err := ls.tailTile.Fetcher().ReadEndpoint(ctx, "checkpoint"); err != nil {
+	if _, err := ls.tailTile.TileReader().ReadEndpoint(ctx, "checkpoint"); err != nil {
 		t.Fatalf("tail ReadEndpoint: %v", err)
 	}
 	if tailTransport.Count() == 0 {

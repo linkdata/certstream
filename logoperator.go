@@ -132,8 +132,8 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
 	}
 
-	if lo.Config.DataDir != "" {
-		logfile := path.Join(lo.Config.DataDir, urlToFileString(log.URL)+".log")
+	if lo.DataDir != "" {
+		logfile := path.Join(lo.DataDir, urlToFileString(log.URL)+".log")
 		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
 
@@ -178,15 +178,15 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, true),
 	}
 
-	if lo.Config.DataDir != "" {
-		logfile := path.Join(lo.Config.DataDir, urlToFileString(log.MonitoringURL)+".log")
+	if lo.DataDir != "" {
+		logfile := path.Join(lo.DataDir, urlToFileString(log.MonitoringURL)+".log")
 		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
 
-	cacheDir := getCacheDir(lo.Config.DataDir, log.MonitoringURL)
-	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, tmpls.Logger, lo.Config.Concurrency, cacheDir); err == nil {
+	cacheDir := getCacheDir(lo.DataDir, log.MonitoringURL)
+	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, tmpls.Logger, lo.Concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
-			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Config.Concurrency, cacheDir)
+			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, cacheDir)
 		}
 		if err == nil {
 			ls = tmpls

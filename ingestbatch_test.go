@@ -169,7 +169,7 @@ func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, st
 					t.Fatalf("pgx connect failed: %v", err)
 				} else {
 					t.Cleanup(func() {
-						conn.Close(ctx)
+						_ = conn.Close(ctx)
 					})
 
 					if _, err = conn.Exec(ctx, certstream.CreateSchema); err != nil {

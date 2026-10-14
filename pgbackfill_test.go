@@ -12,7 +12,7 @@ import (
 func TestPgDB_GapLoggingDiscovery(t *testing.T) {
 	ctx, db, cs := setupSelectGapsDB(t)
 	var logs gapLogCapture
-	cs.Config.Logger = &logs
+	cs.Logger = &logs
 	var operatorID int32
 	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
 		t.Fatal(err)

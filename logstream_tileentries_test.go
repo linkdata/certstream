@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"filippo.io/sunlight"
+	"filippo.io/torchwood"
 	ct "github.com/google/certificate-transparency-go"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/mod/sumdb/note"
@@ -137,10 +138,10 @@ func mustSignedCheckpoint(t *testing.T, name string, priv *ecdsa.PrivateKey, tre
 				if verifier, err = sunlight.NewRFC6962Verifier(name, priv.Public()); err == nil {
 					signer := &injectedSigner{v: verifier, sig: sig}
 					noteBytes, err = note.Sign(&note.Note{
-						Text: sunlight.FormatCheckpoint(sunlight.Checkpoint{
+						Text: (torchwood.Checkpoint{
 							Origin: name,
 							Tree:   tree,
-						}),
+						}).String(),
 					}, signer)
 				}
 			}

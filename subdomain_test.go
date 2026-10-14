@@ -51,7 +51,7 @@ func setupSubdomainTest(t *testing.T) (ctx context.Context, conn *pgx.Conn) {
 					t.Fatalf("pgx connect failed: %v", err)
 				} else {
 					t.Cleanup(func() {
-						conn.Close(ctx)
+						_ = conn.Close(ctx)
 					})
 
 					if _, err = conn.Exec(ctx, certstream.CreateSchema); err != nil {
@@ -189,13 +189,13 @@ FROM CERTDB_subdomain($1, $2);`, "example", "com")
 																wild      bool
 																www       int16
 																tld       string
-															issuer    string
-															subject   string
-															notbefore time.Time
-															notafter  time.Time
-															since     time.Time
-															sha256    string
-														}
+																issuer    string
+																subject   string
+																notbefore time.Time
+																notafter  time.Time
+																since     time.Time
+																sha256    string
+															}
 
 															var results []result
 															for rows.Next() {
