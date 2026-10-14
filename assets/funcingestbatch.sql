@@ -187,26 +187,35 @@ WITH certs_with_since AS (
         t.notafter,
         CASE
             WHEN t.commonname = '' THEN t.notbefore
-            ELSE COALESCE(overlap.since, t.notbefore)
+            -- The guard omits precert so the existing index covers every column.
+            -- No overlap of either type means the precert lookup can be skipped.
+            WHEN EXISTS (
+                SELECT 1
+                FROM CERTDB_cert c
+                WHERE c.subject = t.sub_id
+                  AND c.issuer = t.iss_id
+                  AND c.commonname = t.commonname
+                  AND c.notafter >= t.notbefore
+                  AND c.notbefore < t.notbefore
+            ) THEN COALESCE((
+                SELECT c.since
+                FROM CERTDB_cert c
+                WHERE c.subject = t.sub_id
+                  AND c.issuer = t.iss_id
+                  AND c.commonname = t.commonname
+                  AND c.notafter >= t.notbefore
+                  AND c.notbefore < t.notbefore
+                  AND c.precert = t.precert
+                ORDER BY c.notbefore DESC
+                LIMIT 1
+            ), t.notbefore)
+            ELSE t.notbefore
         END AS since,
         t.commonname,
         t.sub_id AS subject,
         t.iss_id AS issuer,
         t.precert
     FROM tmp_new_certs t
-    LEFT JOIN LATERAL (
-        SELECT c.since
-        FROM CERTDB_cert c
-        WHERE t.commonname <> ''
-          AND c.subject = t.sub_id
-          AND c.issuer = t.iss_id
-          AND c.commonname = t.commonname
-          AND c.notafter >= t.notbefore
-          AND c.notbefore < t.notbefore
-          AND c.precert = t.precert
-        ORDER BY c.notbefore DESC
-        LIMIT 1
-    ) overlap ON TRUE
 ),
 cert_inserts AS (
     INSERT INTO CERTDB_cert(notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
