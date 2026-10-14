@@ -22,6 +22,10 @@ var FuncSetSince string
 //go:embed assets/funcsubdomain.sql
 var FuncSubdomain string
 
+// FuncIngestBatch contains SQL to install the certificate ingest functions.
+//
+// [NewPgDB] installs these functions when opening the database.
+//
 //go:embed assets/funcingestbatch.sql
 var FuncIngestBatch string
 
