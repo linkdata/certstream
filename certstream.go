@@ -40,20 +40,20 @@ var DefaultTransport = &http.Transport{
 }
 
 func (cs *CertStream) LogInfo(msg string, args ...any) {
-	if cs.Config.Logger != nil {
-		cs.Config.Logger.Info("certstream: "+msg, args...)
+	if cs.Logger != nil {
+		cs.Logger.Info("certstream: "+msg, args...)
 	}
 }
 
 func (cs *CertStream) LogError(err error, msg string, args ...any) error {
-	if err != nil && cs.Config.Logger != nil {
+	if err != nil && cs.Logger != nil {
 		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			if unwrapper, ok := err.(interface{ Unwrap() []error }); ok {
 				for _, e := range unwrapper.Unwrap() {
-					cs.Config.Logger.Error("certstream: "+msg, append(args, "err", e)...)
+					cs.Logger.Error("certstream: "+msg, append(args, "err", e)...)
 				}
 			} else {
-				cs.Config.Logger.Error("certstream: "+msg, append(args, "err", err)...)
+				cs.Logger.Error("certstream: "+msg, append(args, "err", err)...)
 			}
 		}
 	}
@@ -269,9 +269,9 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			cs.sendEntryCh = make(chan *LogEntry, 1024*8)
 			cs.C = cs.sendEntryCh
 			cs.mu.Unlock()
-			if cs.Config.DataDir != "" && cs.Config.CacheMaxAge > 0 {
+			if cs.DataDir != "" && cs.CacheMaxAge > 0 {
 				wg.Add(1)
-				go cs.runCachePruner(ctx, wg, getCacheDir(cs.Config.DataDir, ""), cs.Config.CacheMaxAge)
+				go cs.runCachePruner(ctx, wg, getCacheDir(cs.DataDir, ""), cs.CacheMaxAge)
 			}
 			wg.Add(1)
 			go cs.run(ctx, wg)

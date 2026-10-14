@@ -49,7 +49,7 @@ func TestPgDB_CleanCertificates_DisabledByDefault(t *testing.T) {
 func TestPgDB_CleanCertificates_DeletesExpired(t *testing.T) {
 	t.Parallel()
 	ctx, db, cs, _, identID := cleanTestFixture(t)
-	cs.Config.PgCertMaxAge = time.Hour
+	cs.PgCertMaxAge = time.Hour
 
 	now := time.Now().UTC()
 	if err := insertCleanTestCert(ctx, db, identID, now.Add(-48*time.Hour), 1); err != nil {

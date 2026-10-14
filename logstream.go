@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"filippo.io/sunlight"
+	"filippo.io/torchwood"
 	ct "github.com/google/certificate-transparency-go"
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
@@ -162,7 +163,7 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 
 	start := end
 	if cdb := ls.DB(); cdb != nil {
-		if ls.CertStream.Config.TailDialer != nil {
+		if ls.TailDialer != nil {
 			wg2.Add(1)
 			go cdb.backfillStream(ctx, ls, &wg2)
 		}
@@ -190,7 +191,7 @@ func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err err
 			if ls.isTiled() {
 				errFrom = "Checkpoint"
 				if ls.headTile != nil {
-					var checkpoint sunlight.Checkpoint
+					var checkpoint torchwood.Checkpoint
 					checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
 					if callErr == nil {
 						newIndex = checkpoint.N - 1
@@ -299,7 +300,7 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 			if err == nil {
 				err = os.ErrInvalid
 			}
-			ls.LogError(err, "sendEntry", "url", ls.URL(), "stream", ls.Id, "logindex", le.LogIndex)
+			_ = ls.LogError(err, "sendEntry", "url", ls.URL(), "stream", ls.Id, "logindex", le.LogIndex)
 		}
 	}
 	return

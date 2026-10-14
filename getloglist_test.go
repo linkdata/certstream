@@ -18,7 +18,9 @@ var sampleLogData = `{"is_all_logs":true,"version":"1.1.1c","log_list_timestamp"
 
 func TestGetLogList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(sampleLogData))
+		if _, err := w.Write([]byte(sampleLogData)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	ll, err := getLogList(t.Context(), http.DefaultClient, srv.URL)

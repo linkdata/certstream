@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"sync/atomic"
@@ -22,8 +23,8 @@ func newLazyFileWriter(path string) *lazyFileWriter {
 func (lw *lazyFileWriter) Write(p []byte) (n int, err error) {
 	var file *os.File
 	if file, err = os.OpenFile(lw.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, lw.perm); err == nil {
-		defer file.Close()
 		n, err = file.Write(p)
+		err = errors.Join(err, file.Close())
 	}
 	return
 }

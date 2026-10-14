@@ -77,13 +77,13 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
 
-	if cs.Config.PgAddr != "" {
+	if cs.PgAddr != "" {
 		dsn := fmt.Sprintf("postgres://%s:%s@%s/%s?pool_max_conns=%d&pool_max_conn_idle_time=1m",
-			cs.Config.PgUser, cs.Config.PgPass, cs.Config.PgAddr, cs.Config.PgName, cs.Config.PgConns)
-		if !cs.Config.PgSyncCommit {
+			cs.PgUser, cs.PgPass, cs.PgAddr, cs.PgName, cs.PgConns)
+		if !cs.PgSyncCommit {
 			dsn += "&synchronous_commit=off"
 		}
-		if cs.Config.PgNoSSL {
+		if cs.PgNoSSL {
 			dsn += "&sslmode=disable"
 		}
 		var poolcfg *pgxpool.Config
@@ -92,14 +92,14 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 			var pool *pgxpool.Pool
 			if pool, err = pgxpool.NewWithConfig(ctx, poolcfg); err == nil {
 				if err = pool.Ping(ctx); err == nil {
-					cs.LogInfo("database", "addr", cs.Config.PgAddr, "name", cs.Config.PgName, "prefix", cs.Config.PgPrefix)
-					pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", cs.Config.PgPrefix) }
+					cs.LogInfo("database", "addr", cs.PgAddr, "name", cs.PgName, "prefix", cs.PgPrefix)
+					pfx := func(s string) string { return strings.ReplaceAll(s, "CERTDB_", cs.PgPrefix) }
 					if err = ensureSchema(ctx, pool, pfx); err == nil {
 						var pgversion string
 						if cs.LogError(pool.QueryRow(ctx, `SELECT version();`).Scan(&pgversion), "postgres version") == nil {
 							cs.LogInfo("postgres", "version", pgversion)
 						}
-						workerBits := min(8, max(1, cs.Config.PgWorkerBits))
+						workerBits := min(8, max(1, cs.PgWorkerBits))
 						workerCount := 1 << workerBits
 						batchChans := make([]chan *LogEntry, workerCount)
 						for i := range batchChans {
@@ -512,7 +512,7 @@ SELECT count(*), max(notafter) FROM CERTDB_deleted_cert;`)
 // deleting anything. [Start] runs this for the lifetime of the CertStream,
 // so callers need it only when driving a [PgDB] themselves.
 func (cdb *PgDB) CleanCertificates(ctx context.Context) {
-	maxAge := cdb.CertStream.Config.PgCertMaxAge
+	maxAge := cdb.PgCertMaxAge
 	if maxAge <= 0 {
 		return
 	}
@@ -650,7 +650,7 @@ func (cdb *PgDB) deleteEmptyStream(ctx context.Context, streamId int32) (rowsDel
 
 func (cdb *PgDB) Estimate(table string) (f float64) {
 	table = strings.TrimPrefix(table, "CERTDB_")
-	table = strings.TrimPrefix(table, cdb.CertStream.Config.PgPrefix)
+	table = strings.TrimPrefix(table, cdb.PgPrefix)
 	cdb.mu.Lock()
 	f = cdb.estimates[table]
 	cdb.mu.Unlock()
