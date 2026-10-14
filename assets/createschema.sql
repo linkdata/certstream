@@ -63,7 +63,6 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
 END IF;
 
 IF to_regclass('CERTDB_domain') IS NULL THEN
-  CREATE EXTENSION IF NOT EXISTS pg_trgm;
   CREATE TABLE IF NOT EXISTS CERTDB_domain (
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,
     wild BOOLEAN NOT NULL,
@@ -74,7 +73,6 @@ IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE INDEX IF NOT EXISTS CERTDB_domain_cert_idx ON CERTDB_domain (cert);
   CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_idx ON CERTDB_domain (domain text_pattern_ops);
   CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_rev_idx ON CERTDB_domain (reverse(domain) text_pattern_ops);
-  CREATE INDEX IF NOT EXISTS CERTDB_domain_domain_tri_idx ON CERTDB_domain USING gin (domain gin_trgm_ops) WITH (fastupdate = off);
 END IF;
 
 IF to_regclass('CERTDB_ipaddress') IS NULL THEN

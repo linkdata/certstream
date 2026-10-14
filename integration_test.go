@@ -134,7 +134,7 @@ func run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-func dockerMappedPort(ctx context.Context, t *testing.T, cname, containerPort string) string {
+func dockerMappedPort(ctx context.Context, t testing.TB, cname, containerPort string) string {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
@@ -154,7 +154,7 @@ func dockerMappedPort(ctx context.Context, t *testing.T, cname, containerPort st
 	return ""
 }
 
-func waitForPostgresQueryReady(ctx context.Context, t *testing.T, cname, user, pass, db string, timeout time.Duration) {
+func waitForPostgresQueryReady(ctx context.Context, t testing.TB, cname, user, pass, db string, timeout time.Duration) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
@@ -163,12 +163,14 @@ func waitForPostgresQueryReady(ctx context.Context, t *testing.T, cname, user, p
 
 	for time.Now().Before(deadline) {
 		// Step 1: readiness (accepting connections)
-		out1, err1 := run(ctx, "docker", "exec", cname,
+		out1, err1 := run(
+			ctx, "docker", "exec", cname,
 			"pg_isready", "-h", "127.0.0.1", "-p", pgPort, "-U", user, "-d", db,
 		)
 		if err1 == nil && bytes.Contains(out1, []byte("accepting connections")) {
 			// Step 2: can execute a simple query
-			out2, err2 := run(ctx, "docker", "exec",
+			out2, err2 := run(
+				ctx, "docker", "exec",
 				"-e", "PGPASSWORD="+pass, cname,
 				"psql", "-h", "127.0.0.1", "-p", pgPort, "-U", user, "-d", db,
 				"-tAc", "SELECT 1",
