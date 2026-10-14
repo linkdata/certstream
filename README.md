@@ -6,7 +6,8 @@
 
 Small library wrapping github.com/google/certificate-transparency-go and github.com/FiloSottile/sunlight.
 
-Requires a Postgres database to use.
+PostgreSQL is optional. Leave `Config.PgAddr` empty for live streaming without persistence.
+Configure a database for certificate storage and backfill.
 
 See [TUNING.md](TUNING.md) for PostgreSQL settings once the database grows past a few hundred GB.
 

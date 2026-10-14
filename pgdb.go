@@ -217,6 +217,7 @@ func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 	}
 }
 
+// ensureOperator persists an operator; a nil database is a no-op.
 func (cdb *PgDB) ensureOperator(ctx context.Context, lo *LogOperator) (err error) {
 	if cdb != nil {
 		row := cdb.QueryRow(ctx, cdb.funcOperatorID, lo.operator.Name, strings.Join(lo.operator.Email, ","))
@@ -225,6 +226,7 @@ func (cdb *PgDB) ensureOperator(ctx context.Context, lo *LogOperator) (err error
 	return
 }
 
+// ensureStream persists a stream; a nil database is a no-op.
 func (cdb *PgDB) ensureStream(ctx context.Context, ls *LogStream) (err error) {
 	if cdb != nil {
 		var b []byte
