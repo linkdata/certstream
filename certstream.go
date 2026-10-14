@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/linkdata/bwlimit"
 )
 
 type CertStream struct {
@@ -20,8 +18,6 @@ type CertStream struct {
 	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
 	TailClient  *http.Client     // may be nil if not backfilling
 	LogToggle   atomic.Bool      // if true, log stream activity
-	tailLimiter *bwlimit.Limiter // master tail limiter, if known
-	subLimiter  *bwlimit.Limiter // sub tail limiter
 	headLogFile *os.File         // head HTTP request log
 	tailLogFile *os.File         // tail HTTP request log
 	mu          sync.Mutex       // protects following
@@ -194,19 +190,14 @@ func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
 	}
 }
 
+// Start starts CT log discovery and streaming until ctx is canceled.
+//
+// It adds background goroutines to wg and returns after setup.
 func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream, err error) {
 	tailDialer := cfg.TailDialer
 	if tailDialer == nil {
 		tailDialer = cfg.HeadDialer
 	}
-	subLimiter := bwlimit.NewLimiter()
-	var tailLimiter *bwlimit.Limiter
-	if bwdialer, ok := tailDialer.(*bwlimit.Dialer); ok {
-		tailLimiter = bwdialer.Limiter
-		subLimiter.Reads.Limit.Store(tailLimiter.Reads.Limit.Load())
-	}
-	tailDialer = subLimiter.Wrap(tailDialer)
-
 	tphead := DefaultTransport.Clone()
 	tphead.DialContext = cfg.HeadDialer.DialContext
 	headTransport := http.RoundTripper(tphead)
@@ -255,8 +246,6 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 				Timeout:   10 * time.Second,
 				Transport: httpCallCounter{tailTransport},
 			},
-			tailLimiter: tailLimiter,
-			subLimiter:  subLimiter,
 			headLogFile: headLogFile,
 			tailLogFile: tailLogFile,
 			operators:   map[string]*LogOperator{},

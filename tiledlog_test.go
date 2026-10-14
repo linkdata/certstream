@@ -36,7 +36,7 @@ func (t *countingTransport) Count() int64 {
 	return t.count.Load()
 }
 
-func makeTestCertificate(t *testing.T, now time.Time) []byte {
+func makeTestCertificate(t testing.TB, now time.Time) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

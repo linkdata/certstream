@@ -34,7 +34,9 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 					_ = sleep(ctx, time.Millisecond*time.Duration(sleeptime))
 				}
 			}
-			ls.adjustTailLimiter(historical)
+			if e = ls.waitForQueue(ctx, historical); e != nil {
+				return
+			}
 			if resp, e = client.GetRawEntries(ctx, next, stopIndex); e != nil {
 				if !ls.handleStreamError(e, "GetRawEntries") {
 					e = wrapLogStreamRetryable(e)

@@ -9,6 +9,8 @@ import (
 )
 
 var ErrLogStreamRetryable = errors.New("logstream retryable")
+
+// ErrSTHDiffTooLow indicates a checkpoint does not contain the requested entry.
 var ErrSTHDiffTooLow = errors.New("STH diff too low")
 
 type logStreamRetryableError struct {
