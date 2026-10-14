@@ -2,9 +2,61 @@ package certstream
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/google/certificate-transparency-go/loglist3"
 )
+
+func TestPgDB_GapLoggingDiscovery(t *testing.T) {
+	ctx, db, cs := setupSelectGapsDB(t)
+	var logs gapLogCapture
+	cs.Config.Logger = &logs
+	var operatorID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	url := "https://example.com/gap-logging"
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, log: &loglist3.Log{URL: url}, gapCh: make(chan gap, 2)}
+	if err := insertStream(ctx, db, url, operatorID, &ls.Id); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertEntries(ctx, db, ls.Id, []int64{3, 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.backfillSetGapStartIndex(ctx, ls, 1); err != nil {
+		t.Fatal(err)
+	}
+	ls.LastIndex.Store(1007)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	db.selectStreamGaps(ctx, &wg, ls, nil)
+	// Leading (1..2) and interior (4) gaps are counted before any fetching.
+	if got := db.gaps[ls.Id]; got != (gapCounts{url: url, gaps: 2, entries: 3}) {
+		t.Fatalf("discovered gaps = %+v", got)
+	}
+	db.backfillGapsWithFetcher(ctx, ls, func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+		remaining.Add(-((end - start) + 1))
+		return end + 1, true
+	})
+	// Consuming the discovered gaps must not count them again; only the trailing
+	// gap (6..1007) adds to the totals.
+	if got := db.gaps[ls.Id]; got != (gapCounts{url: url, gaps: 3, entries: 1005}) {
+		t.Fatalf("gaps after backfill = %+v", got)
+	}
+	if got := logs.take(); len(got) != 1 || got[0].message != "certstream: gap" || got[0].fields["length"] != int64(1002) {
+		t.Fatalf("immediate logs = %v", got)
+	}
+	cs.close()
+	got := logs.take()
+	if len(got) != 1 || got[0].message != "certstream: gaps" || got[0].fields["url"] != url || got[0].fields["stream"] != ls.Id || got[0].fields["gaps"] != int64(3) || got[0].fields["entries"] != int64(1005) {
+		t.Fatalf("shutdown logs = %v", got)
+	}
+	if len(db.gaps) != 0 {
+		t.Fatal("shutdown did not flush pending gaps")
+	}
+}
 
 func TestPgDB_BackfillStartIndex_UsesStoredIndex(t *testing.T) {
 	t.Parallel()

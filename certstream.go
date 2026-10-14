@@ -144,6 +144,7 @@ func (cs *CertStream) close() {
 		close(seCh)
 	}
 	if db != nil {
+		db.logGaps()
 		db.Close()
 	}
 	if headLog != nil {
@@ -171,9 +172,10 @@ func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
 	_ = cs.LogError(cs.updateStreams(ctx, &streamWG), "CertStream:run@1")
 
 	if db := cs.DB(); db != nil {
-		dbWG.Add(4)
+		dbWG.Add(5)
 		go db.runWorkers(ctx, &dbWG)
 		go db.estimator(ctx, &dbWG)
+		go db.reportGaps(ctx, &dbWG)
 		go db.selectAllGaps(ctx, &dbWG)
 		go func() {
 			defer dbWG.Done()

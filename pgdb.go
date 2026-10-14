@@ -26,7 +26,7 @@ type gap struct {
 	end   int64
 }
 
-// PgDB integrates with sql.DB to manage certificate stream data for a PostgreSQL database
+// PgDB stores certificates and CT log entries in PostgreSQL.
 type PgDB struct {
 	*CertStream
 	*pgxpool.Pool
@@ -48,6 +48,7 @@ type PgDB struct {
 	batchCh               []chan *LogEntry
 	workerBits            int
 	workerCount           int
+	gaps                  map[int32]gapCounts
 	estimates             map[string]float64 // row count estimates
 	cleanFrom             time.Time          // lowest notafter DeleteCertificates has yet to consider
 	cleanResetAt          time.Time          // when cleanFrom was last restarted
@@ -748,6 +749,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 							if startIndex.Int64 > lastIndex {
 								if lastIndex > 0 && ctx.Err() == nil {
 									g := gap{start: lastIndex, end: startIndex.Int64 - 1}
+									cdb.recordGap(ls, g)
 									select {
 									case <-ctx.Done():
 									case gapCh <- g:
@@ -769,6 +771,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, wg *sync.WaitGroup, ls *L
 								if err = row.Scan(&gapStart, &gapEnd); err == nil {
 									if gapStart.Valid && gapEnd.Valid {
 										g := gap{start: gapStart.Int64, end: gapEnd.Int64}
+										cdb.recordGap(ls, g)
 										select {
 										case <-ctx.Done():
 										case gapCh <- g:

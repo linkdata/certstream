@@ -39,6 +39,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 				}
 				if nullableMaxIndex.Int64 < lastindex {
 					lastgap = gap{start: nullableMaxIndex.Int64 + 1, end: lastindex}
+					cdb.recordGap(ls, lastgap)
 				}
 			}
 		}
@@ -47,7 +48,6 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 			fillGap := func(g gap) {
 				if ctx.Err() == nil {
 					ls.Backfill.Add((g.end - g.start) + 1)
-					cdb.LogInfo("gap", "url", ls.URL(), "stream", ls.Id, "logindex", g.start, "length", (g.end-g.start)+1)
 					next, _ := fetchFn(ctx, g.start, g.end, true, ls.sendEntry, &ls.Backfill)
 					if allGapsFilled {
 						_ = cdb.backfillSetGapStartIndex(ctx, ls, next)
