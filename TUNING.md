@@ -5,8 +5,8 @@ follows from them:
 
 - **Few tables, all enormous.** `CERTDB_entry` holds a row per certificate per
   log, `CERTDB_domain` a row per DNS name. Both reach billions of rows.
-- **Indexes outweigh the heap.** `CERTDB_domain` carries four indexes over a
-  text column, one of them a GIN trigram index.
+- **Indexes approach heap size.** The three B-tree indexes on `CERTDB_domain`
+  are large; an optional GIN trigram index adds more maintenance.
 - **Inserts are continuous, deletes arrive in sweeps.** Ingest never stops, and
   retention removes expired certificates in bulk.
 
@@ -142,14 +142,14 @@ the saving is spent on extra index laps.
 
 ## 4. The `CERTDB_domain` indexes
 
-This table's vacuum cost is dominated by one index. Typical proportions:
+An installation with the trigram index has these approximate proportions:
 
 | index | share of index bytes | type | used by |
 |---|---|---|---|
-| `certdb_domain_domain_tri_idx` | **~45%** | **GIN** | nothing in this library; substring (`%x%`) search |
+| `certdb_domain_domain_tri_idx` | **~45%** | **GIN** | substring (`%x%`) domain search |
 | `certdb_domain_cert_idx` | ~21% | btree | the `ON DELETE CASCADE` from `CERTDB_cert` — **required** |
-| `certdb_domain_domain_rev_idx` | ~18% | btree | `CERTDB_subdomain()`, via `reverse(domain) LIKE 'x%'` |
-| `certdb_domain_domain_idx` | ~16% | btree | nothing in this library; forward prefix search |
+| `certdb_domain_domain_rev_idx` | ~18% | btree | `CERTDB_subdomain()` and subdomain prefix search |
+| `certdb_domain_domain_idx` | ~16% | btree | exact names, forward prefixes, and leading `www` subdomains |
 
 GIN vacuum runs at roughly **3.9 MB/s** against the ~60 MB/s btree rate — about
 15× slower per byte, which leaves that one index accounting for some 92% of a
@@ -157,17 +157,28 @@ pass that runs for days. No autovacuum setting helps: with `cost_limit` at its
 maximum and the memory budget only a third used, the cost is `ginbulkdelete`
 itself walking the entry tree and rewriting posting pages.
 
-So if the application does not offer substring domain search, dropping
-`certdb_domain_domain_tri_idx` cuts the pass by roughly an order of magnitude
-and returns its bytes to the filesystem immediately. Dropping the two unused
-btree indexes as well leaves only the cascade index, for a pass some 35×
-shorter. Keep `certdb_domain_cert_idx` — it serves the cascade, and takes
-essentially all of the table's index scans; the other three together take a
-negligible share.
+The library creates only the three B-tree indexes for new databases. Existing
+databases keep their GIN index until it is removed explicitly. Applications
+accepting infix `LIKE` patterns require GIN at this scale; without it, those
+queries can scan the entire `CERTDB_domain` heap, which exceeds 1 TiB in the
+measured deployment.
+`/api/v1/subdomains?q=iis&tlds=se` uses the forward and reverse B-tree indexes,
+so it does not need GIN.
 
-This is a product decision, not a performance one: rebuilding a GIN index of
-this size later needs both the time and free space equal to the index. Check
-what actually uses them first:
+Only remove the GIN index after the application stops offering infix searches
+or their full-scan cost is acceptable. For a live database, run this separately
+from application startup and outside a transaction:
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS certdb_domain_domain_tri_idx;
+```
+
+The concurrent drop waits for conflicting transactions without blocking normal
+table reads and writes. It returns the index's disk space, but recreating the
+index later requires scanning the full table and enough free space for the new
+index. Substitute the configured `Config.PgPrefix` if it differs from
+`certdb_`. Keep all three B-tree indexes for the searches and cascade described
+above. Check index size and actual use before changing a deployment:
 
 ```sql
 SELECT indexrelname, idx_scan, pg_size_pretty(pg_relation_size(indexrelid))

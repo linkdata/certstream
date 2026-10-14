@@ -2,6 +2,11 @@ package certstream
 
 import _ "embed"
 
+// CreateSchema contains SQL to create the CertDB schema.
+//
+// Existing tables remain unchanged. New databases receive B-tree domain indexes
+// and no trigram index.
+//
 //go:embed assets/createschema.sql
 var CreateSchema string
 

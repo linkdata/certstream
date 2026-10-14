@@ -135,7 +135,7 @@ func assertSplitDomainCallCount(t *testing.T, ctx context.Context, conn *pgx.Con
 	}
 }
 
-func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, streamID int32) {
+func setupIngestBatchTest(t testing.TB) (ctx context.Context, conn *pgx.Conn, streamID int32) {
 	t.Helper()
 
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -198,6 +198,46 @@ func setupIngestBatchTest(t *testing.T) (ctx context.Context, conn *pgx.Conn, st
 	}
 
 	return
+}
+
+func TestCreateSchemaDomainIndexes(t *testing.T) {
+	t.Parallel()
+
+	ctx, conn, _ := setupIngestBatchTest(t)
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"certdb_domain_cert_idx", true},
+		{"certdb_domain_domain_idx", true},
+		{"certdb_domain_domain_rev_idx", true},
+		{"certdb_domain_domain_tri_idx", false},
+	} {
+		var exists bool
+		if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", tc.name).Scan(&exists); err != nil {
+			t.Fatalf("check %s: %v", tc.name, err)
+		}
+		if exists != tc.want {
+			t.Errorf("%s exists = %t, want %t", tc.name, exists, tc.want)
+		}
+	}
+
+	if _, err := conn.Exec(ctx, `
+CREATE EXTENSION pg_trgm;
+CREATE INDEX certdb_domain_domain_tri_idx ON certdb_domain USING gin (domain gin_trgm_ops) WITH (fastupdate = off);
+`); err != nil {
+		t.Fatalf("create existing trigram index: %v", err)
+	}
+	if _, err := conn.Exec(ctx, certstream.CreateSchema); err != nil {
+		t.Fatalf("reapply schema: %v", err)
+	}
+	var retained bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('certdb_domain_domain_tri_idx') IS NOT NULL").Scan(&retained); err != nil {
+		t.Fatalf("check retained trigram index: %v", err)
+	}
+	if !retained {
+		t.Error("existing trigram index removed by schema")
+	}
 }
 
 func TestIngestBatch_DedupCertificateAcrossCalls(t *testing.T) {
