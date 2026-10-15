@@ -443,6 +443,32 @@ var CleanResetInterval = time.Hour
 // rather than deleted without proof.
 var CleanEmptyCheckTimeout = 30 * time.Second
 
+func deleteCertificatesQuery(from, cutoff time.Time, batchSize int) (query string, args []any) {
+	args = []any{cutoff, batchSize}
+	var lowerBound string
+	// An unset cursor needs no lower bound. A year-one bound can make PostgreSQL
+	// walk dead index entries during planning to estimate the minimum expiry.
+	if !from.IsZero() {
+		lowerBound = " AND notafter >= $3"
+		args = append(args, from)
+	}
+	query = `WITH CERTDB_clean_cert AS (
+  SELECT ctid
+  FROM CERTDB_cert
+  WHERE notafter <= $1` + lowerBound + `
+  ORDER BY notafter ASC
+  LIMIT $2
+  FOR UPDATE SKIP LOCKED
+), CERTDB_deleted_cert AS (
+  DELETE FROM CERTDB_cert
+  USING CERTDB_clean_cert
+  WHERE CERTDB_cert.ctid = CERTDB_clean_cert.ctid
+  RETURNING CERTDB_cert.notafter
+)
+SELECT count(*), max(notafter) FROM CERTDB_deleted_cert;`
+	return
+}
+
 // DeleteCertificates deletes up to batchSize certificates that expired at or
 // before cutoff, oldest first, cascading to the domain, IP address, email and
 // URI rows that reference them. Rows in CERTDB_entry are left alone: they
@@ -461,25 +487,12 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
 		defer cdb.endCall()
 		if batchSize > 0 {
 			cutoff = cutoff.UTC()
-			query := cdb.Pfx(`WITH CERTDB_clean_cert AS (
-  SELECT ctid
-  FROM CERTDB_cert
-  WHERE notafter >= $1 AND notafter <= $2
-  ORDER BY notafter ASC
-  LIMIT $3
-  FOR UPDATE SKIP LOCKED
-), CERTDB_deleted_cert AS (
-  DELETE FROM CERTDB_cert
-  USING CERTDB_clean_cert
-  WHERE CERTDB_cert.ctid = CERTDB_clean_cert.ctid
-  RETURNING CERTDB_cert.notafter
-)
-SELECT count(*), max(notafter) FROM CERTDB_deleted_cert;`)
 			cdb.mu.Lock()
 			cleanFrom := cdb.cleanFrom
 			cdb.mu.Unlock()
+			query, args := deleteCertificatesQuery(cleanFrom, cutoff, batchSize)
 			var highest sql.NullTime
-			row := cdb.QueryRow(ctx, query, cleanFrom, cutoff, batchSize)
+			row := cdb.QueryRow(ctx, cdb.Pfx(query), args...)
 			if err = row.Scan(&rowsDeleted, &highest); err == nil {
 				now := time.Now()
 				cdb.mu.Lock()

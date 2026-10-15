@@ -2,9 +2,35 @@ package certstream
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDeleteCertificatesQuery(t *testing.T) {
+	t.Parallel()
+	cutoff := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	from := cutoff.Add(-time.Hour)
+	for _, tc := range []struct {
+		name string
+		from time.Time
+		args []any
+	}{
+		{name: "unset", args: []any{cutoff, 1000}},
+		{name: "resumed", from: from, args: []any{cutoff, 1000, from}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			query, args := deleteCertificatesQuery(tc.from, cutoff, 1000)
+			if got := strings.Contains(query, "notafter >="); got != !tc.from.IsZero() {
+				t.Fatalf("lower bound present = %v for cursor %v", got, tc.from)
+			}
+			if !reflect.DeepEqual(args, tc.args) {
+				t.Fatalf("query arguments = %v, want %v", args, tc.args)
+			}
+		})
+	}
+}
 
 // cleanTestFixture returns a database holding one operator, one stream and the
 // default identity, ready for certificates to be inserted.
@@ -136,6 +162,57 @@ func TestPgDB_DeleteCertificates_DrainedCursor(t *testing.T) {
 	db.mu.Unlock()
 	if !cleanFrom.IsZero() {
 		t.Fatalf("cleanFrom after sweep = %v, want zero", cleanFrom)
+	}
+}
+
+func TestPgDB_DeleteCertificates_StartupAndResume(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
+	old := cutoff.Add(-time.Hour)
+	live := cutoff.Add(time.Second)
+	for i, expiry := range []time.Time{old, old, cutoff, live} {
+		if err := insertCleanTestCert(ctx, db, identID, expiry, i+1); err != nil {
+			t.Fatalf("insert certificate %d failed: %v", i, err)
+		}
+	}
+
+	for call := 1; call <= 3; call++ {
+		if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
+			t.Fatalf("delete call %d failed: %v", call, err)
+		} else if deleted != 1 {
+			t.Fatalf("delete call %d removed %d certificates, want 1", call, deleted)
+		}
+		db.mu.Lock()
+		cursor := db.cleanFrom
+		db.mu.Unlock()
+		want := old
+		if call == 3 {
+			want = cutoff
+		}
+		if !cursor.Equal(want) {
+			t.Fatalf("cursor after call %d = %v, want %v", call, cursor, want)
+		}
+	}
+
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
+		t.Fatalf("drained delete failed: %v", err)
+	} else if deleted != 0 {
+		t.Fatalf("drained delete removed %d certificates, want 0", deleted)
+	}
+	if err := insertCleanTestCert(ctx, db, identID, old.Add(-time.Hour), 5); err != nil {
+		t.Fatalf("insert backfilled certificate failed: %v", err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
+		t.Fatalf("delete after cursor reset failed: %v", err)
+	} else if deleted != 1 {
+		t.Fatalf("delete after cursor reset removed %d certificates, want 1", deleted)
+	}
+	var remaining time.Time
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT notafter FROM CERTDB_cert;`)).Scan(&remaining); err != nil {
+		t.Fatalf("read surviving certificate failed: %v", err)
+	} else if !remaining.Equal(live) {
+		t.Fatalf("surviving certificate expires at %v, want %v", remaining, live)
 	}
 }
 
