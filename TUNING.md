@@ -33,11 +33,13 @@ cfg.PgCertMaxAge = 180 * 24 * time.Hour // delete certs 180 days after they expi
 
 Two things worth knowing about what that does:
 
-- Deletion walks `notafter` forward from a cursor, in batches of
-  [CleanBatchSize]. The cursor is what keeps a batch cheap: it resumes where the
-  previous batch stopped rather than re-traversing the dead index entries it
-  already passed over. Without it the cost of a batch grows with the size of the
-  backlog, which is how a database falls behind and stays behind.
+- Deletion walks the certificate heap in storage order. Each statement selects
+  from at most 256 adjacent pages and deletes up to [CleanBatchSize] eligible
+  certificates, with the existing cascades. An in-memory cursor resumes on the
+  next call; later sweeps revisit skipped locks and backfilled rows. Cleanup
+  pauses for [CleanResetInterval] after a completed sweep. Each sweep examines
+  the whole heap, even when few certificates are eligible, so measure its I/O
+  alongside ingest.
 - `VACUUM` marks space reusable inside the existing files; it does **not**
   return it to the filesystem. A tuned database stops *growing*; it does not
   shrink. Only `DROP` gives disk back for free; `REINDEX`, `VACUUM FULL` and
@@ -110,7 +112,7 @@ ALTER TABLE certdb_cert SET (
 ALTER TABLE certdb_domain SET (autovacuum_vacuum_threshold = 100000000, autovacuum_vacuum_scale_factor = 0);
 ALTER TABLE certdb_entry  SET (autovacuum_vacuum_threshold = 100000000, autovacuum_vacuum_scale_factor = 0);
 
--- 3. Statistics. Cheap, and the cleanup plans off the notafter histogram.
+-- 3. Keep planner estimates current.
 ALTER TABLE certdb_domain SET (autovacuum_analyze_threshold = 50000000, autovacuum_analyze_scale_factor = 0);
 ALTER TABLE certdb_entry  SET (autovacuum_analyze_threshold = 50000000, autovacuum_analyze_scale_factor = 0);
 ```
@@ -210,3 +212,4 @@ Two ways to misread these:
 
 [Config.PgCertMaxAge]: https://pkg.go.dev/github.com/linkdata/certstream#Config
 [CleanBatchSize]: https://pkg.go.dev/github.com/linkdata/certstream#CleanBatchSize
+[CleanResetInterval]: https://pkg.go.dev/github.com/linkdata/certstream#CleanResetInterval

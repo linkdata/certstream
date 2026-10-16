@@ -2,33 +2,40 @@ package certstream
 
 import (
 	"context"
-	"reflect"
-	"strings"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-func TestDeleteCertificatesQuery(t *testing.T) {
+func TestDeleteCertificatesPageQuery(t *testing.T) {
 	t.Parallel()
-	cutoff := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
-	from := cutoff.Add(-time.Hour)
-	for _, tc := range []struct {
-		name string
-		from time.Time
-		args []any
-	}{
-		{name: "unset", args: []any{cutoff, 1000}},
-		{name: "resumed", from: from, args: []any{cutoff, 1000, from}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			query, args := deleteCertificatesQuery(tc.from, cutoff, 1000)
-			if got := strings.Contains(query, "notafter >="); got != !tc.from.IsZero() {
-				t.Fatalf("lower bound present = %v for cursor %v", got, tc.from)
-			}
-			if !reflect.DeepEqual(args, tc.args) {
-				t.Fatalf("query arguments = %v, want %v", args, tc.args)
-			}
-		})
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC().Truncate(time.Microsecond)
+	for i, expiry := range []time.Time{cutoff, cutoff, cutoff.Add(time.Second), cutoff} {
+		if err := insertCleanTestCert(ctx, db, identID, expiry, i+1); err != nil {
+			t.Fatalf("insert certificate: %v", err)
+		}
+	}
+	var lower, upper, wantLast pgtype.TID
+	for id, dest := range map[int]*pgtype.TID{1: &lower, 2: &wantLast, 4: &upper} {
+		if err := db.QueryRow(ctx, db.Pfx(`SELECT ctid FROM CERTDB_cert WHERE id = $1`), id).Scan(dest); err != nil {
+			t.Fatalf("read certificate position: %v", err)
+		}
+	}
+	var deleted int64
+	var last pgtype.TID
+	var blocks uint32
+	if err := db.QueryRow(ctx, db.Pfx(deleteCertificatesPageQuery), cutoff, 10, lower, upper).Scan(&deleted, &last, &blocks); err != nil {
+		t.Fatalf("delete page range: %v", err)
+	}
+	if deleted != 1 || last != wantLast || blocks == 0 {
+		t.Fatalf("delete page range = (%d, %v, %d blocks), want (1, %v, nonzero)", deleted, last, blocks, wantLast)
+	}
+	if count, err := countCerts(ctx, db); err != nil || count != 3 {
+		t.Fatalf("certificates outside bounds or cutoff removed: count = %d, err = %v", count, err)
 	}
 }
 
@@ -133,35 +140,28 @@ func TestPgDB_DeleteCertificates_DrainedCursor(t *testing.T) {
 		t.Fatalf("rows deleted = %d, want 1", rowsDeleted)
 	}
 
-	// Skip the sweep the zero cleanResetAt would otherwise allow, so this
-	// exercises the drained branch.
-	db.mu.Lock()
-	db.cleanResetAt = now
-	db.mu.Unlock()
+	db.cleanMu.Lock()
+	end, resetAt := db.cleanEnd, db.cleanResetAt
+	db.cleanMu.Unlock()
+	if end != 0 || resetAt.IsZero() {
+		t.Fatalf("completed sweep state = (%d blocks, %v), want (0, completion time)", end, resetAt)
+	}
+	if err := insertCleanTestCert(ctx, db, identID, now.Add(-72*time.Hour), 2); err != nil {
+		t.Fatalf("insert backfilled certificate: %v", err)
+	}
 	if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
 		t.Fatalf("drained DeleteCertificates failed: %v", err)
 	} else if rowsDeleted != 0 {
 		t.Fatalf("rows deleted when drained = %d, want 0", rowsDeleted)
 	}
-	db.mu.Lock()
-	cleanFrom := db.cleanFrom
-	db.mu.Unlock()
-	if !cleanFrom.Equal(cutoff) {
-		t.Fatalf("cleanFrom after drained call = %v, want cutoff %v", cleanFrom, cutoff)
-	}
-
-	// Once CleanResetInterval has passed the cursor sweeps back.
-	db.mu.Lock()
+	// The next sweep picks up certificates inserted behind its position.
+	db.cleanMu.Lock()
 	db.cleanResetAt = now.Add(-2 * CleanResetInterval)
-	db.mu.Unlock()
-	if _, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
+	db.cleanMu.Unlock()
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
 		t.Fatalf("sweeping DeleteCertificates failed: %v", err)
-	}
-	db.mu.Lock()
-	cleanFrom = db.cleanFrom
-	db.mu.Unlock()
-	if !cleanFrom.IsZero() {
-		t.Fatalf("cleanFrom after sweep = %v, want zero", cleanFrom)
+	} else if deleted != 1 {
+		t.Fatalf("next sweep deleted %d certificates, want 1", deleted)
 	}
 }
 
@@ -171,26 +171,42 @@ func TestPgDB_DeleteCertificates_StartupAndResume(t *testing.T) {
 	cutoff := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Hour)
 	old := cutoff.Add(-time.Hour)
 	live := cutoff.Add(time.Second)
-	for i, expiry := range []time.Time{old, old, cutoff, live} {
+	for i, expiry := range []time.Time{old, cutoff, old.Add(-time.Hour), live} {
 		if err := insertCleanTestCert(ctx, db, identID, expiry, i+1); err != nil {
 			t.Fatalf("insert certificate %d failed: %v", i, err)
 		}
 	}
 
+	var positions []pgtype.TID
+	rows, err := db.Query(ctx, db.Pfx(`SELECT ctid FROM CERTDB_cert ORDER BY id`))
+	if err != nil {
+		t.Fatalf("read certificate positions: %v", err)
+	}
+	for rows.Next() {
+		var position pgtype.TID
+		if err := rows.Scan(&position); err != nil {
+			rows.Close()
+			t.Fatalf("read certificate position: %v", err)
+		}
+		positions = append(positions, position)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read certificate positions: %v", err)
+	}
+	rows.Close()
+	if len(positions) != 4 || positions[0].BlockNumber != positions[2].BlockNumber {
+		t.Fatalf("fixture must hold expired certificates on one page: %v", positions)
+	}
 	for call := 1; call <= 3; call++ {
 		if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
 			t.Fatalf("delete call %d failed: %v", call, err)
 		} else if deleted != 1 {
 			t.Fatalf("delete call %d removed %d certificates, want 1", call, deleted)
 		}
-		db.mu.Lock()
+		db.cleanMu.Lock()
 		cursor := db.cleanFrom
-		db.mu.Unlock()
-		want := old
-		if call == 3 {
-			want = cutoff
-		}
-		if !cursor.Equal(want) {
+		db.cleanMu.Unlock()
+		if want := positions[call-1]; cursor != want {
 			t.Fatalf("cursor after call %d = %v, want %v", call, cursor, want)
 		}
 	}
@@ -200,14 +216,6 @@ func TestPgDB_DeleteCertificates_StartupAndResume(t *testing.T) {
 	} else if deleted != 0 {
 		t.Fatalf("drained delete removed %d certificates, want 0", deleted)
 	}
-	if err := insertCleanTestCert(ctx, db, identID, old.Add(-time.Hour), 5); err != nil {
-		t.Fatalf("insert backfilled certificate failed: %v", err)
-	}
-	if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
-		t.Fatalf("delete after cursor reset failed: %v", err)
-	} else if deleted != 1 {
-		t.Fatalf("delete after cursor reset removed %d certificates, want 1", deleted)
-	}
 	var remaining time.Time
 	if err := db.QueryRow(ctx, db.Pfx(`SELECT notafter FROM CERTDB_cert;`)).Scan(&remaining); err != nil {
 		t.Fatalf("read surviving certificate failed: %v", err)
@@ -216,9 +224,178 @@ func TestPgDB_DeleteCertificates_StartupAndResume(t *testing.T) {
 	}
 }
 
-// BenchmarkPgDB_DeleteCertificates measures a drained cleanup cycle over a
-// range whose certificates have already been deleted, which is what the
-// cursor exists to skip. Compare revisions with benchstat.
+func insertCleanTestPadding(t *testing.T, ctx context.Context, db *PgDB, identID int32, cutoff time.Time) {
+	t.Helper()
+	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_cert
+    (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+SELECT $1::timestamp, $1::timestamp + interval '1 day', $1::timestamp,
+       repeat('x', 512), $2, $2, decode(lpad(to_hex(g), 64, '0'), 'hex'), false
+FROM generate_series(1, 8000) AS g;`), cutoff, identID); err != nil {
+		t.Fatalf("insert live page ranges: %v", err)
+	}
+}
+
+func TestPgDB_DeleteCertificates_CrossesEmptyRanges(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC().Truncate(time.Microsecond)
+	insertCleanTestPadding(t, ctx, db, identID, cutoff)
+	if err := insertCleanTestCert(ctx, db, identID, cutoff, 8001); err != nil {
+		t.Fatalf("insert expired certificate: %v", err)
+	}
+	var position pgtype.TID
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT ctid FROM CERTDB_cert WHERE notafter <= $1`), cutoff).Scan(&position); err != nil {
+		t.Fatalf("read expired certificate position: %v", err)
+	}
+	if position.BlockNumber < cleanPagesPerBatch {
+		t.Fatalf("fixture has no empty page window before %v", position)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 1 {
+		t.Fatalf("delete across empty ranges = (%d, %v), want (1, nil)", deleted, err)
+	}
+	if count, err := countCerts(ctx, db); err != nil || count != 8000 {
+		t.Fatalf("surviving live certificates = (%d, %v), want (8000, nil)", count, err)
+	}
+}
+
+func TestPgDB_DeleteCertificates_SkippedLocks(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC()
+	for seed := 1; seed <= 3; seed++ {
+		if err := insertCleanTestCert(ctx, db, identID, cutoff.Add(-time.Hour), seed); err != nil {
+			t.Fatalf("insert expired certificate: %v", err)
+		}
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin row-lock transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("roll back row-lock transaction: %v", err)
+		}
+	})
+	if _, err := tx.Exec(ctx, db.Pfx(`SELECT id FROM CERTDB_cert WHERE id = 1 FOR UPDATE`)); err != nil {
+		t.Fatalf("lock expired certificate: %v", err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 2 {
+		t.Fatalf("delete with skipped lock = (%d, %v), want (2, nil)", deleted, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("release row lock: %v", err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 0 {
+		t.Fatalf("delete during sweep pause = (%d, %v), want (0, nil)", deleted, err)
+	}
+	db.cleanMu.Lock()
+	db.cleanResetAt = time.Now().Add(-2 * CleanResetInterval)
+	db.cleanMu.Unlock()
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 1 {
+		t.Fatalf("next sweep after skipped lock = (%d, %v), want (1, nil)", deleted, err)
+	}
+}
+
+func TestPgDB_DeleteCertificates_CanceledStatementKeepsCursor(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC()
+	for seed := 1; seed <= 3; seed++ {
+		if err := insertCleanTestCert(ctx, db, identID, cutoff.Add(-time.Hour), seed); err != nil {
+			t.Fatalf("insert expired certificate: %v", err)
+		}
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil || deleted != 1 {
+		t.Fatalf("initial deletion = (%d, %v), want (1, nil)", deleted, err)
+	}
+	db.cleanMu.Lock()
+	from, end := db.cleanFrom, db.cleanEnd
+	db.cleanMu.Unlock()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin table-lock transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("roll back table-lock transaction: %v", err)
+		}
+	})
+	if _, err := tx.Exec(ctx, db.Pfx(`LOCK TABLE CERTDB_cert IN ACCESS EXCLUSIVE MODE`)); err != nil {
+		t.Fatalf("block cleanup statement: %v", err)
+	}
+	deleteCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.DeleteCertificates(deleteCtx, cutoff, 1)
+		done <- err
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var blocked bool
+		if err := db.QueryRow(ctx, db.Pfx(`SELECT EXISTS (
+SELECT 1 FROM pg_locks WHERE relation = 'CERTDB_cert'::regclass AND NOT granted)`)).Scan(&blocked); err != nil {
+			t.Fatalf("inspect blocked cleanup: %v", err)
+		}
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cleanup statement did not wait on the table lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled cleanup error = %v, want context.Canceled", err)
+	}
+	db.cleanMu.Lock()
+	gotFrom, gotEnd := db.cleanFrom, db.cleanEnd
+	db.cleanMu.Unlock()
+	if gotFrom != from || gotEnd != end {
+		t.Fatalf("canceled statement advanced cursor from (%v, %d) to (%v, %d)", from, end, gotFrom, gotEnd)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("release table lock: %v", err)
+	}
+}
+
+func TestPgDB_DeleteCertificates_TruncatedHeap(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC().Truncate(time.Microsecond)
+	insertCleanTestPadding(t, ctx, db, identID, cutoff)
+	for seed := 8001; seed <= 8002; seed++ {
+		if err := insertCleanTestCert(ctx, db, identID, cutoff, seed); err != nil {
+			t.Fatalf("insert expired certificate: %v", err)
+		}
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil || deleted != 1 {
+		t.Fatalf("initial deletion = (%d, %v), want (1, nil)", deleted, err)
+	}
+	if _, err := db.Exec(ctx, db.Pfx(`TRUNCATE CERTDB_cert CASCADE`)); err != nil {
+		t.Fatalf("truncate heap: %v", err)
+	}
+	if err := insertCleanTestCert(ctx, db, identID, cutoff, 9000); err != nil {
+		t.Fatalf("insert certificate into truncated heap: %v", err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 0 {
+		t.Fatalf("finish truncated sweep = (%d, %v), want (0, nil)", deleted, err)
+	}
+	db.cleanMu.Lock()
+	end := db.cleanEnd
+	db.cleanResetAt = time.Now().Add(-2 * CleanResetInterval)
+	db.cleanMu.Unlock()
+	if end != 0 {
+		t.Fatalf("truncated sweep still has %d blocks to inspect", end)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 1 {
+		t.Fatalf("sweep reused heap pages = (%d, %v), want (1, nil)", deleted, err)
+	}
+}
+
+// BenchmarkPgDB_DeleteCertificates measures polling during the pause after a
+// completed sweep, when no further heap scan is needed.
 func BenchmarkPgDB_DeleteCertificates(b *testing.B) {
 	ctx, db, _, _, identID := cleanTestFixture(b)
 	const gap = 20000
@@ -236,7 +413,7 @@ func BenchmarkPgDB_DeleteCertificates(b *testing.B) {
 			break
 		}
 	}
-	// Settle the cursor past the emptied range before measuring.
+	// Confirm that polling the completed sweep succeeds before measuring.
 	if _, err := db.DeleteCertificates(ctx, cutoff, CleanBatchSize); err != nil {
 		b.Fatalf("settle failed: %v", err)
 	}
