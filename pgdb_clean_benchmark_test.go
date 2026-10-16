@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// BenchmarkPgDB_DeleteCertificatesPlanning measures planning a cleanup statement
-// when deleted certificates still occupy the start of the expiry index.
+// BenchmarkPgDB_DeleteCertificatesPlanning measures planning a bounded heap
+// window with live certificates and with a deleted expiry-index prefix.
 //
 // EXPLAIN does not execute the delete. Compare revisions with -benchtime=50x
 // -count=6; the database metrics describe the final plan in each sample.
@@ -18,8 +20,8 @@ func BenchmarkPgDB_DeleteCertificatesPlanning(b *testing.B) {
 	if _, err := db.Exec(ctx, db.Pfx(`ALTER TABLE CERTDB_cert SET (autovacuum_enabled = false)`)); err != nil {
 		b.Fatalf("disable autovacuum: %v", err)
 	}
-	// Keep live expiry dates on both sides of cutoff so only the year-one
-	// lower bound, when present, reaches the histogram's oldest endpoint.
+	// Keep live expiry dates on both sides of cutoff after deleting the old
+	// prefix, while its index entries remain until vacuum removes them.
 	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_cert
     (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
 SELECT expiry - interval '1 day', expiry, expiry - interval '1 day',
@@ -34,36 +36,32 @@ CROSS JOIN LATERAL (
 ) AS dates;`), cutoff, identID); err != nil {
 		b.Fatalf("insert certificates: %v", err)
 	}
-	if _, err := db.Exec(ctx, db.Pfx(`DELETE FROM CERTDB_cert WHERE notafter < $1;`), cutoff.Add(-24*time.Hour)); err != nil {
-		b.Fatalf("leave dead index prefix: %v", err)
-	}
 	if _, err := db.Exec(ctx, db.Pfx(`ANALYZE CERTDB_cert;`)); err != nil {
 		b.Fatalf("analyze certificates: %v", err)
 	}
-	// An ordered scan marks the deleted prefix dead in the index while leaving
-	// its pages in place for the planner's endpoint probe.
-	var firstLiveCTID string
-	if err := db.QueryRow(ctx, db.Pfx(`SELECT ctid::text FROM CERTDB_cert WHERE notafter <= $1 ORDER BY notafter LIMIT 1`), cutoff).Scan(&firstLiveCTID); err != nil {
-		b.Fatalf("scan dead index prefix: %v", err)
-	}
-	// Load planner metadata without touching the dead low end of the index.
-	warmQuery, warmArgs := deleteCertificatesQuery(cutoff.Add(-time.Hour), cutoff, 1000)
-	var warmPlan []byte
-	if err := db.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+db.Pfx(warmQuery), warmArgs...).Scan(&warmPlan); err != nil {
-		b.Fatalf("warm planner metadata: %v", err)
-	}
 
 	for _, tc := range []struct {
-		name string
-		from time.Time
+		name       string
+		deadPrefix bool
 	}{
-		{name: "reset_cursor"},
-		{name: "resumed_cursor", from: cutoff.Add(-time.Hour)},
+		{name: "live_heap"},
+		{name: "dead_prefix", deadPrefix: true},
 	} {
+		if tc.deadPrefix {
+			if _, err := db.Exec(ctx, db.Pfx(`DELETE FROM CERTDB_cert WHERE notafter < $1;`), cutoff.Add(-24*time.Hour)); err != nil {
+				b.Fatalf("leave dead index prefix: %v", err)
+			}
+			if _, err := db.Exec(ctx, db.Pfx(`ANALYZE CERTDB_cert;`)); err != nil {
+				b.Fatalf("analyze deleted prefix: %v", err)
+			}
+		}
 		b.Run(tc.name, func(b *testing.B) {
-			query, args := deleteCertificatesQuery(tc.from, cutoff, 1000)
-			explain := "EXPLAIN (BUFFERS, SUMMARY, FORMAT JSON) " + db.Pfx(query)
+			explain := "EXPLAIN (BUFFERS, SUMMARY, FORMAT JSON) " + db.Pfx(deleteCertificatesPageQuery)
+			args := []any{cutoff, 1000, pgtype.TID{Valid: true}, pgtype.TID{BlockNumber: cleanPagesPerBatch, Valid: true}}
 			var plan []byte
+			if err := db.QueryRow(ctx, explain, args...).Scan(&plan); err != nil {
+				b.Fatalf("warm cleanup planner: %v", err)
+			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {

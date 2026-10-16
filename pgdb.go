@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -44,14 +45,16 @@ type PgDB struct {
 	closeMu               sync.RWMutex   // blocks new tracked calls while Close is waiting
 	closeWG               sync.WaitGroup // tracks exported DB operations
 	closeOnce             sync.Once
+	cleanMu               sync.Mutex // protects certificate cleanup state
+	cleanFrom             pgtype.TID // exclusive lower heap position
+	cleanEnd              uint32     // sweep boundary in blocks; zero when idle
+	cleanResetAt          time.Time  // last completed sweep
 	mu                    sync.Mutex // protects following
 	batchCh               []chan *LogEntry
 	workerBits            int
 	workerCount           int
 	gaps                  map[int32]gapCounts
 	estimates             map[string]float64 // row count estimates
-	cleanFrom             time.Time          // lowest notafter DeleteCertificates has yet to consider
-	cleanResetAt          time.Time          // when cleanFrom was last restarted
 	newentrytime          time.Duration
 	newentrycount         int64
 	avgentrytime          time.Duration
@@ -426,13 +429,6 @@ LIMIT $5;
 	return
 }
 
-// CleanBatchSize is the number of certificates the automatic cleanup deletes per statement.
-var CleanBatchSize = 10000
-
-// CleanResetInterval is how often [PgDB.DeleteCertificates] restarts at the
-// oldest certificate instead of resuming from its cursor.
-var CleanResetInterval = time.Hour
-
 // CleanEmptyCheckTimeout bounds each scan [PgDB.DeleteStream] makes over a
 // stream's already deleted entries: restarting the cursor at the first entry,
 // and confirming the stream holds none before deleting it.
@@ -442,103 +438,6 @@ var CleanResetInterval = time.Hour
 // the check runs out of time the stream is left in place for a later call
 // rather than deleted without proof.
 var CleanEmptyCheckTimeout = 30 * time.Second
-
-func deleteCertificatesQuery(from, cutoff time.Time, batchSize int) (query string, args []any) {
-	args = []any{cutoff, batchSize}
-	var lowerBound string
-	// An unset cursor needs no lower bound. A year-one bound can make PostgreSQL
-	// walk dead index entries during planning to estimate the minimum expiry.
-	if !from.IsZero() {
-		lowerBound = " AND notafter >= $3"
-		args = append(args, from)
-	}
-	query = `WITH CERTDB_clean_cert AS (
-  SELECT ctid
-  FROM CERTDB_cert
-  WHERE notafter <= $1` + lowerBound + `
-  ORDER BY notafter ASC
-  LIMIT $2
-  FOR UPDATE SKIP LOCKED
-), CERTDB_deleted_cert AS (
-  DELETE FROM CERTDB_cert
-  USING CERTDB_clean_cert
-  WHERE CERTDB_cert.ctid = CERTDB_clean_cert.ctid
-  RETURNING CERTDB_cert.notafter
-)
-SELECT count(*), max(notafter) FROM CERTDB_deleted_cert;`
-	return
-}
-
-// DeleteCertificates deletes up to batchSize certificates that expired at or
-// before cutoff, oldest first, cascading to the domain, IP address, email and
-// URI rows that reference them. Rows in CERTDB_entry are left alone: they
-// record log positions and have no foreign key to CERTDB_cert.
-//
-// Deletion resumes where the previous call stopped, so repeated calls walk
-// forward in notafter order instead of rescanning the index entries of rows
-// already deleted. Finding nothing to delete moves the cursor up to cutoff,
-// and at most once every [CleanResetInterval] restarts it at the oldest
-// certificate to pick up any inserted below it.
-//
-// A batchSize below one deletes nothing.
-func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batchSize int) (rowsDeleted int64, err error) {
-	if cdb != nil {
-		cdb.beginCall()
-		defer cdb.endCall()
-		if batchSize > 0 {
-			cutoff = cutoff.UTC()
-			cdb.mu.Lock()
-			cleanFrom := cdb.cleanFrom
-			cdb.mu.Unlock()
-			query, args := deleteCertificatesQuery(cleanFrom, cutoff, batchSize)
-			var highest sql.NullTime
-			row := cdb.QueryRow(ctx, cdb.Pfx(query), args...)
-			if err = row.Scan(&rowsDeleted, &highest); err == nil {
-				now := time.Now()
-				cdb.mu.Lock()
-				switch {
-				case highest.Valid && highest.Time.After(cdb.cleanFrom):
-					cdb.cleanFrom = highest.Time
-				case rowsDeleted > 0:
-				case now.Sub(cdb.cleanResetAt) >= CleanResetInterval:
-					// Sweep back for certificates inserted below the cursor. The
-					// scan that follows has to walk whatever the range still holds,
-					// so it happens on an interval rather than every idle cycle.
-					cdb.cleanFrom = time.Time{}
-					cdb.cleanResetAt = now
-				case cutoff.After(cdb.cleanFrom):
-					// Nothing left at or above the cursor, so start the next scan at
-					// the cutoff instead of walking the emptied range again.
-					cdb.cleanFrom = cutoff
-				}
-				cdb.mu.Unlock()
-			}
-		}
-	}
-	return
-}
-
-// CleanCertificates deletes expired certificates until ctx is done.
-//
-// A certificate is deleted once Config.PgCertMaxAge has passed since it
-// expired. A PgCertMaxAge of zero or less returns immediately without
-// deleting anything. [Start] runs this for the lifetime of the CertStream,
-// so callers need it only when driving a [PgDB] themselves.
-func (cdb *PgDB) CleanCertificates(ctx context.Context) {
-	maxAge := cdb.PgCertMaxAge
-	if maxAge <= 0 {
-		return
-	}
-	for ctx.Err() == nil {
-		rowsDeleted, err := cdb.DeleteCertificates(ctx, time.Now().UTC().Add(-maxAge), CleanBatchSize)
-		if cdb.LogError(err, "CleanCertificates") != nil || rowsDeleted == 0 {
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Minute):
-			}
-		}
-	}
-}
 
 // DeleteStream deletes up to batchSize log entries belonging to the stream,
 // oldest first, and deletes the stream itself once it holds none.

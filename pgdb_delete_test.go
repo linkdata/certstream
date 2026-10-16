@@ -54,7 +54,8 @@ func defaultIdentID(ctx context.Context, q queryer, pfx func(string) string) (id
 func insertTestCert(ctx context.Context, q execQueryer, pfx func(string) string, identID int, notBefore time.Time, notAfter time.Time, shaHex string) (certID int64, err error) {
 	notBefore = notBefore.UTC()
 	notAfter = notAfter.UTC()
-	err = q.QueryRow(ctx, pfx(`INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
+	err = q.QueryRow(
+		ctx, pfx(`INSERT INTO CERTDB_cert (notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
 VALUES ($1, $2, $3, $4, $5, $6, decode($7,'hex'), $8)
 RETURNING id;`),
 		notBefore, notAfter, notBefore, "example.com", identID, identID, shaHex, false,
@@ -64,7 +65,8 @@ RETURNING id;`),
 
 func insertTestEntry(ctx context.Context, q execQueryer, pfx func(string) string, certID int64, logIndex int64, streamID int32, seen time.Time) (err error) {
 	seen = seen.UTC()
-	_, err = q.Exec(ctx, pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream) VALUES ($1, $2, $3, $4);`),
+	_, err = q.Exec(
+		ctx, pfx(`INSERT INTO CERTDB_entry (seen, cert, logindex, stream) VALUES ($1, $2, $3, $4);`),
 		seen, certID, logIndex, streamID,
 	)
 	return
@@ -166,8 +168,8 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 				logIndex int64
 			}
 			fixtures := []certFixture{
-				{name: "oldest", notAfter: now.Add(-72 * time.Hour), shaSeed: 1, logIndex: 1},
 				{name: "old", notAfter: now.Add(-48 * time.Hour), shaSeed: 2, logIndex: 2},
+				{name: "oldest", notAfter: now.Add(-72 * time.Hour), shaSeed: 1, logIndex: 1},
 				{name: "recent", notAfter: now.Add(-12 * time.Hour), shaSeed: 3, logIndex: 3},
 				{name: "future", notAfter: now.Add(12 * time.Hour), shaSeed: 4, logIndex: 4},
 			}
@@ -195,8 +197,8 @@ func TestPgDB_DeleteExpiredCert_BatchOrder(t *testing.T) {
 							entryCount int
 						}
 						expectFirst := []expectedCount{
-							{name: "oldest", certCount: 0, entryCount: 1},
-							{name: "old", certCount: 1, entryCount: 1},
+							{name: "oldest", certCount: 1, entryCount: 1},
+							{name: "old", certCount: 0, entryCount: 1},
 							{name: "recent", certCount: 1, entryCount: 1},
 							{name: "future", certCount: 1, entryCount: 1},
 						}
@@ -270,7 +272,7 @@ func TestPgDB_DeleteCertificates_ResumesAndRestarts(t *testing.T) {
 				}
 			}
 
-			// One per call, oldest first, leaving the cursor above both.
+			// One per call, in storage order, leaving the cursor beyond both.
 			for call := 1; call <= 2; call++ {
 				if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil {
 					t.Fatalf("DeleteCertificates call %d failed: %v", call, err)
@@ -279,24 +281,29 @@ func TestPgDB_DeleteCertificates_ResumesAndRestarts(t *testing.T) {
 				}
 			}
 
-			// An empty batch restarts the cursor.
+			// An empty result completes the storage sweep.
 			if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
 				t.Fatalf("draining DeleteCertificates failed: %v", err)
 			} else if rowsDeleted != 0 {
 				t.Fatalf("rows deleted when drained = %d, want 0", rowsDeleted)
 			}
 
-			// A certificate older than where the cursor stopped is still found.
+			// A new PgDB starts a new sweep and finds older backfilled certificates.
 			if certID, err := insertTestCertWithEntry(ctx, db, streamID, identID, 3, notBefore, now.Add(-96*time.Hour), testSHA256Hex(3)); err != nil {
 				t.Fatalf("insert test cert failed: %v", err)
-			} else if rowsDeleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil {
-				t.Fatalf("DeleteCertificates after restart failed: %v", err)
-			} else if rowsDeleted != 1 {
-				t.Fatalf("rows deleted after restart = %d, want 1", rowsDeleted)
-			} else if certCount, _, err := certEntryCounts(ctx, db, certID); err != nil {
-				t.Fatalf("count after restart failed: %v", err)
-			} else if certCount != 0 {
-				t.Fatalf("cert count after restart = %d, want 0", certCount)
+			} else if restarted, err := newPgDBFromConn(ctx, conn); err != nil {
+				t.Fatalf("restart database: %v", err)
+			} else {
+				t.Cleanup(restarted.Close)
+				if rowsDeleted, err := restarted.DeleteCertificates(ctx, cutoff, 10); err != nil {
+					t.Fatalf("DeleteCertificates after restart failed: %v", err)
+				} else if rowsDeleted != 1 {
+					t.Fatalf("rows deleted after restart = %d, want 1", rowsDeleted)
+				} else if certCount, _, err := certEntryCounts(ctx, db, certID); err != nil {
+					t.Fatalf("count after restart failed: %v", err)
+				} else if certCount != 0 {
+					t.Fatalf("cert count after restart = %d, want 0", certCount)
+				}
 			}
 		}
 	}
@@ -687,7 +694,8 @@ func TestPgDB_TimestampsUseUTC(t *testing.T) {
 			if certID, err := insertTestCert(ctx, conn, pfx, identID, notBefore, notAfter, testSHA256Hex(5)); err != nil {
 				t.Fatalf("insert test cert failed: %v", err)
 			} else {
-				if _, err = conn.Exec(ctx, pfx(`INSERT INTO CERTDB_domain (cert, wild, www, domain, tld) VALUES ($1, $2, $3, $4, $5);`),
+				if _, err = conn.Exec(
+					ctx, pfx(`INSERT INTO CERTDB_domain (cert, wild, www, domain, tld) VALUES ($1, $2, $3, $4, $5);`),
 					certID, false, 0, "example", "com",
 				); err != nil {
 					t.Fatalf("insert domain failed: %v", err)
@@ -699,7 +707,8 @@ func TestPgDB_TimestampsUseUTC(t *testing.T) {
 						t.Fatalf("valid = false, want true")
 					} else {
 						var delta float64
-						if err = conn.QueryRow(ctx, pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream) VALUES ($1, $2, $3)
+						if err = conn.QueryRow(
+							ctx, pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream) VALUES ($1, $2, $3)
 RETURNING ABS(EXTRACT(EPOCH FROM seen AT TIME ZONE 'UTC') - EXTRACT(EPOCH FROM NOW() AT TIME ZONE 'UTC'));`),
 							certID, int64(1), streamID,
 						).Scan(&delta); err != nil {
