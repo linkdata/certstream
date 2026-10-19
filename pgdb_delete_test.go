@@ -288,7 +288,7 @@ func TestPgDB_DeleteCertificates_ResumesAndRestarts(t *testing.T) {
 				t.Fatalf("rows deleted when drained = %d, want 0", rowsDeleted)
 			}
 
-			// A new PgDB starts a new sweep and finds older backfilled certificates.
+			// A new PgDB preserves the completed-sweep pause before revisiting backfill.
 			if certID, err := insertTestCertWithEntry(ctx, db, streamID, identID, 3, notBefore, now.Add(-96*time.Hour), testSHA256Hex(3)); err != nil {
 				t.Fatalf("insert test cert failed: %v", err)
 			} else if restarted, err := newPgDBFromConn(ctx, conn); err != nil {
@@ -297,12 +297,12 @@ func TestPgDB_DeleteCertificates_ResumesAndRestarts(t *testing.T) {
 				t.Cleanup(restarted.Close)
 				if rowsDeleted, err := restarted.DeleteCertificates(ctx, cutoff, 10); err != nil {
 					t.Fatalf("DeleteCertificates after restart failed: %v", err)
-				} else if rowsDeleted != 1 {
-					t.Fatalf("rows deleted after restart = %d, want 1", rowsDeleted)
+				} else if rowsDeleted != 0 {
+					t.Fatalf("rows deleted after restart = %d, want 0", rowsDeleted)
 				} else if certCount, _, err := certEntryCounts(ctx, db, certID); err != nil {
 					t.Fatalf("count after restart failed: %v", err)
-				} else if certCount != 0 {
-					t.Fatalf("cert count after restart = %d, want 0", certCount)
+				} else if certCount != 1 {
+					t.Fatalf("cert count after restart = %d, want 1", certCount)
 				}
 			}
 		}

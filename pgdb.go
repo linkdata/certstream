@@ -48,7 +48,10 @@ type PgDB struct {
 	cleanMu               sync.Mutex // protects certificate cleanup state
 	cleanFrom             pgtype.TID // exclusive lower heap position
 	cleanEnd              uint32     // sweep boundary in blocks; zero when idle
-	cleanResetAt          time.Time  // last completed sweep
+	cleanResetAt          time.Time  // completion time while between sweeps
+	cleanLoaded           bool       // persistent cleanup state has been read
+	cleanFile             uint32     // heap generation at the start of the sweep
+	cleanSavedAt          time.Time  // last successful cleanup checkpoint
 	mu                    sync.Mutex // protects following
 	batchCh               []chan *LogEntry
 	workerBits            int
