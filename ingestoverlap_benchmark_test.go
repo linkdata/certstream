@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-// BenchmarkIngestBatchOverlap measures ingest with expired history and an ordinary overlap.
+// BenchmarkIngestBatchOverlap measures ingest with expired history and an overlap.
 //
 // Each iteration ingests the same new certificate in a rolled-back transaction.
-// Unrelated names keep the fixture selective, and vacuum makes history all-visible.
+// Targets include matching and opposite precertificate types. Unrelated names
+// keep the fixture selective, and vacuum makes history all-visible.
 // An untimed full-ingest EXPLAIN reports shared buffer accesses for each sample.
 // Run with -benchtime=50x -count=6 when comparing SQL revisions.
 func BenchmarkIngestBatchOverlap(b *testing.B) {
@@ -55,21 +56,25 @@ VALUES ('2020-01-01', '2025-01-01', '2020-01-01', 'overlap.example.com', $1, $2,
 		b.Fatal(err)
 	}
 
-	for i, commonName := range []string{"expired.example.com", "overlap.example.com"} {
-		row := ingestRowWithSHA(streamID, int64(50002+i), commonName,
+	for i, tc := range []struct {
+		name, commonName string
+		precert          bool
+	}{
+		{"expired_history", "expired.example.com", false},
+		{"ordinary_overlap", "overlap.example.com", false},
+		{"opposite_precert_history", "expired.example.com", true},
+	} {
+		row := ingestRowWithSHA(streamID, int64(50002+i), tc.commonName,
 			time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC), fmt.Sprintf("%064x", 50002+i))
-		row["commonname"] = commonName
+		row["commonname"] = tc.commonName
+		row["precert"] = tc.precert
 		row["notbefore"] = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 		row["notafter"] = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		payload, err := json.Marshal([]map[string]any{row})
 		if err != nil {
 			b.Fatal(err)
 		}
-		name := "expired_history"
-		if i == 1 {
-			name = "ordinary_overlap"
-		}
-		b.Run(name, func(b *testing.B) {
+		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
