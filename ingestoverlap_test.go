@@ -24,6 +24,7 @@ func TestIngestBatch_SinceOverlapBoundaries(t *testing.T) {
 		{"no overlap", []cert{{2020, 2021, false}}, cert{2022, 2023, false}, 2022, 0, false},
 		{"older long-lived overlap", []cert{{2020, 2025, false}, {2021, 2022, false}}, cert{2023, 2026, false}, 2020, 0, false},
 		{"opposite precert only", []cert{{2020, 2025, false}}, cert{2022, 2026, true}, 2022, 0, false},
+		{"newer opposite precert", []cert{{2020, 2025, false}, {2021, 2026, true}}, cert{2022, 2027, false}, 2020, 0, false},
 		{"inclusive expiry", []cert{{2020, 2022, false}}, cert{2022, 2026, false}, 2020, 0, false},
 		{"strict notbefore", []cert{{2022, 2025, false}}, cert{2022, 2026, false}, 2022, 2020, false},
 		{"empty common name", []cert{{2020, 2025, false}}, cert{2022, 2026, false}, 2022, 0, true},

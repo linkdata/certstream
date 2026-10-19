@@ -187,17 +187,7 @@ WITH certs_with_since AS (
         t.notafter,
         CASE
             WHEN t.commonname = '' THEN t.notbefore
-            -- The guard omits precert so the existing index covers every column.
-            -- No overlap of either type means the precert lookup can be skipped.
-            WHEN EXISTS (
-                SELECT 1
-                FROM CERTDB_cert c
-                WHERE c.subject = t.sub_id
-                  AND c.issuer = t.iss_id
-                  AND c.commonname = t.commonname
-                  AND c.notafter >= t.notbefore
-                  AND c.notbefore < t.notbefore
-            ) THEN COALESCE((
+            ELSE COALESCE((
                 SELECT c.since
                 FROM CERTDB_cert c
                 WHERE c.subject = t.sub_id
@@ -209,7 +199,6 @@ WITH certs_with_since AS (
                 ORDER BY c.notbefore DESC
                 LIMIT 1
             ), t.notbefore)
-            ELSE t.notbefore
         END AS since,
         t.commonname,
         t.sub_id AS subject,
