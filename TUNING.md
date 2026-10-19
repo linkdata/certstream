@@ -35,11 +35,15 @@ Two things worth knowing about what that does:
 
 - Deletion walks the certificate heap in storage order. Each statement selects
   from at most 256 adjacent pages and deletes up to [CleanBatchSize] eligible
-  certificates, with the existing cascades. An in-memory cursor resumes on the
-  next call; later sweeps revisit skipped locks and backfilled rows. Cleanup
-  pauses for [CleanResetInterval] after a completed sweep. Each sweep examines
-  the whole heap, even when few certificates are eligible, so measure its I/O
-  alongside ingest.
+  certificates, with the existing cascades. A cursor resumes on the next call.
+  The small `CERTDB_cert_cleanup` table checkpoints progress once per minute
+  and at sweep completion, so restarts repeat only uncheckpointed work. Without
+  a checkpoint, cleanup starts at the beginning. A checkpoint from a different
+  physical heap is discarded. Later sweeps revisit skipped locks, backfilled
+  rows, and certificates that become eligible behind the cursor. Cleanup pauses
+  for [CleanResetInterval] after a completed sweep; the pause also survives
+  restarts. Each sweep examines the whole heap, even when few certificates are
+  eligible, so measure its I/O alongside ingest.
 - `VACUUM` marks space reusable inside the existing files; it does **not**
   return it to the filesystem. A tuned database stops *growing*; it does not
   shrink. Only `DROP` gives disk back for free; `REINDEX`, `VACUUM FULL` and

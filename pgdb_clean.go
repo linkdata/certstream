@@ -42,11 +42,18 @@ FROM CERTDB_deleted_cert;`
 // are crossed in separate transactions until a deletion or the end of the sweep.
 // A sweep examines the whole heap, so sparse cleanup can still take a long time.
 //
-// Calls on the same PgDB serialize and resume the current sweep. Each sweep
-// covers the heap size at its start; inserts behind its position, skipped locks
-// and table rewrites are covered by later sweeps. After a sweep completes,
-// calls return zero until [CleanResetInterval] has passed. A new PgDB starts a
-// new sweep. A nil PgDB or a batchSize below one deletes nothing.
+// Calls on the same PgDB serialize and resume the current sweep. Progress is
+// checkpointed after the first processed range, once per minute thereafter, and
+// on sweep completion. A new PgDB resumes the checkpoint; uncheckpointed work
+// can be repeated. A checkpoint from a different physical heap is discarded.
+// Concurrent PgDBs may repeat work through their shared checkpoint.
+//
+// Each sweep covers the heap size at its start. Later sweeps revisit certificates
+// that expire, are inserted or move behind the cursor, as well as skipped locks
+// and table rewrites. After a sweep completes, calls return zero until
+// [CleanResetInterval] has passed. If saving a checkpoint fails, rowsDeleted can
+// be positive with a non-nil error because deletion has already committed.
+// A nil PgDB or a batchSize below one deletes nothing.
 func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
 		cdb.beginCall()
@@ -54,14 +61,25 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
 		if batchSize > 0 {
 			cdb.cleanMu.Lock()
 			defer cdb.cleanMu.Unlock()
-			if cdb.cleanEnd == 0 {
-				if !cdb.cleanResetAt.IsZero() && time.Since(cdb.cleanResetAt) < CleanResetInterval {
+			if !cdb.cleanLoaded {
+				if err = cdb.loadCleanState(ctx); err != nil {
 					return
 				}
-				if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT pg_relation_size('CERTDB_cert'::regclass) / current_setting('block_size')::bigint;`)).Scan(&cdb.cleanEnd); err != nil {
+			}
+			if cdb.cleanEnd == 0 {
+				if !cdb.cleanResetAt.IsZero() && time.Since(cdb.cleanResetAt) < CleanResetInterval {
+					if cdb.cleanSavedAt.Before(cdb.cleanResetAt) {
+						err = cdb.saveCleanState(ctx, true)
+					}
+					return
+				}
+				if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT pg_relation_filenode('CERTDB_cert'::regclass),
+pg_relation_size('CERTDB_cert'::regclass) / current_setting('block_size')::bigint;`)).Scan(&cdb.cleanFile, &cdb.cleanEnd); err != nil {
 					return
 				}
 				cdb.cleanFrom = pgtype.TID{Valid: true}
+				cdb.cleanResetAt = time.Time{}
+				cdb.cleanSavedAt = time.Time{}
 			}
 			for cdb.cleanEnd > 0 && ctx.Err() == nil {
 				end := uint32(min(uint64(cdb.cleanEnd), uint64(cdb.cleanFrom.BlockNumber)+cleanPagesPerBatch))
@@ -82,13 +100,61 @@ func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batch
 					cdb.cleanEnd = 0
 					cdb.cleanResetAt = time.Now()
 				}
+				if err = cdb.saveCleanState(ctx, cdb.cleanEnd == 0); err != nil {
+					return
+				}
 				if rowsDeleted > 0 {
 					return
 				}
 			}
-			if err = ctx.Err(); err == nil && cdb.cleanEnd == 0 {
+			if err = ctx.Err(); err == nil && cdb.cleanEnd == 0 && cdb.cleanResetAt.IsZero() {
 				cdb.cleanResetAt = time.Now()
+				err = cdb.saveCleanState(ctx, true)
 			}
+		}
+	}
+	return
+}
+
+func (cdb *PgDB) loadCleanState(ctx context.Context) (err error) {
+	var blocks, savedFile uint32
+	var completed pgtype.Timestamptz
+	if err = cdb.QueryRow(ctx, cdb.Pfx(`SELECT pg_relation_filenode('CERTDB_cert'::regclass),
+       pg_relation_size('CERTDB_cert'::regclass) / current_setting('block_size')::bigint,
+       COALESCE(s.relfilenode, 0), COALESCE(s.cursor_tid, '(0,0)'::tid),
+       COALESCE(s.end_block, 0), s.completed_at
+FROM (SELECT 1) AS singleton
+LEFT JOIN CERTDB_cert_cleanup s ON s.id = 1;`)).Scan(&cdb.cleanFile, &blocks, &savedFile, &cdb.cleanFrom, &cdb.cleanEnd, &completed); err == nil {
+		if savedFile == cdb.cleanFile {
+			cdb.cleanEnd = min(cdb.cleanEnd, blocks)
+			if completed.Valid {
+				cdb.cleanResetAt = completed.Time
+				cdb.cleanSavedAt = completed.Time
+			}
+		} else {
+			cdb.cleanFrom = pgtype.TID{Valid: true}
+			cdb.cleanEnd = blocks
+		}
+		cdb.cleanLoaded = true
+	}
+	return
+}
+
+func (cdb *PgDB) saveCleanState(ctx context.Context, force bool) (err error) {
+	if force || cdb.cleanSavedAt.IsZero() || time.Since(cdb.cleanSavedAt) >= time.Minute {
+		var completed *time.Time
+		if !cdb.cleanResetAt.IsZero() {
+			completed = &cdb.cleanResetAt
+		}
+		// Keep the generation captured with the sweep. A rewrite makes this
+		// checkpoint stale, so reopening the database starts at the new heap.
+		if _, err = cdb.Exec(ctx, cdb.Pfx(`INSERT INTO CERTDB_cert_cleanup
+    (id, relfilenode, cursor_tid, end_block, completed_at)
+VALUES (1, $1, $2, $3, $4)
+ON CONFLICT (id) DO UPDATE SET relfilenode = EXCLUDED.relfilenode,
+    cursor_tid = EXCLUDED.cursor_tid, end_block = EXCLUDED.end_block,
+    completed_at = EXCLUDED.completed_at;`), cdb.cleanFile, cdb.cleanFrom, cdb.cleanEnd, completed); err == nil {
+			cdb.cleanSavedAt = time.Now()
 		}
 	}
 	return

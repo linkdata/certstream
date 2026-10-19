@@ -52,6 +52,16 @@ IF to_regclass('CERTDB_cert') IS NULL THEN
     INCLUDE (notafter, since); -- used when computing 'since'
 END IF;
 
+IF to_regclass('CERTDB_cert_cleanup') IS NULL THEN
+  CREATE TABLE IF NOT EXISTS CERTDB_cert_cleanup (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    relfilenode OID NOT NULL,
+    cursor_tid TID NOT NULL,
+    end_block BIGINT NOT NULL,
+    completed_at TIMESTAMPTZ
+  );
+END IF;
+
 IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_entry (
     seen TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
