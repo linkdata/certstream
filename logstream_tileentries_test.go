@@ -345,6 +345,36 @@ func TestGetTileEntriesSingleGapReadsOneTile(t *testing.T) {
 	}
 }
 
+func TestGetTileEntriesCanceledGapDoesNotLeaveBackfill(t *testing.T) {
+	ls, _ := newTileTestStream(t, 3)
+	ls.backoff = newLogStreamBackoff(time.Second, time.Second, 2, false)
+	ls.backoff.backoff()
+	ls.Backfill.Store(7) // An independent reverse backfill can share this counter.
+	ls.Backfill.Add(3)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	next, wanted := ls.getGapEntries(ctx, 0, 2, true,
+		func(context.Context, time.Time, *LogEntry) bool { return true }, &ls.Backfill)
+	if next != 0 || wanted || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("timed-out gap: next=%d wanted=%v error=%v", next, wanted, ctx.Err())
+	}
+	if got := ls.Backfill.Load(); got != 7 {
+		t.Fatalf("backfill after timeout=%d, want 7", got)
+	}
+
+	ls.backoff = newLogStreamBackoff(time.Millisecond, time.Millisecond, 2, false)
+	ls.Backfill.Add(3)
+	next, wanted = ls.getGapEntries(t.Context(), 0, 2, true,
+		func(context.Context, time.Time, *LogEntry) bool { return true }, &ls.Backfill)
+	if next != 3 || !wanted {
+		t.Fatalf("retried gap: next=%d wanted=%v", next, wanted)
+	}
+	if got := ls.Backfill.Load(); got != 7 {
+		t.Fatalf("backfill after retry=%d, want 7", got)
+	}
+}
+
 func TestGetTileEntriesRangesOnPublishedTree(t *testing.T) {
 	tests := []struct {
 		name      string

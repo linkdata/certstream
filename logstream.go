@@ -39,13 +39,14 @@ type rawEntriesClient interface {
 	GetRawEntries(ctx context.Context, start, end int64) (*ct.GetEntriesResponse, error)
 }
 
+// LogStream tracks one CT log's head, entries, and historical fetches.
 type LogStream struct {
 	*LogOperator
 	Count      atomic.Int64 // number of certificates sent to the channel
 	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
 	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
-	Backfill   atomic.Int64 // atomic: number of remaining entries to backfill until we reach head
+	Backfill   atomic.Int64 // atomic: historical gap and reverse-backfill entries left to fetch
 	Logger     *slog.Logger // toggled by LogToggle
 	Id         int32        // database ID, if available
 	gapCh      chan gap     // protected by LogOperator.mu

@@ -115,8 +115,10 @@ func (ls *LogStream) getTileEntriesWithClient(ctx context.Context, client *sunli
 			return
 		})
 		if entryErr != nil {
-			if gapcounter != nil && ctx.Err() == nil {
-				_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", next, "end", end)
+			if gapcounter != nil {
+				if ctx.Err() == nil {
+					_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", next, "end", end)
+				}
 				gapcounter.Add(next - (end + 1))
 			}
 			break

@@ -8,6 +8,8 @@ Small library wrapping github.com/google/certificate-transparency-go and github.
 
 PostgreSQL is optional. Leave `Config.PgAddr` empty for live streaming without persistence.
 Configure a database for certificate storage and backfill.
+Streams with database and tail fetching enabled scan stored entry gaps at startup
+and daily. Each scan has a one-hour deadline.
 
 With `Config.Logger` set, gap discoveries are summarized per CT log every minute.
 Summaries include the number of gaps and missing entries found during that interval,

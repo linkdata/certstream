@@ -65,12 +65,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 				if ctx.Err() == nil {
 					ls.Backfill.Add((g.end - g.start) + 1)
 					next, _ := fetchFn(ctx, g.start, g.end, true, ls.sendEntry, &ls.Backfill)
-					if allGapsFilled {
-						if err := cdb.backfillSetGapStartIndex(ctx, ls, next); err != nil {
-							scanErr = errors.Join(scanErr, err)
-							allGapsFilled = false
-						}
-					}
+					// Fetched entries enter a queue; only a later DB scan proves they were stored.
 					if next < g.end+1 {
 						allGapsFilled = false
 					}
@@ -89,9 +84,6 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 			}
 			if lastgap.end != 0 {
 				fillGap(lastgap)
-			}
-			if lastindex > 0 && allGapsFilled {
-				scanErr = errors.Join(scanErr, cdb.backfillSetGapStartIndex(ctx, ls, lastindex))
 			}
 			if !allGapsFilled && scanErr == nil && ctx.Err() == nil {
 				scanErr = errGapIncomplete
@@ -149,35 +141,15 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 	}
 }
 
-// return MIN(logindex) for the stream
+// Return the minimum stored log index, or -1 when the stream has no entries.
 func (cdb *PgDB) backfillMinIndex(ctx context.Context, ls *LogStream) (minIndex int64, err error) {
+	minIndex = -1
 	var minIndexRow sql.NullInt64
 	row := cdb.QueryRow(ctx, cdb.stmtSelectMinIdx, ls.Id)
 	if err = cdb.LogError(row.Scan(&minIndexRow), "Backfill/MinIndex", "url", ls.URL()); err == nil {
 		if minIndexRow.Valid {
 			minIndex = minIndexRow.Int64
 			ls.seeIndex(minIndex)
-		}
-	}
-	return
-}
-
-func (cdb *PgDB) backfillGetGapStartIndex(ctx context.Context, ls *LogStream) (gapStartIndex int64, err error) {
-	gapStartIndex = -1
-	if cdb != nil && ls != nil {
-		var storedIndex int64
-		row := cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id)
-		if err = cdb.LogError(row.Scan(&storedIndex), "Backfill/StoredIndex", "url", ls.URL()); err == nil {
-			if storedIndex > 0 {
-				gapStartIndex = storedIndex
-			} else {
-				gapStartIndex, err = cdb.backfillMinIndex(ctx, ls)
-			}
-			if err == nil {
-				if lastIndex := ls.LastIndex.Load(); lastIndex >= 0 && gapStartIndex > lastIndex {
-					gapStartIndex = lastIndex
-				}
-			}
 		}
 	}
 	return
@@ -223,15 +195,44 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 			return
 		}
 	}
+	if minIndex < 0 {
+		// An empty database still needs the entries preceding the known head.
+		minIndex = ls.LastIndex.Load() + 1
+	}
 	if err == nil && minIndex > 0 {
 		cdb.LogInfo("backlog start", "url", ls.URL(), "stream", ls.Id, "logindex", minIndex)
 		ls.Backfill.Add(minIndex)
 		for minIndex > 0 && ctx.Err() == nil {
 			start := reverseBackfillStart(minIndex, ls.isTiled())
 			stop := minIndex - 1
+			next := start
+			wanted := false
+			retryDelay := time.Second
+			for next <= stop && ctx.Err() == nil {
+				fetched, windowWanted := ls.getEntries(ctx, next, stop, true, ls.sendEntry, &ls.Backfill)
+				wanted = wanted || windowWanted
+				if fetched <= stop {
+					if ctx.Err() != nil {
+						return
+					}
+					// Fetchers remove the unfetched remainder from Backfill on error.
+					ls.Backfill.Add(stop + 1 - fetched)
+					if fetched > next {
+						retryDelay = time.Second
+					} else {
+						retryDelay = min(retryDelay*2, 30*time.Second)
+					}
+					if sleep(ctx, retryDelay) != nil {
+						return
+					}
+				}
+				next = fetched
+			}
+			if ctx.Err() != nil {
+				return
+			}
 			minIndex = start
-			var wanted bool
-			if _, wanted = ls.getEntries(ctx, start, stop, true, ls.sendEntry, &ls.Backfill); !wanted {
+			if !wanted {
 				ls.addError(ls, errLogEntriesTooOld{MaxAge: cdb.PgMaxAge})
 				ls.Backfill.Add(-minIndex)
 				break

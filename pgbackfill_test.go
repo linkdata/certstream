@@ -117,14 +117,14 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
 		t.Fatal(err)
 	}
-	check([]gap{{2, 2}}, 3)
+	check([]gap{{2, 2}}, 1)
 	if err := insertEntries(ctx, db, streamID, []int64{5}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
 		t.Fatal(err)
 	}
-	check([]gap{{2, 2}, {4, 4}}, 5)
+	check([]gap{{2, 2}, {4, 4}}, 1)
 
 	if err := insertEntries(ctx, db, streamID, []int64{7}); err != nil {
 		t.Fatal(err)
@@ -134,8 +134,12 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err == nil {
 		t.Fatal("invalid gap query did not fail")
 	}
-	check([]gap{{2, 2}, {4, 4}}, 5)
+	check([]gap{{2, 2}, {4, 4}}, 1)
 	db.stmtFindGap = findGap
+	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
+		t.Fatal(err)
+	}
+	check([]gap{{2, 2}, {4, 4}, {6, 6}}, 1)
 	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
 		t.Fatal(err)
 	}
@@ -363,57 +367,7 @@ func TestPgDB_ScanAndBackfillGapsCanceledFetch(t *testing.T) {
 	}
 }
 
-func TestPgDB_BackfillStartIndex_UsesStoredIndex(t *testing.T) {
-	t.Parallel()
-
-	ctx, db, cs := setupSelectGapsDB(t)
-	if db != nil && cs != nil {
-		var operatorID int32
-		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
-			"op", "op@example.com",
-		).Scan(&operatorID); err != nil {
-			t.Fatalf("insert operator failed: %v", err)
-		} else {
-			url := "https://example.com/log-backfill"
-			var streamID int32
-			if err = insertStream(ctx, db, url, operatorID, &streamID); err != nil {
-				t.Fatalf("insert stream failed: %v", err)
-			} else if err = insertEntries(ctx, db, streamID, []int64{5, 6, 7}); err != nil {
-				t.Fatalf("insert entries failed: %v", err)
-			} else {
-				if _, err = db.Exec(ctx, db.Pfx(UpdateBackfillIndex),
-					int64(42), streamID,
-				); err != nil {
-					t.Fatalf("update backfill_logindex failed: %v", err)
-				} else {
-					ls := &LogStream{Id: streamID}
-					ls.LastIndex.Store(100)
-					var minIndex int64
-					var stored bool
-					if minIndex, err = db.backfillGetGapStartIndex(ctx, ls); err != nil {
-						t.Fatalf("backfillStartIndex failed: %v", err)
-					} else if minIndex != 42 {
-						t.Fatalf("minIndex = %d, want 42", minIndex)
-					} else {
-						if _, err = db.Exec(ctx, db.Pfx(`UPDATE CERTDB_stream SET backfill_logindex = 0 WHERE id = $1;`),
-							streamID,
-						); err != nil {
-							t.Fatalf("clear backfill_logindex failed: %v", err)
-						} else if minIndex, err = db.backfillGetGapStartIndex(ctx, ls); err != nil {
-							t.Fatalf("backfillStartIndex without stored failed: %v", err)
-						} else if stored {
-							t.Fatalf("stored = true, want false")
-						} else if minIndex != 5 {
-							t.Fatalf("minIndex = %d, want 5", minIndex)
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func TestPgDB_BackfillGapsUpdatesBackfillIndex(t *testing.T) {
+func TestPgDB_BackfillGapsLeavesCursorUntilStored(t *testing.T) {
 	t.Parallel()
 
 	ctx, db, cs := setupSelectGapsDB(t)
@@ -457,8 +411,8 @@ func TestPgDB_BackfillGapsUpdatesBackfillIndex(t *testing.T) {
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
-				} else if backfillIndex != g.end+1 {
-					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, g.end+1)
+				} else if backfillIndex != 0 {
+					t.Fatalf("backfill_logindex = %d, want 0", backfillIndex)
 				}
 			}
 		}
@@ -510,8 +464,8 @@ func TestPgDB_BackfillGapsDoesNotAdvanceOnIncompleteFetch(t *testing.T) {
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
-				} else if backfillIndex != 4 {
-					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, 4)
+				} else if backfillIndex != 0 {
+					t.Fatalf("backfill_logindex = %d, want 0", backfillIndex)
 				}
 			}
 		}
@@ -567,8 +521,8 @@ func TestPgDB_BackfillGapsStopsAdvancingAfterIncompleteGap(t *testing.T) {
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
-				} else if backfillIndex != 4 {
-					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, 4)
+				} else if backfillIndex != 0 {
+					t.Fatalf("backfill_logindex = %d, want 0", backfillIndex)
 				}
 			}
 		}
