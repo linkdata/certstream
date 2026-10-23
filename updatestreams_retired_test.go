@@ -122,6 +122,21 @@ func TestRetiredRefreshDrainsWorkersAndRetries(t *testing.T) {
 	if len(calls) != 1 || len(calls[0]) != 1 || calls[0][0] != old.Id {
 		t.Fatalf("retired callback = %v, want stream %d", calls, old.Id)
 	}
+	checkStoredState := func(want loglist3.LogStatus) {
+		t.Helper()
+		var data string
+		if err := db.QueryRow(ctx, db.Pfx(`SELECT json FROM CERTDB_stream WHERE id = $1`), old.Id).Scan(&data); err != nil {
+			t.Fatal(err)
+		}
+		var stored loglist3.Log
+		if err := json.Unmarshal([]byte(data), &stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored.State.LogStatus() != want || stored.URL != retiredLog.URL || stored.Description != retiredLog.Description {
+			t.Fatalf("stored stream state = %s, url = %q, description = %q; want %s and unchanged metadata", stored.State.LogStatus(), stored.URL, stored.Description, want)
+		}
+	}
+	checkStoredState(loglist3.RetiredLogStatus)
 	select {
 	case <-old.done:
 	default:
@@ -140,6 +155,7 @@ func TestRetiredRefreshDrainsWorkersAndRetries(t *testing.T) {
 	if len(calls) != 2 || calls[1][0] != old.Id {
 		t.Fatalf("absent retired stream was not retried: %v", calls)
 	}
+	checkStoredState(loglist3.RetiredLogStatus)
 	retiredLog.State = &loglist3.LogStates{ReadOnly: &loglist3.ReadOnlyLogState{LogState: loglist3.LogState{Timestamp: time.Now()}}}
 	list.Operators = []*loglist3.Operator{{Name: "Test", Email: []string{"test@example.com"}, Logs: []*loglist3.Log{&retiredLog}}}
 	setList()
@@ -147,26 +163,9 @@ func TestRetiredRefreshDrainsWorkersAndRetries(t *testing.T) {
 	if err := cs.updateStreams(ctx, &streamWG); err != nil {
 		t.Fatal(err)
 	}
-	var marked bool
-	if err := db.QueryRow(ctx, db.Pfx(`SELECT retired FROM CERTDB_stream WHERE id = $1`), old.Id).Scan(&marked); err != nil || marked {
-		t.Fatalf("read-only stream retired marker = %t, err = %v", marked, err)
-	}
+	checkStoredState(loglist3.ReadOnlyLogStatus)
 	if len(calls) != 2 {
 		t.Fatalf("read-only transition invoked cleanup: %v", calls)
-	}
-}
-
-func TestRetiredColumnMigration(t *testing.T) {
-	ctx, db, _ := setupSelectGapsDB(t)
-	if _, err := db.Exec(ctx, db.Pfx(`ALTER TABLE CERTDB_stream DROP COLUMN retired`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureSchema(ctx, db.Pool, db.Pfx); err != nil {
-		t.Fatal(err)
-	}
-	var exists bool
-	if err := db.QueryRow(ctx, db.Pfx(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = 'CERTDB_stream' AND column_name = 'retired')`)).Scan(&exists); err != nil || !exists {
-		t.Fatalf("retired column restored = %t, err = %v", exists, err)
 	}
 }
 

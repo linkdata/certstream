@@ -143,6 +143,9 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	var err error
 	var wg2 sync.WaitGroup
 	defer func() {
+		if ls.cancel != nil {
+			ls.cancel()
+		}
 		if !errors.Is(err, context.Canceled) {
 			ls.addError(ls, err)
 		}

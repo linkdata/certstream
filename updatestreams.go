@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -64,41 +65,41 @@ func (cs *CertStream) updateStreams(ctx context.Context, wg *sync.WaitGroup) (er
 	if ctx.Err() == nil {
 		var logList *loglist3.LogList
 		if logList, err = getLogList(ctx, cs.HeadClient, loglist3.AllLogListURL); err == nil {
-			retired := make(map[string]bool)
-			nonRetired := make(map[string]bool)
+			states := make(map[string]*loglist3.LogStates)
+			addState := func(url string, state *loglist3.LogStates) bool {
+				status := state.LogStatus()
+				if status == loglist3.RetiredLogStatus {
+					if prior, ok := states[url]; ok && prior.LogStatus() != loglist3.RetiredLogStatus {
+						return false
+					}
+				}
+				states[url] = state
+				return status == loglist3.UsableLogStatus
+			}
 			for _, op := range logList.Operators {
 				for _, log := range op.Logs {
-					switch log.State.LogStatus() {
-					case loglist3.UsableLogStatus:
-						nonRetired[log.URL] = true
+					if addState(log.URL, log.State) {
 						if e := cs.ensureOperatorAndLog(ctx, op, log, wg); e != nil {
 							err = errors.Join(err, e)
 						}
-					case loglist3.RetiredLogStatus:
-						retired[log.URL] = true
-					default:
-						nonRetired[log.URL] = true
 					}
 				}
 				for _, log := range op.TiledLogs {
-					switch log.State.LogStatus() {
-					case loglist3.UsableLogStatus:
-						nonRetired[log.MonitoringURL] = true
+					if addState(log.MonitoringURL, log.State) {
 						if e := cs.ensureOperatorAndTiledLog(ctx, op, log, wg); e != nil {
 							err = errors.Join(err, e)
 						}
-					case loglist3.RetiredLogStatus:
-						retired[log.MonitoringURL] = true
-					default:
-						nonRetired[log.MonitoringURL] = true
 					}
 				}
 			}
 			if ctx.Err() == nil {
-				for url := range nonRetired {
-					delete(retired, url)
+				retired := make(map[string]bool)
+				for url, state := range states {
+					if state.LogStatus() == loglist3.RetiredLogStatus {
+						retired[url] = true
+					}
 				}
-				_ = cs.LogError(cs.retireStreams(ctx, retired, nonRetired), "retireStreams")
+				_ = cs.LogError(cs.retireStreams(ctx, retired, states), "retireStreams")
 			}
 		}
 
@@ -131,37 +132,44 @@ func (cs *CertStream) removeStream(ls *LogStream) {
 	}
 }
 
-func (cs *CertStream) retireStreams(ctx context.Context, retired, nonRetired map[string]bool) (err error) {
+func (cs *CertStream) retireStreams(ctx context.Context, retired map[string]bool, states map[string]*loglist3.LogStates) (err error) {
 	db := cs.DB()
 	var ids []int32
 	if db != nil {
-		nonRetiredURLs := make([]string, 0, len(nonRetired))
-		for url := range nonRetired {
-			nonRetiredURLs = append(nonRetiredURLs, url)
+		urls := make([]string, 0, len(states))
+		values := make([]string, 0, len(states))
+		for url, state := range states {
+			var value []byte
+			if value, err = json.Marshal(state); err != nil {
+				break
+			}
+			urls = append(urls, url)
+			values = append(values, string(value))
 		}
-		retiredURLs := make([]string, 0, len(retired))
-		for url := range retired {
-			retiredURLs = append(retiredURLs, url)
+		if err == nil && len(urls) > 0 {
+			_, err = db.Exec(ctx, db.Pfx(`UPDATE CERTDB_stream AS s
+SET json = jsonb_set(s.json::jsonb, '{state}', v.state::jsonb)::text
+FROM unnest($1::text[], $2::text[]) AS v(url, state)
+WHERE s.url = v.url
+  AND COALESCE((s.json::jsonb->'state') ? 'retired', FALSE) <> (v.state::jsonb ? 'retired')`), urls, values)
 		}
-		if _, err = db.Exec(ctx, db.Pfx(`UPDATE CERTDB_stream SET retired = FALSE WHERE retired AND url = ANY($1)`), nonRetiredURLs); err == nil {
-			if _, err = db.Exec(ctx, db.Pfx(`UPDATE CERTDB_stream SET retired = TRUE WHERE NOT retired AND url = ANY($1)`), retiredURLs); err == nil {
-				rows, e := db.Query(ctx, db.Pfx(`SELECT id, url FROM CERTDB_stream WHERE retired ORDER BY id`))
-				err = e
-				if err == nil {
-					for rows.Next() {
-						var id int32
-						var url string
-						if err = rows.Scan(&id, &url); err != nil {
-							break
-						}
-						ids = append(ids, id)
-						retired[url] = true
+		if err == nil {
+			rows, e := db.Query(ctx, db.Pfx(`SELECT id, url FROM CERTDB_stream WHERE (json::jsonb->'state') ? 'retired' ORDER BY id`))
+			err = e
+			if err == nil {
+				for rows.Next() {
+					var id int32
+					var url string
+					if err = rows.Scan(&id, &url); err != nil {
+						break
 					}
-					if err == nil {
-						err = rows.Err()
-					}
-					rows.Close()
+					ids = append(ids, id)
+					retired[url] = true
 				}
+				if err == nil {
+					err = rows.Err()
+				}
+				rows.Close()
 			}
 		}
 	}

@@ -20,9 +20,10 @@ up to 10,000 of those trailing indexes are fetched again.
 
 When `Config.OnRetiredStreams` is set, each successfully fetched CT log list
 passes database IDs of explicitly retired streams to the callback when any remain,
-after their readers stop and queued database writes finish. Retired IDs remain
-eligible for later refreshes until their rows are removed or the list changes
-their status.
+after their readers stop and queued database writes finish. Retired status is
+recorded in the existing stream JSON; an explicitly listed non-retired status
+clears it. Retired IDs remain eligible for later refreshes until their rows
+are removed or the list changes their status.
 
 With `Config.Logger` set, gap discoveries are summarized per CT log every minute.
 Summaries include the number of gaps and missing entries found during that interval,
