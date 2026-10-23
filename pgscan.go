@@ -58,17 +58,15 @@ func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan ga
 	if gaps, err = cdb.storedGaps(ctx, ls.Id, start, end); err != nil {
 		return
 	}
-	if cursor != nil {
-		verified := end
-		if len(gaps) > 0 {
-			verified = gaps[0].start
+	verified := end
+	if len(gaps) > 0 {
+		verified = gaps[0].start
+	}
+	if verified > *cursor {
+		if err = cdb.backfillSetGapStartIndex(ctx, ls, verified); err != nil {
+			return
 		}
-		if verified > *cursor {
-			if err = cdb.backfillSetGapStartIndex(ctx, ls, verified); err != nil {
-				return
-			}
-			*cursor = verified
-		}
+		*cursor = verified
 	}
 	for _, g := range gaps {
 		found = true

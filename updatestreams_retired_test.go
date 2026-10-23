@@ -152,19 +152,29 @@ func TestRetiredRefreshDrainsWorkersAndRetries(t *testing.T) {
 	if err := cs.updateStreams(ctx, &streamWG); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 || calls[1][0] != old.Id {
+	if len(calls) != 2 || len(calls[1]) != 1 || calls[1][0] != old.Id {
 		t.Fatalf("absent retired stream was not retried: %v", calls)
 	}
 	checkStoredState(loglist3.RetiredLogStatus)
-	retiredLog.State = &loglist3.LogStates{ReadOnly: &loglist3.ReadOnlyLogState{LogState: loglist3.LogState{Timestamp: time.Now()}}}
+	retiredLog.State = nil
 	list.Operators = []*loglist3.Operator{{Name: "Test", Email: []string{"test@example.com"}, Logs: []*loglist3.Log{&retiredLog}}}
 	setList()
 	streamWG.Add(1)
 	if err := cs.updateStreams(ctx, &streamWG); err != nil {
 		t.Fatal(err)
 	}
+	if len(calls) != 3 || len(calls[2]) != 1 || calls[2][0] != old.Id {
+		t.Fatalf("undefined state erased retired retry: %v", calls)
+	}
+	checkStoredState(loglist3.RetiredLogStatus)
+	retiredLog.State = &loglist3.LogStates{ReadOnly: &loglist3.ReadOnlyLogState{LogState: loglist3.LogState{Timestamp: time.Now()}}}
+	setList()
+	streamWG.Add(1)
+	if err := cs.updateStreams(ctx, &streamWG); err != nil {
+		t.Fatal(err)
+	}
 	checkStoredState(loglist3.ReadOnlyLogStatus)
-	if len(calls) != 2 {
+	if len(calls) != 3 {
 		t.Fatalf("read-only transition invoked cleanup: %v", calls)
 	}
 }

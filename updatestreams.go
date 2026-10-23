@@ -68,6 +68,9 @@ func (cs *CertStream) updateStreams(ctx context.Context, wg *sync.WaitGroup) (er
 			states := make(map[string]*loglist3.LogStates)
 			addState := func(url string, state *loglist3.LogStates) bool {
 				status := state.LogStatus()
+				if status == loglist3.UndefinedLogStatus {
+					return false
+				}
 				if status == loglist3.RetiredLogStatus {
 					if prior, ok := states[url]; ok && prior.LogStatus() != loglist3.RetiredLogStatus {
 						return false

@@ -23,7 +23,7 @@ passes database IDs of explicitly retired streams to the callback when any remai
 after their readers stop and queued database writes finish. Retired status is
 recorded in the existing stream JSON; an explicitly listed non-retired status
 clears it. Retired IDs remain eligible for later refreshes until their rows
-are removed or the list changes their status.
+are removed or the list explicitly reports another status.
 
 With `Config.Logger` set, gap discoveries are summarized per CT log every minute.
 Summaries include the number of gaps and missing entries found during that interval,
