@@ -20,6 +20,7 @@ type CertStream struct {
 	LogToggle   atomic.Bool      // if true, log stream activity
 	headLogFile *os.File         // head HTTP request log
 	tailLogFile *os.File         // tail HTTP request log
+	lifecycleMu sync.Mutex       // serializes stream registration and removal
 	mu          sync.Mutex       // protects following
 	db          *PgDB
 	sendEntryCh chan *LogEntry
@@ -164,15 +165,18 @@ func (cs *CertStream) run(ctx context.Context, pwg *sync.WaitGroup) {
 		ticker.Stop()
 	}()
 
+	if db := cs.DB(); db != nil {
+		dbWG.Add(1)
+		go db.runWorkers(ctx, &dbWG)
+	}
+
 	streamWG.Add(1)
 	_ = cs.LogError(cs.updateStreams(ctx, &streamWG), "CertStream:run@1")
 
 	if db := cs.DB(); db != nil {
-		dbWG.Add(5)
-		go db.runWorkers(ctx, &dbWG)
+		dbWG.Add(3)
 		go db.estimator(ctx, &dbWG)
 		go db.reportGaps(ctx, &dbWG)
-		go db.selectAllGaps(ctx, &dbWG)
 		go func() {
 			defer dbWG.Done()
 			db.CleanCertificates(ctx)

@@ -4,8 +4,8 @@ import _ "embed"
 
 // CreateSchema contains SQL to create the CertDB schema.
 //
-// Existing tables remain unchanged. New databases receive B-tree domain indexes
-// and no trigram index.
+// Existing tables remain unchanged. New databases receive B-tree domain
+// indexes and no trigram index.
 //
 //go:embed assets/createschema.sql
 var CreateSchema string
@@ -37,8 +37,12 @@ const SelectMinIndexFrom = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry W
 
 const SelectFindGap = `SELECT start_gap, end_gap FROM CERTDB_findgap($1, $2, $3);`
 
+const selectGapWindow = `SELECT logindex FROM CERTDB_entry WHERE stream = $1 AND logindex BETWEEN $2 AND $3 ORDER BY logindex;` // #nosec G101 -- this is a SQL query, not a credential
+
 const SelectBackfillIndex = `SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`
 
 const UpdateBackfillIndex = `UPDATE CERTDB_stream SET backfill_logindex = $1 WHERE id = $2 AND backfill_logindex < $1;`
+
+const lowerBackfillIndex = `UPDATE CERTDB_stream SET backfill_logindex = $1 WHERE id = $2 AND backfill_logindex > $1;`
 
 const SelectEstimate = `SELECT reltuples AS estimate FROM pg_class WHERE relname = $1;`

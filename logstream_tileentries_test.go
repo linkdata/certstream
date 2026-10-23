@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -252,20 +253,27 @@ func newTileTestStream(t testing.TB, count int) (*LogStream, *tileRoundTripper) 
 			rt.partialHashTile[tile] = true
 		}
 	}
-	client, err := sunlight.NewClient(&sunlight.ClientConfig{
+	clientConfig := &sunlight.ClientConfig{
 		MonitoringPrefix: "https://example.test/",
 		PublicKey:        priv.Public(),
 		HTTPClient:       &http.Client{Transport: rt},
 		UserAgent:        "certstream-test (+https://example.test)",
-	})
+	}
+	client, err := sunlight.NewClient(clientConfig)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
+	}
+	gapClient, err := sunlight.NewClient(clientConfig)
+	if err != nil {
+		t.Fatalf("NewClient for gaps: %v", err)
 	}
 	ls := &LogStream{
 		LogOperator: &LogOperator{
 			CertStream: &CertStream{},
 		},
 		headTile: client,
+		tailTile: client,
+		gapTile:  gapClient,
 	}
 	return ls, rt
 }
@@ -281,6 +289,37 @@ func TestGetTileEntriesReturnsNextIndex(t *testing.T) {
 	}
 	if next != 3 {
 		t.Fatalf("next = %d, want 3", next)
+	}
+}
+
+func TestGetTileEntriesConcurrentGapAndReverse(t *testing.T) {
+	const count = 2 * sunlight.TileWidth
+	ls, _ := newTileTestStream(t, count)
+	if ls.gapTile == ls.tailTile {
+		t.Fatal("gap and reverse fetches share a sunlight client")
+	}
+
+	ctx := t.Context()
+	start := make(chan struct{})
+	var results [2]struct {
+		next   int64
+		wanted bool
+	}
+	var wg sync.WaitGroup
+	for i, fetch := range []rawEntriesFetcher{ls.getTileEntries, ls.getGapEntries} {
+		wg.Go(func() {
+			<-start
+			results[i].next, results[i].wanted = fetch(ctx, 0, count-1, true, func(context.Context, time.Time, *LogEntry) bool {
+				return true
+			}, nil)
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i, result := range results {
+		if result.next != count || !result.wanted {
+			t.Fatalf("fetch %d: next = %d, wanted = %t", i, result.next, result.wanted)
+		}
 	}
 }
 
@@ -303,6 +342,36 @@ func TestGetTileEntriesSingleGapReadsOneTile(t *testing.T) {
 	}
 	if got := transport.dataTileCalls.Load(); got != 1 {
 		t.Fatalf("data tile requests=%d, want 1", got)
+	}
+}
+
+func TestGetTileEntriesCanceledGapDoesNotLeaveBackfill(t *testing.T) {
+	ls, _ := newTileTestStream(t, 3)
+	ls.backoff = newLogStreamBackoff(time.Second, time.Second, 2, false)
+	ls.backoff.backoff()
+	ls.Backfill.Store(7) // An independent reverse backfill can share this counter.
+	ls.Backfill.Add(3)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	next, wanted := ls.getGapEntries(ctx, 0, 2, true,
+		func(context.Context, time.Time, *LogEntry) bool { return true }, &ls.Backfill)
+	if next != 0 || wanted || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("timed-out gap: next=%d wanted=%v error=%v", next, wanted, ctx.Err())
+	}
+	if got := ls.Backfill.Load(); got != 7 {
+		t.Fatalf("backfill after timeout=%d, want 7", got)
+	}
+
+	ls.backoff = newLogStreamBackoff(time.Millisecond, time.Millisecond, 2, false)
+	ls.Backfill.Add(3)
+	next, wanted = ls.getGapEntries(t.Context(), 0, 2, true,
+		func(context.Context, time.Time, *LogEntry) bool { return true }, &ls.Backfill)
+	if next != 3 || !wanted {
+		t.Fatalf("retried gap: next=%d wanted=%v", next, wanted)
+	}
+	if got := ls.Backfill.Load(); got != 7 {
+		t.Fatalf("backfill after retry=%d, want 7", got)
 	}
 }
 

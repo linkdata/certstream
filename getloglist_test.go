@@ -1,10 +1,31 @@
 package certstream
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+type logListResponseBody struct {
+	io.Reader
+	closed bool
+}
+
+func (body *logListResponseBody) Close() error {
+	body.closed = true
+	return nil
+}
+
+type logListResponseTransport struct {
+	status int
+	body   *logListResponseBody
+}
+
+func (transport logListResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: transport.status, Body: transport.body, Header: make(http.Header), Request: request}, nil
+}
 
 var sampleLogData = `{"is_all_logs":true,"version":"1.1.1c","log_list_timestamp":"2021-12-03T11:06:00Z","operators":[` +
 	`{"name":"Google","email":["google-ct-logs@googlegroups.com"],"logs":[` +
@@ -32,5 +53,30 @@ func TestGetLogList(t *testing.T) {
 			t.Log(operator.Name, len(operator.Logs))
 		}
 		t.FailNow()
+	}
+}
+
+func TestGetLogListRejectsNonOKAndClosesBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		ok     bool
+	}{
+		{name: "valid", status: http.StatusOK, body: sampleLogData, ok: true},
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: sampleLogData},
+		{name: "malformed", status: http.StatusOK, body: "{"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := &logListResponseBody{Reader: bytes.NewBufferString(tc.body)}
+			client := &http.Client{Transport: logListResponseTransport{status: tc.status, body: body}}
+			list, err := getLogList(t.Context(), client, "https://example.test/log_list.json")
+			if (err == nil) != tc.ok || (list != nil) != tc.ok {
+				t.Fatalf("getLogList: list=%v error=%v, want success=%t", list, err, tc.ok)
+			}
+			if !body.closed {
+				t.Fatal("response body left open")
+			}
+		})
 	}
 }

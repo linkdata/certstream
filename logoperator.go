@@ -156,11 +156,14 @@ func (lo *LogOperator) ensureStream(ctx context.Context, log *loglist3.Log, wg *
 	if ls == nil {
 		if ls, err = lo.makeStream(log); err == nil {
 			if err = lo.DB().ensureStream(ctx, ls); err == nil {
+				streamCtx, cancel := context.WithCancel(ctx)
+				ls.cancel = cancel
+				ls.done = make(chan struct{})
 				lo.mu.Lock()
 				lo.streams[log.URL] = ls
 				lo.mu.Unlock()
 				wg.Add(1)
-				go ls.run(ctx, wg)
+				go ls.run(streamCtx, wg)
 			}
 		}
 	}
@@ -188,6 +191,9 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 		if lo.TailClient != nil {
 			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, cacheDir)
 		}
+		if err == nil && lo.TailDialer != nil {
+			tmpls.gapTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, "")
+		}
 		if err == nil {
 			ls = tmpls
 			ls.MinIndex.Store(-1)
@@ -205,11 +211,14 @@ func (lo *LogOperator) ensureTiledStream(ctx context.Context, log *loglist3.Tile
 	if ls == nil {
 		if ls, err = lo.makeTiledStream(log); err == nil {
 			if err = lo.DB().ensureStream(ctx, ls); err == nil {
+				streamCtx, cancel := context.WithCancel(ctx)
+				ls.cancel = cancel
+				ls.done = make(chan struct{})
 				lo.mu.Lock()
 				lo.streams[log.MonitoringURL] = ls
 				lo.mu.Unlock()
 				wg.Add(1)
-				go ls.run(ctx, wg)
+				go ls.run(streamCtx, wg)
 			}
 		}
 	}

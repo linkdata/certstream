@@ -58,7 +58,10 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 	if historical && ls.tailTile != nil {
 		client = ls.tailTile
 	}
+	return ls.getTileEntriesWithClient(ctx, client, start, end, historical, handleFn, gapcounter)
+}
 
+func (ls *LogStream) getTileEntriesWithClient(ctx context.Context, client *sunlight.Client, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	next = start
 	for next <= end {
 		entryErr := ls.backoff.Retry(ctx, func() (err error) {
@@ -112,8 +115,10 @@ func (ls *LogStream) getTileEntries(ctx context.Context, start, end int64, histo
 			return
 		})
 		if entryErr != nil {
-			if gapcounter != nil && ctx.Err() == nil {
-				_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", next, "end", end)
+			if gapcounter != nil {
+				if ctx.Err() == nil {
+					_ = ls.LogError(entryErr, "gap not fillable", "url", ls.URL(), "start", next, "end", end)
+				}
 				gapcounter.Add(next - (end + 1))
 			}
 			break

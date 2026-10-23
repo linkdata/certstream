@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -95,6 +96,7 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 	cs := &CertStream{
 		Config: Config{
 			Concurrency: 2,
+			TailDialer:  &net.Dialer{},
 		},
 		HeadClient: &http.Client{
 			Transport: headTransport,
@@ -136,6 +138,9 @@ func TestMakeTiledStreamUsesDialers(t *testing.T) {
 	}
 	if ls.headTile == nil || ls.tailTile == nil {
 		t.Fatalf("expected head and tail sunlight clients")
+	}
+	if ls.gapTile == nil || ls.gapTile == ls.tailTile {
+		t.Fatal("expected separate gap sunlight client")
 	}
 
 	ctx := t.Context()

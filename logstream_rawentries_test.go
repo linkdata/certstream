@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,20 @@ import (
 	"github.com/google/certificate-transparency-go/tls"
 	ctx509 "github.com/google/certificate-transparency-go/x509"
 )
+
+func TestGetRawEntriesParallelStopsBeforeSchedulingOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	client := &controlledRawEntriesClient{}
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: &CertStream{Config: Config{Concurrency: 4}}}}
+	_, next, err := ls.getRawEntriesParallel(ctx, client, 0, math.MaxInt64, false, nil, nil)
+	if !errors.Is(err, context.Canceled) || next != 0 {
+		t.Fatalf("canceled scan = (next %d, err %v)", next, err)
+	}
+	if got := client.Calls(); len(got) != 0 {
+		t.Fatalf("scheduled canceled ranges: %v", got)
+	}
+}
 
 type rawEntriesCall struct {
 	start int64
