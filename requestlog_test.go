@@ -169,12 +169,8 @@ func TestStartOpensHeadLogFile(t *testing.T) {
 	if !ok {
 		t.Fatalf("HeadClient transport = %T; want httpCallCounter", cs.HeadClient.Transport)
 	}
-	freshTransport, ok := countTransport.next.(freshSTHTransport)
-	if !ok {
-		t.Fatalf("HeadClient transport = %T; want freshSTHTransport", countTransport.next)
-	}
-	if _, ok := freshTransport.next.(*headLogTransport); !ok {
-		t.Fatalf("HeadClient transport = %T; want *headLogTransport", freshTransport.next)
+	if _, ok := countTransport.next.(*headLogTransport); !ok {
+		t.Fatalf("HeadClient transport = %T; want *headLogTransport", countTransport.next)
 	}
 	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("head log file missing: %v", err)

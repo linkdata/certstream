@@ -214,7 +214,6 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			err = errHeadLogOpen{err: err}
 		}
 	}
-	headTransport = freshSTHTransport{next: headTransport}
 	tptail := DefaultTransport.Clone()
 	tptail.DialContext = tailDialer.DialContext
 	tailTransport := http.RoundTripper(tptail)
