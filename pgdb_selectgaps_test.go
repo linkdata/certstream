@@ -409,6 +409,7 @@ func TestPgDB_SelectStreamGapsUsesBackfillIndex(t *testing.T) {
 					}
 					got := collectGaps(ls.gapCh)
 					want := []gap{
+						{start: 3, end: 3},
 						{start: 5, end: 5},
 					}
 					if !gapsEqual(got, want) {
@@ -570,14 +571,14 @@ func addGapQuerySleep(t testing.TB, db *PgDB, seconds string) {
 	if db == nil {
 		t.Fatalf("db is nil")
 	} else {
-		findgapFrom := "FROM " + db.Pfx("CERTDB_findgap")
-		if !strings.Contains(db.stmtFindGap, findgapFrom) {
-			t.Fatalf("selectStreamGaps missing %s", findgapFrom)
+		gapWindowFrom := "FROM " + db.Pfx("CERTDB_entry")
+		if !strings.Contains(db.stmtSelectGapWindow, gapWindowFrom) {
+			t.Fatalf("selectStreamGaps missing %s", gapWindowFrom)
 		} else {
-			db.stmtFindGap = "WITH gap_sleep AS (SELECT pg_sleep(" + seconds + "))\n" + db.stmtFindGap
-			db.stmtFindGap = strings.Replace(db.stmtFindGap,
-				findgapFrom,
-				"FROM gap_sleep, "+db.Pfx("CERTDB_findgap"),
+			db.stmtSelectGapWindow = "WITH gap_sleep AS MATERIALIZED (SELECT pg_sleep(" + seconds + "))\n" + db.stmtSelectGapWindow
+			db.stmtSelectGapWindow = strings.Replace(db.stmtSelectGapWindow,
+				gapWindowFrom,
+				"FROM gap_sleep, "+db.Pfx("CERTDB_entry"),
 				1,
 			)
 		}

@@ -36,23 +36,24 @@ type PgDB struct {
 	funcOperatorID        string
 	funcStreamID          string
 	funcIngestBatch       string
-	stmtFindGap           string
+	stmtSelectGapWindow   string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
-	stmtSelectMinIdxFrom  string
 	stmtSelectBackfillIdx string
 	stmtUpdateBackfillIdx string
+	stmtLowerBackfillIdx  string
 	closeMu               sync.RWMutex   // blocks new tracked calls while Close is waiting
 	closeWG               sync.WaitGroup // tracks exported DB operations
 	closeOnce             sync.Once
-	cleanMu               sync.Mutex // protects certificate cleanup state
-	cleanFrom             pgtype.TID // exclusive lower heap position
-	cleanEnd              uint32     // sweep boundary in blocks; zero when idle
-	cleanResetAt          time.Time  // completion time while between sweeps
-	cleanLoaded           bool       // persistent cleanup state has been read
-	cleanFile             uint32     // heap generation at the start of the sweep
-	cleanSavedAt          time.Time  // last successful cleanup checkpoint
-	mu                    sync.Mutex // protects following
+	gapScanPermit         chan struct{} // limits gap scans across streams
+	cleanMu               sync.Mutex    // protects certificate cleanup state
+	cleanFrom             pgtype.TID    // exclusive lower heap position
+	cleanEnd              uint32        // sweep boundary in blocks; zero when idle
+	cleanResetAt          time.Time     // completion time while between sweeps
+	cleanLoaded           bool          // persistent cleanup state has been read
+	cleanFile             uint32        // heap generation at the start of the sweep
+	cleanSavedAt          time.Time     // last successful cleanup checkpoint
+	mu                    sync.Mutex    // protects following
 	batchCh               []chan *LogEntry
 	workerBits            int
 	workerCount           int
@@ -118,13 +119,14 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcOperatorID:        pfx(callOperatorID),
 							funcStreamID:          pfx(callStreamID),
 							funcIngestBatch:       pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
-							stmtFindGap:           pfx(SelectFindGap),
+							stmtSelectGapWindow:   pfx(selectGapWindow),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
-							stmtSelectMinIdxFrom:  pfx(SelectMinIndexFrom),
 							stmtSelectBackfillIdx: pfx(SelectBackfillIndex),
 							stmtUpdateBackfillIdx: pfx(UpdateBackfillIndex),
+							stmtLowerBackfillIdx:  pfx(lowerBackfillIndex),
 							batchCh:               batchChans,
+							gapScanPermit:         make(chan struct{}, 1),
 							workerBits:            workerBits,
 							workerCount:           workerCount,
 							estimates: map[string]float64{
@@ -222,6 +224,35 @@ func (cdb *PgDB) sendToBatcher(ctx context.Context, le *LogEntry) {
 			}
 		}
 	}
+}
+
+func (cdb *PgDB) flushWorkers(ctx context.Context) (err error) {
+	if cdb == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cdb.closeMu.RLock()
+	defer cdb.closeMu.RUnlock()
+	cdb.mu.Lock()
+	chans := cdb.batchCh
+	cdb.mu.Unlock()
+	acks := make(chan struct{}, len(chans))
+	for _, ch := range chans {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ch <- &LogEntry{flushAck: acks}:
+		}
+	}
+	for range chans {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-acks:
+		}
+	}
+	return
 }
 
 // ensureOperator persists an operator; a nil database is a no-op.
@@ -613,76 +644,4 @@ func (cdb *PgDB) estimator(ctx context.Context, wg *sync.WaitGroup) {
 			cdb.refreshEstimates(ctx)
 		}
 	}
-}
-
-func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr error) {
-	gapCh := ls.getGapCh()
-	if gapCh != nil {
-		defer func() {
-			ls.mu.Lock()
-			if ls.gapCh == gapCh {
-				close(gapCh)
-			}
-			ls.mu.Unlock()
-		}()
-		var maxIndex sql.NullInt64
-		if scanErr = cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&maxIndex); scanErr == nil {
-			endIndex := int64(-1)
-			if maxIndex.Valid {
-				endIndex = maxIndex.Int64
-			}
-			if endIndex >= 0 {
-				var lastIndex int64
-				if scanErr = cdb.QueryRow(ctx, cdb.stmtSelectBackfillIdx, ls.Id).Scan(&lastIndex); scanErr == nil {
-					var startIndex sql.NullInt64
-					if scanErr = cdb.QueryRow(ctx, cdb.stmtSelectMinIdxFrom, ls.Id, lastIndex).Scan(&startIndex); scanErr == nil {
-						if startIndex.Valid {
-							hadGaps := false
-							if startIndex.Int64 > lastIndex {
-								if lastIndex > 0 && ctx.Err() == nil {
-									g := gap{start: lastIndex, end: startIndex.Int64 - 1}
-									cdb.recordGap(ls, g)
-									select {
-									case <-ctx.Done():
-									case gapCh <- g:
-										hadGaps = true
-									}
-								} else if ctx.Err() == nil {
-									scanErr = cdb.backfillSetGapStartIndex(ctx, ls, startIndex.Int64)
-								}
-								lastIndex = startIndex.Int64
-							}
-							stmt := cdb.stmtFindGap
-							for scanErr == nil && ctx.Err() == nil && lastIndex < endIndex {
-								row := cdb.QueryRow(ctx, stmt, ls.Id, lastIndex, endIndex)
-								var gapStart sql.NullInt64
-								var gapEnd sql.NullInt64
-								if scanErr = row.Scan(&gapStart, &gapEnd); scanErr == nil {
-									if gapStart.Valid && gapEnd.Valid {
-										g := gap{start: gapStart.Int64, end: gapEnd.Int64}
-										cdb.recordGap(ls, g)
-										select {
-										case <-ctx.Done():
-										case gapCh <- g:
-											lastIndex = gapEnd.Int64 + 1
-											hadGaps = true
-										}
-									} else if ctx.Err() == nil {
-										if !hadGaps {
-											if scanErr = cdb.backfillSetGapStartIndex(ctx, ls, endIndex); scanErr == nil {
-												lastIndex = endIndex
-											}
-										}
-										break
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		_ = cdb.LogError(scanErr, "selectStreamGaps", "stream", ls.Id, "url", ls.URL())
-	}
-	return
 }

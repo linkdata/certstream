@@ -125,7 +125,7 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 		}(i)
 	}
 
-	for start <= end && !stop.Load() {
+	for start <= end && ctx.Err() == nil && !stop.Load() {
 		stopIndex := rawEntriesStopIndex(start, end)
 		select {
 		case workCh <- rawEntriesRange{start: start, end: stopIndex}:

@@ -9,7 +9,20 @@ Small library wrapping github.com/google/certificate-transparency-go and github.
 PostgreSQL is optional. Leave `Config.PgAddr` empty for live streaming without persistence.
 Configure a database for certificate storage and backfill.
 Streams with database and tail fetching enabled scan stored entry gaps at startup
-and daily. Each scan has a one-hour deadline.
+and every 15 minutes. Recent indexes are checked first in bounded windows;
+older indexes are checked as database capacity permits. Scans pause when the
+database queue exceeds 50%, and each gap query has a two-second deadline.
+The recent pass covers up to one million indexes below the database maximum,
+regardless of the persisted scan cursor. The older pass resumes that cursor;
+indexes below an existing cursor and outside the recent range are not audited.
+When a fetched head range remains absent from the database across two scans,
+up to 10,000 of those trailing indexes are fetched again.
+
+When `Config.OnRetiredStreams` is set, each successfully fetched CT log list
+passes database IDs of explicitly retired streams to the callback when any remain,
+after their readers stop and queued database writes finish. Retired IDs remain
+eligible for later refreshes until their rows are removed or the list changes
+their status.
 
 With `Config.Logger` set, gap discoveries are summarized per CT log every minute.
 Summaries include the number of gaps and missing entries found during that interval,

@@ -20,6 +20,7 @@ type LogEntry struct {
 	Historical  bool  // true if the entry is from gap or backfilling
 	Signature   []byte
 	Seen        time.Time
+	flushAck    chan struct{} // internal batch-worker barrier; never sent to callers
 }
 
 func (le *LogEntry) appendJSON(b []byte) []byte {

@@ -40,15 +40,19 @@ func (e errLogEntriesTooOld) Unwrap() error {
 }
 
 func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error) (scanErr error) {
+	return cdb.backfillGapsWithFetcherMode(ctx, ls, fetchFn, scanDone, true)
+}
+
+func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing bool) (scanErr error) {
 	if cdb != nil && ls != nil {
 		var lastgap gap
-		var nullableMaxIndex sql.NullInt64
-		lastindex := ls.LastIndex.Load()
-		row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
-		maxErr := cdb.LogError(row.Scan(&nullableMaxIndex), "backfillGapsWithFetcher/MaxIndex", "url", ls.URL())
-		scanErr = maxErr
-		if maxErr == nil {
-			if nullableMaxIndex.Valid {
+		var maxErr error
+		if includeTrailing {
+			var nullableMaxIndex sql.NullInt64
+			lastindex := ls.LastIndex.Load()
+			row := cdb.QueryRow(ctx, cdb.stmtSelectMaxIdx, ls.Id)
+			maxErr = cdb.LogError(row.Scan(&nullableMaxIndex), "backfillGapsWithFetcher/MaxIndex", "url", ls.URL())
+			if maxErr == nil && nullableMaxIndex.Valid {
 				ls.seeIndex(nullableMaxIndex.Int64)
 				if lastindex < nullableMaxIndex.Int64 {
 					lastindex = nullableMaxIndex.Int64
@@ -59,6 +63,7 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 				}
 			}
 		}
+		scanErr = maxErr
 		if gapCh := ls.getGapCh(); gapCh != nil {
 			allGapsFilled := maxErr == nil
 			fillGap := func(g gap) {
@@ -94,6 +99,10 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 }
 
 func (cdb *PgDB) scanAndBackfillGaps(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher) (scanErr error) {
+	return cdb.scanAndBackfillGapsMode(ctx, ls, fetchFn, true)
+}
+
+func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, includeTrailing bool) (scanErr error) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
@@ -107,7 +116,7 @@ func (cdb *PgDB) scanAndBackfillGaps(ctx context.Context, ls *LogStream, fetchFn
 	go func() {
 		scanDone <- cdb.selectStreamGaps(ctx, ls)
 	}()
-	scanErr = cdb.backfillGapsWithFetcher(ctx, ls, fetchFn, scanDone)
+	scanErr = cdb.backfillGapsWithFetcherMode(ctx, ls, fetchFn, scanDone, includeTrailing)
 
 	ls.mu.Lock()
 	if ls.gapCh == gapCh {
@@ -123,22 +132,54 @@ func (cdb *PgDB) scanAndBackfillGaps(ctx context.Context, ls *LogStream, fetchFn
 	return
 }
 
-func nextGapScanAt(now time.Time, scanErr error) time.Time {
-	if scanErr != nil && scanErr != errGapIncomplete {
-		return now.Add(time.Minute)
-	}
-	return now.Add(24 * time.Hour)
-}
-
 func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for ctx.Err() == nil {
 		if sleep(ctx, time.Until(next)) != nil {
 			return
 		}
-		scanErr := cdb.scanAndBackfillGaps(ctx, ls, ls.getGapEntries)
-		next = nextGapScanAt(time.Now(), scanErr)
+		_ = cdb.scanAndBackfillGapsMode(ctx, ls, ls.getGapEntries, false)
+		if err := cdb.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil && !errors.Is(err, errGapScanDeferred) {
+			_ = cdb.LogError(err, "recoverTrailingGap", "url", ls.URL())
+		}
+		next = time.Now().Add(gapScanInterval)
 	}
+}
+
+func (cdb *PgDB) recoverTrailingGap(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher) (err error) {
+	if cdb.QueueUsage() > 50 {
+		return errGapScanDeferred
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, gapQueryTimeout)
+	defer cancel()
+	var row sql.NullInt64
+	if err = cdb.QueryRow(queryCtx, cdb.stmtSelectMaxIdx, ls.Id).Scan(&row); err != nil {
+		return
+	}
+	storedMax := row.Int64
+	if !row.Valid {
+		if firstFetched := ls.MinIndex.Load(); firstFetched >= 0 {
+			storedMax = firstFetched - 1
+		} else {
+			return
+		}
+	}
+	head := ls.MaxIndex.Load()
+	ls.mu.Lock()
+	stable := ls.tailCheckValid && ls.tailCheckMax == storedMax
+	ls.tailCheckMax = storedMax
+	ls.tailCheckValid = true
+	ls.mu.Unlock()
+	if !stable || head <= storedMax {
+		return
+	}
+	end := min(head, storedMax+gapWindowSize)
+	ls.Backfill.Add(end - storedMax)
+	next, _ := fetchFn(ctx, storedMax+1, end, true, ls.sendEntry, &ls.Backfill)
+	if next <= end {
+		err = errGapIncomplete
+	}
+	return
 }
 
 // Return the minimum stored log index, or -1 when the stream has no entries.
@@ -182,10 +223,10 @@ func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.Wai
 	var minIndex int64
 	var err error
 
-	scanErr := cdb.scanAndBackfillGaps(ctx, ls, ls.getGapEntries)
+	_ = cdb.scanAndBackfillGaps(ctx, ls, ls.getGapEntries)
 	var scanWG sync.WaitGroup
 	scanWG.Add(1)
-	go cdb.rescanGaps(ctx, ls, nextGapScanAt(time.Now(), scanErr), &scanWG)
+	go cdb.rescanGaps(ctx, ls, time.Now().Add(gapScanInterval), &scanWG)
 	defer scanWG.Wait()
 	for ctx.Err() == nil {
 		if minIndex, err = cdb.backfillMinIndex(ctx, ls); err == nil {

@@ -47,6 +47,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 		var queued []*LogEntry
 		for !stop {
 			ticked := false
+			var flushAck chan struct{}
 			select {
 			case <-ctx.Done():
 				stop = true
@@ -58,11 +59,22 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 					tckr = time.NewTicker(tickerInterval)
 					defer tckr.Stop()
 				}
-			case le := <-batchCh:
-				queued = append(queued, le)
+			case le, ok := <-batchCh:
+				if !ok {
+					stop = true
+				} else if le.flushAck != nil {
+					flushAck = le.flushAck
+					ticked = true
+				} else {
+					queued = append(queued, le)
+				}
 			}
 			if l := len(queued); l > 0 && (l >= DbIngestBatchSize || ticked || stop) {
 				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
+				if flushAck != nil {
+					flushAck <- struct{}{}
+					flushAck = nil
+				}
 				for _, le := range queued {
 					if !stop {
 						select {
@@ -74,6 +86,9 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 				}
 				clear(queued)
 				queued = queued[:0]
+			}
+			if flushAck != nil {
+				flushAck <- struct{}{}
 			}
 		}
 	}

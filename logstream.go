@@ -42,22 +42,26 @@ type rawEntriesClient interface {
 // LogStream tracks one CT log's head, entries, and historical fetches.
 type LogStream struct {
 	*LogOperator
-	Count      atomic.Int64 // number of certificates sent to the channel
-	MinIndex   atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
-	MaxIndex   atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex  atomic.Int64 // atomic: highest index that is available from stream source
-	Backfill   atomic.Int64 // atomic: historical gap and reverse-backfill entries left to fetch
-	Logger     *slog.Logger // toggled by LogToggle
-	Id         int32        // database ID, if available
-	gapCh      chan gap     // protected by LogOperator.mu
-	log        *loglist3.Log
-	tiledLog   *loglist3.TiledLog
-	headClient *client.LogClient
-	tailClient *client.LogClient
-	headTile   *sunlight.Client
-	tailTile   *sunlight.Client
-	gapTile    *sunlight.Client
-	backoff    *logStreamBackoff
+	Count          atomic.Int64 // number of certificates sent to the channel
+	MinIndex       atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
+	MaxIndex       atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
+	LastIndex      atomic.Int64 // atomic: highest index that is available from stream source
+	Backfill       atomic.Int64 // atomic: historical gap and reverse-backfill entries left to fetch
+	Logger         *slog.Logger // toggled by LogToggle
+	Id             int32        // database ID, if available
+	gapCh          chan gap     // protected by LogOperator.mu
+	tailCheckMax   int64        // protected by LogOperator.mu
+	tailCheckValid bool         // protected by LogOperator.mu
+	log            *loglist3.Log
+	tiledLog       *loglist3.TiledLog
+	headClient     *client.LogClient
+	tailClient     *client.LogClient
+	headTile       *sunlight.Client
+	tailTile       *sunlight.Client
+	gapTile        *sunlight.Client
+	backoff        *logStreamBackoff
+	cancel         context.CancelFunc // stops this reader on retirement
+	done           chan struct{}      // closed after reader and backfill stop
 }
 
 func (ls *LogStream) HTTPCalls() int64 {
@@ -139,7 +143,9 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	var err error
 	var wg2 sync.WaitGroup
 	defer func() {
-		ls.addError(ls, err)
+		if !errors.Is(err, context.Canceled) {
+			ls.addError(ls, err)
+		}
 		wg2.Wait()
 		ls.removeStream(ls)
 		if e, ok := err.(errLogIdle); ok {
@@ -148,6 +154,9 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 			_ = ls.LogError(err, "stream stopped", "url", ls.URL(), "stream", ls.Id)
 		}
 		wg.Done()
+		if ls.done != nil {
+			close(ls.done)
+		}
 	}()
 
 	end, err = ls.newLastIndex(ctx)
