@@ -188,6 +188,9 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 		if lo.TailClient != nil {
 			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, cacheDir)
 		}
+		if err == nil && lo.TailDialer != nil {
+			tmpls.gapTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, "")
+		}
 		if err == nil {
 			ls = tmpls
 			ls.MinIndex.Store(-1)

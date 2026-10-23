@@ -55,6 +55,7 @@ type LogStream struct {
 	tailClient *client.LogClient
 	headTile   *sunlight.Client
 	tailTile   *sunlight.Client
+	gapTile    *sunlight.Client
 	backoff    *logStreamBackoff
 }
 
@@ -159,8 +160,10 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 	start := end
 	if cdb := ls.DB(); cdb != nil {
 		if ls.TailDialer != nil {
+			backfillCtx, cancelBackfill := context.WithCancel(ctx)
+			defer cancelBackfill()
 			wg2.Add(1)
-			go cdb.backfillStream(ctx, ls, &wg2)
+			go cdb.backfillStream(backfillCtx, ls, &wg2)
 		}
 	}
 
