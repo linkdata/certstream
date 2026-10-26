@@ -48,6 +48,7 @@ jobs:
           go tool cover -html=coverage.out -o=coveragereport.html.out
 
       - name: Publish code coverage badge (and optional report)
+        if: github.ref_type != 'tag'
         uses: linkdata/gitcoverage@v6
         with:
           coverage: ${{ steps.coverage.outputs.coverage }}

@@ -243,11 +243,11 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 		cs = &CertStream{
 			Config: *cfg,
 			HeadClient: &http.Client{
-				Timeout:   10 * time.Second,
+				Timeout:   30 * time.Second,
 				Transport: httpCallCounter{headTransport},
 			},
 			TailClient: &http.Client{
-				Timeout:   10 * time.Second,
+				Timeout:   30 * time.Second,
 				Transport: httpCallCounter{tailTransport},
 			},
 			headLogFile: headLogFile,

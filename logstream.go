@@ -319,9 +319,15 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 
 func (ls *LogStream) handleStreamError(err error, from string) (fatal bool) {
 	errTxt := err.Error()
-	if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrInvalid) || errors.Is(err, io.ErrNoProgress) || strings.Contains(errTxt, "context canceled") {
+	underlyingErr := err
+	var rspErr jsonclient.RspError
+	// jsonclient.RspError keeps its cause in Err without unwrapping it.
+	if errors.As(err, &rspErr) {
+		underlyingErr = rspErr.Err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(underlyingErr, context.Canceled) || errors.Is(err, os.ErrInvalid) || errors.Is(err, io.ErrNoProgress) || strings.Contains(errTxt, "context canceled") {
 		fatal = true
-	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
+	} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(underlyingErr, context.DeadlineExceeded) || strings.Contains(errTxt, "deadline exceeded") {
 		fatal = false
 	} else {
 		statusCode := ls.statusCodeFromError(err)

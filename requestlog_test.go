@@ -123,6 +123,9 @@ func TestStartOpensTailLogFile(t *testing.T) {
 	if cs == nil {
 		t.Fatalf("Start returned nil CertStream")
 	}
+	if cs.TailClient.Timeout != 30*time.Second {
+		t.Fatalf("TailClient.Timeout = %v; want 30s", cs.TailClient.Timeout)
+	}
 	if cs.getTailLogFile() == nil {
 		t.Fatalf("tail log file was not stored on CertStream")
 	}
@@ -161,6 +164,9 @@ func TestStartOpensHeadLogFile(t *testing.T) {
 	}
 	if cs == nil {
 		t.Fatalf("Start returned nil CertStream")
+	}
+	if cs.HeadClient.Timeout != 30*time.Second {
+		t.Fatalf("HeadClient.Timeout = %v; want 30s", cs.HeadClient.Timeout)
 	}
 	if cs.getHeadLogFile() == nil {
 		t.Fatalf("head log file was not stored on CertStream")
