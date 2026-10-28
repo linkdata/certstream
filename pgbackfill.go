@@ -215,7 +215,10 @@ func reverseBackfillStart(minIndex int64, tiled bool) int64 {
 		const window = 50 * sunlight.TileWidth
 		return (minIndex - 1) / window * window
 	}
-	return max(0, minIndex-LogBatchSize)
+	// The age cutoff is decided once per reverse window. Keep at least
+	// 1024 entries in each window when available, then align its start.
+	window := max(int64(1024), LogBatchSize)
+	return max(0, (minIndex-window)/LogBatchSize*LogBatchSize)
 }
 
 func (cdb *PgDB) backfillStream(ctx context.Context, ls *LogStream, wg *sync.WaitGroup) {

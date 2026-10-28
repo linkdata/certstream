@@ -123,6 +123,125 @@ func sortedRawEntriesCalls(calls []rawEntriesCall) []rawEntriesCall {
 	return sorted
 }
 
+type coercingRawEntriesClient struct {
+	entry ct.LeafEntry
+	calls []rawEntriesCall
+}
+
+func (c *coercingRawEntriesClient) GetRawEntries(_ context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	c.calls = append(c.calls, rawEntriesCall{start: start, end: end})
+	count := min(end-start+1, int64(32))
+	if start%256 == 0 && end-start == 255 {
+		count = 256
+	} else if remainder := start % 32; remainder != 0 {
+		count = min(count, 32-remainder)
+	}
+	entries := make([]ct.LeafEntry, int(count))
+	for i := range entries {
+		entries[i] = c.entry
+	}
+	return &ct.GetEntriesResponse{Entries: entries}, nil
+}
+
+func TestRawEntriesStopIndexAlignsWindows(t *testing.T) {
+	if got := LogBatchSize; got != 256 {
+		t.Fatalf("default LogBatchSize = %d, want 256", got)
+	}
+	for _, tc := range []struct {
+		start, end, want int64
+	}{
+		{0, 1023, 255},
+		{1025, 2048, 1279},
+		{1280, 2048, 1535},
+		{2048, 2048, 2048},
+	} {
+		if got := rawEntriesStopIndex(tc.start, tc.end); got != tc.want {
+			t.Errorf("rawEntriesStopIndex(%d, %d) = %d, want %d", tc.start, tc.end, got, tc.want)
+		}
+	}
+}
+
+func TestGetRawEntriesConvergesOn256(t *testing.T) {
+	oldBatchSize := LogBatchSize
+	LogBatchSize = 256
+	t.Cleanup(func() { LogBatchSize = oldBatchSize })
+
+	entry := makeTestLeafEntry(t, time.Now().UTC().Truncate(time.Millisecond))
+	client := &coercingRawEntriesClient{entry: entry}
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: &CertStream{}}}
+	ls.MinIndex.Store(-1)
+	ls.MaxIndex.Store(-1)
+	const start, end = int64(1025), int64(1791)
+	var indexes []int64
+	var backfill atomic.Int64
+	backfill.Store(end - start + 1)
+	handle := func(_ context.Context, _ time.Time, le *LogEntry) bool {
+		indexes = append(indexes, le.LogIndex)
+		return false
+	}
+	_, next, err := ls.getRawEntries(t.Context(), client, start, end, true, handle, &backfill)
+	if err != nil || next != end+1 {
+		t.Fatalf("getRawEntries next=%d, err=%v", next, err)
+	}
+	if got := backfill.Load(); got != 0 {
+		t.Errorf("Backfill = %d, want 0", got)
+	}
+	if got, want := len(indexes), int(end-start+1); got != want {
+		t.Fatalf("handled %d entries, want %d", got, want)
+	}
+	for i, got := range indexes {
+		if want := start + int64(i); got != want {
+			t.Fatalf("entry %d has index %d, want %d", i, got, want)
+		}
+	}
+	if got, want := client.calls, []rawEntriesCall{
+		{1025, 1279}, {1056, 1279}, {1088, 1279}, {1120, 1279},
+		{1152, 1279}, {1184, 1279}, {1216, 1279}, {1248, 1279},
+		{1280, 1535}, {1536, 1791},
+	}; !slices.Equal(got, want) {
+		t.Fatalf("requests = %v, want %v", got, want)
+	}
+}
+
+func TestGetRawEntriesParallelUsesAlignedWindows(t *testing.T) {
+	oldBatchSize := LogBatchSize
+	LogBatchSize = 256
+	t.Cleanup(func() { LogBatchSize = oldBatchSize })
+
+	entry := makeTestLeafEntry(t, time.Now().UTC().Truncate(time.Millisecond))
+	client := &controlledRawEntriesClient{entry: entry}
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: &CertStream{Config: Config{Concurrency: 3}}}}
+	const start, end = int64(1025), int64(1791)
+	var indexes []int64
+	var mu sync.Mutex
+	handle := func(_ context.Context, _ time.Time, le *LogEntry) bool {
+		mu.Lock()
+		indexes = append(indexes, le.LogIndex)
+		mu.Unlock()
+		return false
+	}
+	_, next, err := ls.getRawEntriesParallel(t.Context(), client, start, end, false, handle, nil)
+	if err != nil || next != end+1 {
+		t.Fatalf("getRawEntriesParallel next=%d, err=%v", next, err)
+	}
+	if got, want := sortedRawEntriesCalls(client.Calls()), []rawEntriesCall{
+		{1025, 1279}, {1280, 1535}, {1536, 1791},
+	}; !slices.Equal(got, want) {
+		t.Fatalf("requests = %v, want %v", got, want)
+	}
+	mu.Lock()
+	slices.Sort(indexes)
+	mu.Unlock()
+	if got, want := len(indexes), int(end-start+1); got != want {
+		t.Fatalf("handled %d entries, want %d", got, want)
+	}
+	for i, got := range indexes {
+		if want := start + int64(i); got != want {
+			t.Fatalf("entry %d has index %d, want %d", i, got, want)
+		}
+	}
+}
+
 func makeTestLeafEntry(t *testing.T, now time.Time) (leaf ct.LeafEntry) {
 	t.Helper()
 	der := makeTestCertificate(t, now)

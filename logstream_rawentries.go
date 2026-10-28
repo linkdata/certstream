@@ -12,7 +12,9 @@ import (
 func rawEntriesStopIndex(start, end int64) (stop int64) {
 	stop = start
 	if start <= end {
-		stop = start + min(end-start+1, LogBatchSize) - 1
+		// End each window at a common boundary so truncated responses can
+		// bring the next request onto a cacheable full-size range.
+		stop = start + min(end-start+1, LogBatchSize-start%LogBatchSize) - 1
 	}
 	return
 }
