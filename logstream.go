@@ -28,9 +28,14 @@ import (
 var (
 	DbIngestBatchSize   = 1000 // number of entries to send to ingest at a time
 	HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
-	LogBatchSize        = int64(1024)
-	MaxErrors           = 100
-	IdleCloseTime       = time.Hour * 24 * 7
+	// LogBatchSize sets the classic CT request window.
+	//
+	// The default is 256. It also sets the head advance threshold for tail
+	// fetching and aligns reverse backfill windows. Set it to a positive value
+	// before calling [Start].
+	LogBatchSize  = int64(256)
+	MaxErrors     = 100
+	IdleCloseTime = time.Hour * 24 * 7
 )
 
 type handleLogEntryFn func(ctx context.Context, now time.Time, entry *LogEntry) (wanted bool)
