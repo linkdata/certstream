@@ -38,6 +38,13 @@ func (lo *LogOperator) Email() []string {
 	return lo.operator.Email
 }
 
+func (lo *LogOperator) concurrency() int {
+	if n := lo.ProviderConcurrency[lo.Domain]; n > 0 {
+		return n
+	}
+	return lo.Concurrency
+}
+
 func (lo *LogOperator) StreamCount() (n int) {
 	lo.mu.Lock()
 	n = len(lo.streams)
@@ -187,12 +194,13 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 	}
 
 	cacheDir := getCacheDir(lo.DataDir, log.MonitoringURL)
-	if tmpls.headTile, err = newSunlightClient(log, newProviderClient(lo.HeadClient), tmpls.Logger, lo.Concurrency, cacheDir); err == nil {
+	concurrency := lo.concurrency()
+	if tmpls.headTile, err = newSunlightClient(log, newProviderClient(lo.HeadClient), tmpls.Logger, concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
 			tailClient := newProviderClient(lo.TailClient)
-			tmpls.tailTile, err = newSunlightClient(log, tailClient, tmpls.Logger, lo.Concurrency, cacheDir)
+			tmpls.tailTile, err = newSunlightClient(log, tailClient, tmpls.Logger, concurrency, cacheDir)
 			if err == nil && lo.TailDialer != nil {
-				tmpls.gapTile, err = newSunlightClient(log, tailClient, tmpls.Logger, lo.Concurrency, "")
+				tmpls.gapTile, err = newSunlightClient(log, tailClient, tmpls.Logger, concurrency, "")
 			}
 		}
 		if err == nil {

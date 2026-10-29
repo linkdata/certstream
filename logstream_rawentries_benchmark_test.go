@@ -72,3 +72,48 @@ func BenchmarkGetFullRawEntries(b *testing.B) {
 	}
 	b.ReportMetric(float64(client.calls)/float64(b.N), "calls/op")
 }
+
+type delayed32BenchmarkClient struct {
+	entries [32]ct.LeafEntry
+}
+
+func (c *delayed32BenchmarkClient) GetRawEntries(_ context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	time.Sleep(10 * time.Millisecond)
+	n := int(min(end-start+1, 32))
+	return &ct.GetEntriesResponse{Entries: c.entries[:n]}, nil
+}
+
+// BenchmarkProviderConcurrencyClassic measures provider limits on classic reads.
+//
+// It uses 32-entry responses with 10 ms per-request latency.
+func BenchmarkProviderConcurrencyClassic(b *testing.B) {
+	entry := makeTestLeafEntry(b, time.Now().UTC().Truncate(time.Millisecond))
+	client := &delayed32BenchmarkClient{}
+	for i := range client.entries {
+		client.entries[i] = entry
+	}
+	for _, tc := range []struct {
+		name      string
+		overrides map[string]int
+	}{
+		{name: "base2"},
+		{name: "google4", overrides: map[string]int{"googleapis.com": 4}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			cs := &CertStream{Config: Config{Concurrency: 2, ProviderConcurrency: tc.overrides}}
+			lo := &LogOperator{CertStream: cs, Domain: OperatorDomain("https://ct.googleapis.com/logs/us1/")}
+			handle := func(context.Context, time.Time, *LogEntry) bool { return false }
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				ls := &LogStream{LogOperator: lo}
+				for pb.Next() {
+					_, next, err := ls.getRawEntriesParallel(b.Context(), client, 0, 1023, false, handle, nil)
+					if err != nil || next != 1024 {
+						b.Fatalf("getRawEntriesParallel next=%d, err=%v", next, err)
+					}
+				}
+			})
+		})
+	}
+}

@@ -3,6 +3,7 @@ package certstream
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -254,6 +255,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, cfg *Config) (cs *CertStream
 			tailLogFile: tailLogFile,
 			operators:   map[string]*LogOperator{},
 		}
+		cs.ProviderConcurrency = maps.Clone(cfg.ProviderConcurrency)
 
 		var db *PgDB
 		if db, err = NewPgDB(ctx, cs); err == nil {
