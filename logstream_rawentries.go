@@ -105,10 +105,8 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if i > 0 && ls.LogOperator != nil {
-					if ls.Status429.Load() > 0 {
-						_ = sleep(sleepCtx, time.Second/time.Duration(limit)*time.Duration(i))
-					}
+				if i > 0 && ls.Status429.Load() > 0 {
+					_ = sleep(sleepCtx, time.Second/time.Duration(limit)*time.Duration(i))
 				}
 				for r := range workCh {
 					w, _, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)

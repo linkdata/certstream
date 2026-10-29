@@ -57,10 +57,7 @@ func (lo *LogOperator) setConcurrency(concurrency int) {
 
 func (lo *LogOperator) concurrencyChange() (concurrency int, changed <-chan struct{}) {
 	lo.limitMu.Lock()
-	concurrency = lo.limit
-	if concurrency < 1 {
-		concurrency = lo.initialConcurrency()
-	}
+	concurrency = lo.concurrencyLocked()
 	if lo.limitChange == nil {
 		lo.limitChange = make(chan struct{})
 	}
@@ -83,11 +80,7 @@ func (lo *LogOperator) acquireRequest(ctx context.Context, tr *retryAfterTranspo
 			lo.limitMu.Unlock()
 			return
 		}
-		concurrency := lo.limit
-		if concurrency < 1 {
-			concurrency = lo.initialConcurrency()
-		}
-		if tr.active < concurrency {
+		if tr.active < lo.concurrencyLocked() {
 			tr.active++
 			lo.limitMu.Unlock()
 			return

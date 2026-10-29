@@ -42,7 +42,10 @@ func (lo *LogOperator) Email() []string {
 	return lo.operator.Email
 }
 
-func (lo *LogOperator) initialConcurrency() int {
+func (lo *LogOperator) concurrencyLocked() int {
+	if lo.limit > 0 {
+		return lo.limit
+	}
 	if n := lo.ProviderConcurrency[lo.Domain]; n > 0 {
 		return n
 	}

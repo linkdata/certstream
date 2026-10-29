@@ -184,23 +184,6 @@ func waitProviderLimitBlocked(t *testing.T, lo *LogOperator) {
 	}
 }
 
-type gatedProviderBody struct {
-	ctx  context.Context
-	gate <-chan struct{}
-	*bytes.Reader
-}
-
-func (body *gatedProviderBody) Read(p []byte) (int, error) {
-	select {
-	case <-body.gate:
-		return body.Reader.Read(p)
-	case <-body.ctx.Done():
-		return 0, body.ctx.Err()
-	}
-}
-
-func (body *gatedProviderBody) Close() error { return nil }
-
 func TestProviderConcurrencyClassicLiveUpdate(t *testing.T) {
 	entry := makeTestLeafEntry(t, time.Now().UTC().Truncate(time.Millisecond))
 	entries := make([]ct.LeafEntry, 32)
@@ -214,22 +197,21 @@ func TestProviderConcurrencyClassicLiveUpdate(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	gate := make(chan struct{})
-	gateClosed := false
-	defer func() {
-		if !gateClosed {
-			close(gate)
-		}
-	}()
 	starts := make(chan struct{}, 4)
 	base := &http.Client{Transport: retryAfterRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		select {
 		case starts <- struct{}{}:
 		default:
 		}
+		select {
+		case <-gate:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       &gatedProviderBody{ctx: req.Context(), gate: gate, Reader: bytes.NewReader(payload)},
+			Body:       io.NopCloser(bytes.NewReader(payload)),
 		}, nil
 	})}
 	cs := &CertStream{Config: Config{Concurrency: 2}, HeadClient: base, operators: make(map[string]*LogOperator)}
@@ -273,7 +255,6 @@ func TestProviderConcurrencyClassicLiveUpdate(t *testing.T) {
 		}
 	}
 	close(gate)
-	gateClosed = true
 	select {
 	case got := <-done:
 		if got.err != nil || got.next != 4*LogBatchSize {
