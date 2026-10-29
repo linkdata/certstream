@@ -137,9 +137,9 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
 
-	if tmpls.headClient, err = client.New(log.URL, lo.HeadClient, jsonclient.Options{}); err == nil {
+	if tmpls.headClient, err = client.New(log.URL, newProviderClient(lo.HeadClient), jsonclient.Options{}); err == nil {
 		if lo.TailClient != nil {
-			tmpls.tailClient, err = client.New(log.URL, lo.TailClient, jsonclient.Options{})
+			tmpls.tailClient, err = client.New(log.URL, newProviderClient(lo.TailClient), jsonclient.Options{})
 		}
 		ls = tmpls
 		ls.MinIndex.Store(-1)
@@ -187,12 +187,13 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 	}
 
 	cacheDir := getCacheDir(lo.DataDir, log.MonitoringURL)
-	if tmpls.headTile, err = newSunlightClient(log, lo.HeadClient, tmpls.Logger, lo.Concurrency, cacheDir); err == nil {
+	if tmpls.headTile, err = newSunlightClient(log, newProviderClient(lo.HeadClient), tmpls.Logger, lo.Concurrency, cacheDir); err == nil {
 		if lo.TailClient != nil {
-			tmpls.tailTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, cacheDir)
-		}
-		if err == nil && lo.TailDialer != nil {
-			tmpls.gapTile, err = newSunlightClient(log, lo.TailClient, tmpls.Logger, lo.Concurrency, "")
+			tailClient := newProviderClient(lo.TailClient)
+			tmpls.tailTile, err = newSunlightClient(log, tailClient, tmpls.Logger, lo.Concurrency, cacheDir)
+			if err == nil && lo.TailDialer != nil {
+				tmpls.gapTile, err = newSunlightClient(log, tailClient, tmpls.Logger, lo.Concurrency, "")
+			}
 		}
 		if err == nil {
 			ls = tmpls
