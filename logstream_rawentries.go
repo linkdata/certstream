@@ -93,47 +93,55 @@ func (ls *LogStream) getRawEntriesParallel(ctx context.Context, client rawEntrie
 
 	sleepCtx, sleepCancel := context.WithCancel(ctx)
 	workCh := make(chan rawEntriesRange)
-	workerCount := min(32, max(1, ls.concurrency()))
-	workerSleep := time.Second / time.Duration(workerCount)
 	completed := make(map[int64]int64)
 	var wg sync.WaitGroup
 	var workMu sync.Mutex
 	var stop atomic.Bool
-	for i := range workerCount {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if i > 0 && ls.LogOperator != nil {
-				if ls.Status429.Load() > 0 {
-					_ = sleep(sleepCtx, workerSleep*time.Duration(i))
-				}
-			}
-			for r := range workCh {
-				w, _, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
-				workMu.Lock()
-				wanted = wanted || w
-				if e == nil {
-					completed[r.start] = r.end
-				advanceNext:
-					if end, ok := completed[next]; ok {
-						delete(completed, next)
-						next = end + 1
-						goto advanceNext
+	workerCount := 0
+	startWorkers := func(limit int) {
+		for workerCount < min(32, limit) {
+			i := workerCount
+			workerCount++
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if i > 0 && ls.LogOperator != nil {
+					if ls.Status429.Load() > 0 {
+						_ = sleep(sleepCtx, time.Second/time.Duration(limit)*time.Duration(i))
 					}
-				} else {
-					err = e
-					stop.Store(true)
 				}
-				workMu.Unlock()
-			}
-		}(i)
+				for r := range workCh {
+					w, _, e := ls.getRawEntries(ctx, client, r.start, r.end, historical, handleFn, gapcounter)
+					workMu.Lock()
+					wanted = wanted || w
+					if e == nil {
+						completed[r.start] = r.end
+					advanceNext:
+						if end, ok := completed[next]; ok {
+							delete(completed, next)
+							next = end + 1
+							goto advanceNext
+						}
+					} else {
+						err = e
+						stop.Store(true)
+					}
+					workMu.Unlock()
+				}
+			}()
+		}
 	}
+	limit, changed := ls.concurrencyChange()
+	startWorkers(limit)
 
 	for start <= end && ctx.Err() == nil && !stop.Load() {
 		stopIndex := rawEntriesStopIndex(start, end)
 		select {
 		case workCh <- rawEntriesRange{start: start, end: stopIndex}:
 			start = stopIndex + 1
+		case <-changed:
+			limit, changed = ls.concurrencyChange()
+			startWorkers(limit)
 		case <-ctx.Done():
 		}
 	}

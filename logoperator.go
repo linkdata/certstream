@@ -18,16 +18,20 @@ import (
 
 type LogOperator struct {
 	*CertStream
-	Domain    string             // e.g. "letsencrypt.org" or "googleapis.com"
-	Count     atomic.Int64       // atomic; sum of the stream's Count
-	Status429 atomic.Int64       // atomic; number of 429 Too Many Requests
-	Id        int32              // database ID, if available
-	operator  *loglist3.Operator // read-only
-	mu        sync.Mutex         // protects following
-	statuses  map[int]int        // HTTP status code counter
-	streams   map[string]*LogStream
-	errcount  int
-	errors    []*StreamError
+	Domain      string             // e.g. "letsencrypt.org" or "googleapis.com"
+	Count       atomic.Int64       // atomic; sum of the stream's Count
+	Status429   atomic.Int64       // atomic; number of 429 Too Many Requests
+	Id          int32              // database ID, if available
+	operator    *loglist3.Operator // read-only
+	mu          sync.Mutex         // protects following
+	statuses    map[int]int        // HTTP status code counter
+	streams     map[string]*LogStream
+	errcount    int
+	errors      []*StreamError
+	limitMu     sync.Mutex // protects limit, notifications, and reader active counts
+	limit       int
+	limitWait   chan struct{}
+	limitChange chan struct{}
 }
 
 func (lo *LogOperator) Name() string {
@@ -38,11 +42,11 @@ func (lo *LogOperator) Email() []string {
 	return lo.operator.Email
 }
 
-func (lo *LogOperator) concurrency() int {
+func (lo *LogOperator) initialConcurrency() int {
 	if n := lo.ProviderConcurrency[lo.Domain]; n > 0 {
 		return n
 	}
-	return lo.Concurrency
+	return max(1, lo.Concurrency)
 }
 
 func (lo *LogOperator) StreamCount() (n int) {
@@ -144,9 +148,9 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
 
-	if tmpls.headClient, err = client.New(log.URL, newProviderClient(lo.HeadClient), jsonclient.Options{}); err == nil {
+	if tmpls.headClient, err = client.New(log.URL, newLimitedProviderClient(lo.HeadClient, lo, nil), jsonclient.Options{}); err == nil {
 		if lo.TailClient != nil {
-			tmpls.tailClient, err = client.New(log.URL, newProviderClient(lo.TailClient), jsonclient.Options{})
+			tmpls.tailClient, err = client.New(log.URL, newLimitedProviderClient(lo.TailClient, lo, nil), jsonclient.Options{})
 		}
 		ls = tmpls
 		ls.MinIndex.Store(-1)
@@ -194,13 +198,14 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 	}
 
 	cacheDir := getCacheDir(lo.DataDir, log.MonitoringURL)
-	concurrency := lo.concurrency()
-	if tmpls.headTile, err = newSunlightClient(log, newProviderClient(lo.HeadClient), tmpls.Logger, concurrency, cacheDir); err == nil {
+	// The HTTP transports enforce live limits; torchwood's fixed cap stays unset.
+	if tmpls.headTile, err = newSunlightClient(log, newLimitedProviderClient(lo.HeadClient, lo, nil), tmpls.Logger, cacheDir); err == nil {
 		if lo.TailClient != nil {
-			tailClient := newProviderClient(lo.TailClient)
-			tmpls.tailTile, err = newSunlightClient(log, tailClient, tmpls.Logger, concurrency, cacheDir)
+			tailClient := newLimitedProviderClient(lo.TailClient, lo, nil)
+			tmpls.tailTile, err = newSunlightClient(log, tailClient, tmpls.Logger, cacheDir)
 			if err == nil && lo.TailDialer != nil {
-				tmpls.gapTile, err = newSunlightClient(log, tailClient, tmpls.Logger, concurrency, "")
+				gapClient := newLimitedProviderClient(lo.TailClient, lo, tailClient.Transport.(*retryAfterTransport))
+				tmpls.gapTile, err = newSunlightClient(log, gapClient, tmpls.Logger, "")
 			}
 		}
 		if err == nil {

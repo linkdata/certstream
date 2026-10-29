@@ -14,18 +14,19 @@ import (
 )
 
 type CertStream struct {
-	Config                       // copy of config
-	C           <-chan *LogEntry // log entry channel
-	HeadClient  *http.Client     // main HTTP client, uses Config.HeadDialer
-	TailClient  *http.Client     // may be nil if not backfilling
-	LogToggle   atomic.Bool      // if true, log stream activity
-	headLogFile *os.File         // head HTTP request log
-	tailLogFile *os.File         // tail HTTP request log
-	lifecycleMu sync.Mutex       // serializes stream registration and removal
-	mu          sync.Mutex       // protects following
-	db          *PgDB
-	sendEntryCh chan *LogEntry
-	operators   map[string]*LogOperator // operators by operator domain, valid after Start()
+	Config                          // copy of config
+	C              <-chan *LogEntry // log entry channel
+	HeadClient     *http.Client     // main HTTP client, uses Config.HeadDialer
+	TailClient     *http.Client     // may be nil if not backfilling
+	LogToggle      atomic.Bool      // if true, log stream activity
+	headLogFile    *os.File         // head HTTP request log
+	tailLogFile    *os.File         // tail HTTP request log
+	lifecycleMu    sync.Mutex       // serializes stream registration and removal
+	mu             sync.Mutex       // protects following
+	db             *PgDB
+	sendEntryCh    chan *LogEntry
+	operators      map[string]*LogOperator // operators by operator domain, valid after Start()
+	providerLimits map[string]int          // runtime overrides, protected by mu
 }
 
 var DefaultTransport = &http.Transport{

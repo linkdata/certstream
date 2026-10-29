@@ -18,41 +18,68 @@ import (
 // using this transport has no Client.Timeout; each network request gets the
 // original timeout after the cooldown wait so a long Retry-After is usable.
 type retryAfterTransport struct {
-	next    http.RoundTripper
-	timeout time.Duration
-	mu      sync.Mutex
-	until   map[string]time.Time
+	next           http.RoundTripper
+	timeout        time.Duration
+	mu             sync.Mutex
+	until          map[string]time.Time
+	sharedCooldown *retryAfterTransport
+	limitOperator  *LogOperator
+	active         int // protected by limitOperator.limitMu
 }
 
 type cancelBody struct {
 	io.ReadCloser
-	cancel context.CancelFunc
+	cancel  context.CancelFunc
+	release func()
+	once    sync.Once
+}
+
+func (body *cancelBody) finish() {
+	body.once.Do(func() {
+		if body.cancel != nil {
+			body.cancel()
+		}
+		if body.release != nil {
+			body.release()
+		}
+	})
 }
 
 func (body *cancelBody) Read(p []byte) (n int, err error) {
 	n, err = body.ReadCloser.Read(p)
 	if err != nil {
-		body.cancel()
+		body.finish()
 	}
 	return
 }
 
 func (body *cancelBody) Close() (err error) {
 	err = body.ReadCloser.Close()
-	body.cancel()
+	body.finish()
 	return
 }
 
 func newProviderClient(base *http.Client) *http.Client {
+	return newLimitedProviderClient(base, nil, nil)
+}
+
+func newLimitedProviderClient(base *http.Client, lo *LogOperator, sharedCooldown *retryAfterTransport) *http.Client {
 	next := base.Transport
 	if next == nil {
 		next = http.DefaultTransport
 	}
 	return &http.Client{
-		Transport:     &retryAfterTransport{next: next, timeout: base.Timeout, until: make(map[string]time.Time)},
+		Transport:     &retryAfterTransport{next: next, timeout: base.Timeout, until: make(map[string]time.Time), sharedCooldown: sharedCooldown, limitOperator: lo},
 		CheckRedirect: base.CheckRedirect,
 		Jar:           base.Jar,
 	}
+}
+
+func (transport *retryAfterTransport) cooldownState() *retryAfterTransport {
+	if transport.sharedCooldown != nil {
+		return transport.sharedCooldown
+	}
+	return transport
 }
 
 func retryAfterKey(u *url.URL) string {
@@ -82,10 +109,7 @@ func retryAfterTime(value string, now time.Time) (until time.Time) {
 
 func (transport *retryAfterTransport) wait(ctx context.Context, key string) (err error) {
 	for err == nil {
-		transport.mu.Lock()
-		until := transport.until[key]
-		transport.mu.Unlock()
-		delay := time.Until(until)
+		delay := transport.cooldownDelay(key)
 		if delay <= 0 {
 			return ctx.Err()
 		}
@@ -94,10 +118,33 @@ func (transport *retryAfterTransport) wait(ctx context.Context, key string) (err
 	return
 }
 
+func (transport *retryAfterTransport) cooldownDelay(key string) time.Duration {
+	state := transport.cooldownState()
+	state.mu.Lock()
+	until := state.until[key]
+	state.mu.Unlock()
+	return time.Until(until)
+}
+
 func (transport *retryAfterTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	key := retryAfterKey(req.URL)
-	if err = transport.wait(req.Context(), key); err != nil {
-		return
+	var release func()
+	for {
+		if err = transport.wait(req.Context(), key); err != nil {
+			return
+		}
+		if transport.limitOperator != nil {
+			if err = transport.limitOperator.acquireRequest(req.Context(), transport); err != nil {
+				return
+			}
+			release = func() { transport.limitOperator.releaseRequest(transport) }
+			// Another request can set Retry-After while this one waits for a permit.
+			if transport.cooldownDelay(key) > 0 {
+				release()
+				continue
+			}
+		}
+		break
 	}
 
 	request := req
@@ -112,23 +159,35 @@ func (transport *retryAfterTransport) RoundTrip(req *http.Request) (resp *http.R
 		if cancel != nil {
 			cancel()
 		}
+		if release != nil {
+			release()
+		}
 		return
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
 		if until := retryAfterTime(resp.Header.Get("Retry-After"), time.Now()); !until.IsZero() {
 			// Keep the operator's full deadline; cancellation still ends the wait.
-			transport.mu.Lock()
-			if until.After(transport.until[key]) {
-				transport.until[key] = until
+			state := transport.cooldownState()
+			state.mu.Lock()
+			if until.After(state.until[key]) {
+				state.until[key] = until
 			}
-			transport.mu.Unlock()
+			state.mu.Unlock()
 		}
 	}
-	if cancel != nil {
-		if resp.Body != nil {
-			resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
-		} else {
+	if release != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError) {
+		// Retry clients may keep an error body open while waiting to retry.
+		release()
+		release = nil
+	}
+	if resp.Body != nil && (cancel != nil || release != nil) {
+		resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel, release: release}
+	} else {
+		if cancel != nil {
 			cancel()
+		}
+		if release != nil {
+			release()
 		}
 	}
 	return

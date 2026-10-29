@@ -27,6 +27,9 @@ func (cs *CertStream) ensureOperator(ctx context.Context, op *loglist3.Operator,
 		sort.Strings(op.Email)
 		if err = cs.DB().ensureOperator(ctx, logop); err == nil {
 			cs.mu.Lock()
+			if n, ok := cs.providerLimits[opDom]; ok {
+				logop.setConcurrency(n)
+			}
 			cs.operators[opDom] = logop
 			cs.mu.Unlock()
 		}
