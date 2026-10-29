@@ -35,8 +35,10 @@ type Config struct {
 
 	// ProviderConcurrency overrides Concurrency for matching CT log providers.
 	//
-	// Keys are [OperatorDomain] values for CT log URLs. Nil or non-positive
-	// entries use Concurrency. [Start] copies the input map before streaming
+	// Keys are [OperatorDomain] values for CT log URLs. A nil map or non-positive
+	// entries use Concurrency. Classic logs use this worker count per stream;
+	// tiled logs use it separately for head, tail, and gap clients. It does not
+	// cap total provider requests. [Start] copies the input map before streaming
 	// begins. Do not modify the map on the returned [CertStream] while it runs.
 	ProviderConcurrency map[string]int
 }
