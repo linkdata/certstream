@@ -32,6 +32,16 @@ type Config struct {
 	CacheMaxAge      time.Duration                               // remove cached tile data older than this age; zero disables caching of tiles
 	TailLog          string                                      // log HTTP requests using the tail dialer to this file
 	OnRetiredStreams func(context.Context, *PgDB, []int32) error // nil disables callback; invoked for retired database rows after readers stop and queued database writes finish
+
+	// ProviderConcurrency overrides Concurrency for matching CT log providers.
+	//
+	// Keys are [OperatorDomain] values for CT log URLs. A nil map or non-positive
+	// entries use Concurrency. The limit applies separately to each classic head
+	// reader and tiled head, tail, and gap client. It does not cap total provider
+	// requests. [Start] copies the input map before streaming. The map on the
+	// returned [CertStream] is a startup snapshot; do not mutate it while
+	// streaming. Use [CertStream.SetProviderConcurrency] to change limits.
+	ProviderConcurrency map[string]int
 }
 
 // NewConfig returns a Config with default values.

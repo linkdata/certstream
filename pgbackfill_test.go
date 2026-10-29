@@ -316,8 +316,7 @@ func TestPgDB_ScanAndBackfillGapsCanceledFetch(t *testing.T) {
 	case <-fetchStarted:
 	case <-time.After(5 * time.Second):
 		cancel()
-		<-done
-		t.Fatal("gap fetch did not start")
+		t.Fatalf("gap fetch did not start: %v", <-done)
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {

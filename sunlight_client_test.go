@@ -31,7 +31,7 @@ func newTestTiledLog(t *testing.T) *loglist3.TiledLog {
 
 func TestNewSunlightClientCacheDir(t *testing.T) {
 	cacheDir := filepath.Join(t.TempDir(), "cache")
-	client, err := newSunlightClient(newTestTiledLog(t), http.DefaultClient, nil, 1, cacheDir)
+	client, err := newSunlightClient(newTestTiledLog(t), http.DefaultClient, nil, cacheDir)
 	if err != nil {
 		t.Fatalf("newSunlightClient: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestNewSunlightClientCacheDir(t *testing.T) {
 }
 
 func TestNewSunlightClientCacheNone(t *testing.T) {
-	client, err := newSunlightClient(newTestTiledLog(t), http.DefaultClient, nil, 1, "")
+	client, err := newSunlightClient(newTestTiledLog(t), http.DefaultClient, nil, "")
 	if err != nil {
 		t.Fatalf("newSunlightClient: %v", err)
 	}

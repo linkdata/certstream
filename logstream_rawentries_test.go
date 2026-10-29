@@ -242,7 +242,7 @@ func TestGetRawEntriesParallelUsesAlignedWindows(t *testing.T) {
 	}
 }
 
-func makeTestLeafEntry(t *testing.T, now time.Time) (leaf ct.LeafEntry) {
+func makeTestLeafEntry(t testing.TB, now time.Time) (leaf ct.LeafEntry) {
 	t.Helper()
 	der := makeTestCertificate(t, now)
 	var err error
