@@ -151,7 +151,9 @@ func (lo *LogOperator) makeStream(log *loglist3.Log) (ls *LogStream, err error) 
 		tmpls.Logger = newToggledLogger(logfile, &tmpls.LogToggle)
 	}
 
-	if tmpls.headClient, err = client.New(log.URL, newLimitedProviderClient(lo.HeadClient, lo, nil), jsonclient.Options{}); err == nil {
+	headHTTP := newLimitedProviderClient(lo.HeadClient, lo, nil)
+	headHTTP.Transport = headCacheTransport{next: headHTTP.Transport}
+	if tmpls.headClient, err = client.New(log.URL, headHTTP, jsonclient.Options{}); err == nil {
 		if lo.TailClient != nil {
 			tmpls.tailClient, err = client.New(log.URL, newLimitedProviderClient(lo.TailClient, lo, nil), jsonclient.Options{})
 		}
@@ -202,7 +204,9 @@ func (lo *LogOperator) makeTiledStream(log *loglist3.TiledLog) (ls *LogStream, e
 
 	cacheDir := getCacheDir(lo.DataDir, log.MonitoringURL)
 	// The HTTP transports enforce live limits; torchwood's fixed cap stays unset.
-	if tmpls.headTile, err = newSunlightClient(log, newLimitedProviderClient(lo.HeadClient, lo, nil), tmpls.Logger, cacheDir); err == nil {
+	headHTTP := newLimitedProviderClient(lo.HeadClient, lo, nil)
+	headHTTP.Transport = headCacheTransport{next: headHTTP.Transport}
+	if tmpls.headTile, err = newSunlightClient(log, headHTTP, tmpls.Logger, cacheDir); err == nil {
 		if lo.TailClient != nil {
 			tailClient := newLimitedProviderClient(lo.TailClient, lo, nil)
 			tmpls.tailTile, err = newSunlightClient(log, tailClient, tmpls.Logger, cacheDir)
