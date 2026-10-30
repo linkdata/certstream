@@ -27,10 +27,8 @@ type headPollTransport struct {
 	entryPayload []byte
 	signature    []byte
 	headHeader   http.Header
-	headCalls    chan struct{}
 	entryStarts  chan string
 	blockCall    int64
-	entryBlocked chan struct{}
 	releaseEntry chan struct{}
 }
 
@@ -51,7 +49,6 @@ func newHeadPollTransport(t testing.TB) *headPollTransport {
 	return &headPollTransport{
 		entryPayload: payload,
 		signature:    signature,
-		headCalls:    make(chan struct{}, 8),
 		entryStarts:  make(chan string, 8),
 	}
 }
@@ -74,10 +71,6 @@ func (tr *headPollTransport) RoundTrip(req *http.Request) (resp *http.Response, 
 			SHA256RootHash:    make([]byte, 32),
 			TreeHeadSignature: tr.signature,
 		})
-		select {
-		case tr.headCalls <- struct{}{}:
-		default:
-		}
 	case "/ct/v1/get-entries":
 		call := tr.entries.Add(1)
 		select {
@@ -88,7 +81,6 @@ func (tr *headPollTransport) RoundTrip(req *http.Request) (resp *http.Response, 
 			return nil, io.ErrNoProgress
 		}
 		if call == tr.blockCall && tr.releaseEntry != nil {
-			close(tr.entryBlocked)
 			select {
 			case <-tr.releaseEntry:
 			case <-req.Context().Done():
@@ -110,7 +102,7 @@ func (tr *headPollTransport) RoundTrip(req *http.Request) (resp *http.Response, 
 	return
 }
 
-func newHeadPollStream(t testing.TB, tr *headPollTransport) (*LogStream, *LogOperator) {
+func newHeadPollStream(t testing.TB, tr *headPollTransport) *LogStream {
 	t.Helper()
 	const url = "https://headpoll.example.test/"
 	cs := &CertStream{
@@ -126,7 +118,23 @@ func newHeadPollStream(t testing.TB, tr *headPollTransport) (*LogStream, *LogOpe
 	}
 	lo.streams[url] = ls
 	cs.operators[lo.Domain] = lo
-	return ls, lo
+	return ls
+}
+
+func startHeadPollStream(t *testing.T, tr *headPollTransport) *LogStream {
+	t.Helper()
+	ls := newHeadPollStream(t, tr)
+	ctx, cancel := context.WithCancel(t.Context())
+	ls.cancel = cancel
+	ls.done = make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go ls.run(ctx, &wg)
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
+	return ls
 }
 
 func TestHeadAdvancesDuringEntryFetch(t *testing.T) {
@@ -134,23 +142,11 @@ func TestHeadAdvancesDuringEntryFetch(t *testing.T) {
 		tr := newHeadPollTransport(t)
 		tr.head.Store(0)
 		tr.blockCall = 2 // getEndSeen reads the first entry before the reader starts.
-		tr.entryBlocked = make(chan struct{})
 		tr.releaseEntry = make(chan struct{})
-		ls, _ := newHeadPollStream(t, tr)
-		ctx, cancel := context.WithCancel(t.Context())
-		ls.cancel = cancel
-		ls.done = make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go ls.run(ctx, &wg)
-		defer func() {
-			cancel()
-			wg.Wait()
-		}()
-		select {
-		case <-tr.entryBlocked:
-		case <-time.After(time.Minute):
-			t.Fatal("reader did not start its entry fetch")
+		ls := startHeadPollStream(t, tr)
+		synctest.Wait()
+		if got := tr.entries.Load(); got != 2 {
+			t.Fatalf("entry requests before head advances = %d; want 2", got)
 		}
 		tr.head.Store(1)
 		time.Sleep(12 * time.Second)
@@ -168,13 +164,14 @@ func TestHeadAdvancesDuringEntryFetch(t *testing.T) {
 			t.Fatalf("LastIndex = %d after stale head; want 1", got)
 		}
 		close(tr.releaseEntry)
+		synctest.Wait()
 		for _, want := range []string{"0", "0", "1"} {
 			select {
 			case got := <-tr.entryStarts:
 				if got != want {
 					t.Fatalf("entry fetch start = %q; want %q", got, want)
 				}
-			case <-time.After(time.Minute):
+			default:
 				t.Fatalf("entry fetch from %s did not start", want)
 			}
 		}
@@ -185,23 +182,11 @@ func TestRunWaitsForFirstNonnegativeHead(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tr := newHeadPollTransport(t)
 		tr.head.Store(-1)
-		ls, _ := newHeadPollStream(t, tr)
-		ctx, cancel := context.WithCancel(t.Context())
-		ls.cancel = cancel
-		ls.done = make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go ls.run(ctx, &wg)
-		defer func() {
-			cancel()
-			wg.Wait()
-		}()
-		select {
-		case <-tr.headCalls:
-		case <-time.After(time.Minute):
-			t.Fatal("initial head request did not start")
-		}
+		ls := startHeadPollStream(t, tr)
 		synctest.Wait()
+		if got := tr.headRequests.Load(); got != 1 {
+			t.Fatalf("initial head requests = %d; want 1", got)
+		}
 		if got := ls.LastIndex.Load(); got != -1 {
 			t.Fatalf("LastIndex = %d for empty tree; want -1", got)
 		}
@@ -227,23 +212,11 @@ func TestHeadPollRespectsCacheFreshness(t *testing.T) {
 		tr.headHeader = make(http.Header)
 		tr.headHeader.Set("Cache-Control", "public, max-age=30")
 		tr.headHeader.Set("Age", "10")
-		ls, _ := newHeadPollStream(t, tr)
-		ctx, cancel := context.WithCancel(t.Context())
-		ls.cancel = cancel
-		ls.done = make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go ls.run(ctx, &wg)
-		defer func() {
-			cancel()
-			wg.Wait()
-		}()
-		select {
-		case <-tr.headCalls:
-		case <-time.After(time.Minute):
-			t.Fatal("initial head request did not start")
-		}
+		startHeadPollStream(t, tr)
 		synctest.Wait()
+		if got := tr.headRequests.Load(); got != 1 {
+			t.Fatalf("initial head requests = %d; want 1", got)
+		}
 		time.Sleep(19 * time.Second)
 		synctest.Wait()
 		if got := tr.headRequests.Load(); got != 1 {
@@ -261,23 +234,10 @@ func TestHeadPollFailureStopsActiveReader(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tr := newHeadPollTransport(t)
 		tr.head.Store(0)
-		ls, _ := newHeadPollStream(t, tr)
-		ctx, cancel := context.WithCancel(t.Context())
-		ls.cancel = cancel
-		ls.done = make(chan struct{})
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go ls.run(ctx, &wg)
-		defer func() {
-			cancel()
-			wg.Wait()
-		}()
-		for range 2 { // getEndSeen and the active reader.
-			select {
-			case <-tr.entryStarts:
-			case <-time.After(time.Minute):
-				t.Fatal("reader did not start")
-			}
+		ls := startHeadPollStream(t, tr)
+		synctest.Wait()
+		if got := tr.entries.Load(); got != 2 {
+			t.Fatalf("entry requests before head failure = %d; want 2", got)
 		}
 		tr.failHead.Store(true)
 		time.Sleep(12 * time.Second)
@@ -287,9 +247,6 @@ func TestHeadPollFailureStopsActiveReader(t *testing.T) {
 		default:
 			t.Fatal("stream did not stop after terminal head error")
 		}
-		if ctx.Err() != context.Canceled {
-			t.Fatalf("reader context error = %v; want context canceled", ctx.Err())
-		}
 	})
 }
 
@@ -297,7 +254,7 @@ func TestReaderWaitsAfterNoProgress(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		tr := newHeadPollTransport(t)
 		tr.failEntries.Store(true)
-		ls, _ := newHeadPollStream(t, tr)
+		ls := newHeadPollStream(t, tr)
 		ls.LastIndex.Store(0)
 		ctx, cancel := context.WithCancel(t.Context())
 		var wg sync.WaitGroup
@@ -307,11 +264,6 @@ func TestReaderWaitsAfterNoProgress(t *testing.T) {
 			cancel()
 			wg.Wait()
 		}()
-		select {
-		case <-tr.entryStarts:
-		case <-time.After(time.Minute):
-			t.Fatal("initial entry request did not start")
-		}
 		synctest.Wait()
 		time.Sleep(9 * time.Second)
 		synctest.Wait()

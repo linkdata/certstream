@@ -32,10 +32,7 @@ func (tr headCacheTransport) RoundTrip(req *http.Request) (resp *http.Response, 
 }
 
 func (capture *headPollCache) delay(defaultDelay time.Duration) time.Duration {
-	if capture != nil {
-		return max(defaultDelay, time.Until(capture.until))
-	}
-	return defaultDelay
+	return max(defaultDelay, time.Until(capture.until))
 }
 
 func cacheSeconds(value string) (time.Duration, bool) {
