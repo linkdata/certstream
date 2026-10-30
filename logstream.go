@@ -30,9 +30,8 @@ var (
 	HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
 	// LogBatchSize sets the classic CT request window.
 	//
-	// The default is 256. It also sets the head advance threshold for tail
-	// fetching and aligns reverse backfill windows. Set it to a positive value
-	// before calling [Start].
+	// The default is 256. It also aligns reverse backfill windows. Set it to a
+	// positive value before calling [Start].
 	LogBatchSize  = int64(256)
 	MaxErrors     = 100
 	IdleCloseTime = time.Hour * 24 * 7
@@ -50,7 +49,7 @@ type LogStream struct {
 	Count          atomic.Int64 // number of certificates sent to the channel
 	MinIndex       atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
 	MaxIndex       atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
-	LastIndex      atomic.Int64 // atomic: highest index that is available from stream source
+	LastIndex      atomic.Int64 // atomic: highest index observed in a CT head, -1 until entries exist
 	Backfill       atomic.Int64 // atomic: historical gap and reverse-backfill entries left to fetch
 	Logger         *slog.Logger // toggled by LogToggle
 	Id             int32        // database ID, if available
@@ -144,7 +143,6 @@ func (ls *LogStream) getEndSeen(ctx context.Context, end int64) (seen time.Time)
 }
 
 func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
-	var end int64
 	var err error
 	var wg2 sync.WaitGroup
 	defer func() {
@@ -167,79 +165,85 @@ func (ls *LogStream) run(ctx context.Context, wg *sync.WaitGroup) {
 		}
 	}()
 
-	end, err = ls.newLastIndex(ctx)
-	if seen := ls.getEndSeen(ctx, end); !seen.IsZero() {
-		if time.Since(seen) > IdleCloseTime {
-			err = errLogIdle{Since: seen}
-			return
-		}
-	}
-
-	start := end
-	if cdb := ls.DB(); cdb != nil {
-		if ls.TailDialer != nil {
-			backfillCtx, cancelBackfill := context.WithCancel(ctx)
-			defer cancelBackfill()
-			wg2.Add(1)
-			go cdb.backfillStream(backfillCtx, ls, &wg2)
-		}
-	}
-
+	started := false
 	for err == nil {
-		if start <= end {
-			startBefore := start
-			start, _ = ls.getEntries(ctx, start, end, false, ls.sendEntry, nil)
-			if end-startBefore <= LogBatchSize/2 {
-				_ = sleep(ctx, time.Second*time.Duration(10+rand.IntN(10) /*#nosec G404*/))
+		var end int64
+		var cache headPollCache
+		end, err = ls.newLastIndex(withHeadPollCache(ctx, &cache))
+		if err == nil && end >= 0 && !started {
+			if seen := ls.getEndSeen(ctx, end); !seen.IsZero() {
+				if time.Since(seen) > IdleCloseTime {
+					err = errLogIdle{Since: seen}
+					return
+				}
 			}
+			if cdb := ls.DB(); cdb != nil && ls.TailDialer != nil {
+				backfillCtx, cancelBackfill := context.WithCancel(ctx)
+				defer cancelBackfill()
+				wg2.Add(1)
+				go cdb.backfillStream(backfillCtx, ls, &wg2)
+			}
+			wg2.Add(1)
+			go ls.readEntries(ctx, end, &wg2)
+			started = true
 		}
-		end, err = ls.newLastIndex(ctx)
+		if err == nil {
+			err = sleep(ctx, cache.delay(time.Millisecond*time.Duration(8000+rand.IntN(4000) /*#nosec G404*/)))
+		}
+	}
+}
+
+func (ls *LogStream) readEntries(ctx context.Context, start int64, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for ctx.Err() == nil {
+		wait := time.Second
+		end := ls.LastIndex.Load()
+		if start <= end {
+			if next, _ := ls.getEntries(ctx, start, end, false, ls.sendEntry, nil); next > start {
+				start = next
+				continue
+			}
+			wait = 10 * time.Second
+		}
+		_ = sleep(ctx, wait)
 	}
 }
 
 func (ls *LogStream) newLastIndex(ctx context.Context) (lastIndex int64, err error) {
-	started := time.Now()
 	var newIndex int64
-	lastIndex = ls.LastIndex.Load()
-	for err == nil {
-		err = ls.backoff.Retry(ctx, func() (callErr error) {
-			var errFrom string
-			if ls.isTiled() {
-				errFrom = "Checkpoint"
-				if ls.headTile != nil {
-					var checkpoint torchwood.Checkpoint
-					checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
-					if callErr == nil {
-						newIndex = checkpoint.N - 1
-					}
-				} else {
-					callErr = ErrSunlightClientMissing
+	err = ls.backoff.Retry(ctx, func() (callErr error) {
+		var errFrom string
+		if ls.isTiled() {
+			errFrom = "Checkpoint"
+			if ls.headTile != nil {
+				var checkpoint torchwood.Checkpoint
+				checkpoint, _, callErr = ls.headTile.Checkpoint(ctx)
+				if callErr == nil {
+					newIndex = checkpoint.N - 1
 				}
 			} else {
-				errFrom = "GetSTH"
-				var sth *ct.SignedTreeHead
-				sth, callErr = ls.headClient.GetSTH(ctx)
-				if callErr == nil {
-					newIndex = int64(sth.TreeSize) - 1 //#nosec G115
-				}
+				callErr = ErrSunlightClientMissing
 			}
-			if callErr != nil {
-				if ls.handleStreamError(callErr, errFrom) {
-					// keep callErr as-is
-				} else {
-					callErr = wrapLogStreamRetryable(callErr)
-				}
+		} else {
+			errFrom = "GetSTH"
+			var sth *ct.SignedTreeHead
+			sth, callErr = ls.headClient.GetSTH(ctx)
+			if callErr == nil {
+				newIndex = int64(sth.TreeSize) - 1 //#nosec G115
 			}
-			return
-		})
-		if err == nil {
-			if lastIndex < newIndex && (lastIndex+LogBatchSize < newIndex || time.Since(started) > time.Minute) {
-				lastIndex = newIndex
-				ls.LastIndex.Store(lastIndex)
-				return
-			}
-			err = sleep(ctx, time.Millisecond*time.Duration(8000+rand.IntN(4000)))
 		}
+		if callErr != nil {
+			if ls.handleStreamError(callErr, errFrom) {
+				// keep callErr as-is
+			} else {
+				callErr = wrapLogStreamRetryable(callErr)
+			}
+		}
+		return
+	})
+	if err == nil {
+		updateAtomicMax(&ls.LastIndex, newIndex)
+		lastIndex = ls.LastIndex.Load()
 	}
 	return
 }
