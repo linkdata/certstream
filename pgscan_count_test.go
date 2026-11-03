@@ -127,8 +127,8 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 999999) AS n WHERE n <> $2`), str
 				t.Fatal(err)
 			}
 
-			// Each cold window takes 100ms. The middle and end gaps require
-			// narrowing the incomplete range to finish within one 3s pass.
+			// Delayed cold windows make prefix narrowing necessary to find
+			// the middle and end gaps within one cold-pass budget.
 			db.stmtSelectGapWindow = db.Pfx(`WITH pause AS MATERIALIZED (
   SELECT pg_sleep(CASE WHEN $2::bigint < 1000000 THEN 0.1 ELSE 0.0 END)
 )
@@ -140,7 +140,7 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 				log:         &loglist3.Log{URL: url},
 				gapCh:       make(chan gap, 128),
 			}
-			if err := db.selectStreamGaps(ctx, ls); err != nil {
+			if err := db.selectStreamGaps(ctx, ls); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, errGapScanDeferred) {
 				t.Fatal(err)
 			}
 			var cold []gap
@@ -190,12 +190,12 @@ WHERE n NOT IN (10002, 10004)`), streamID); err != nil {
 	check := func(t *testing.T) {
 		t.Helper()
 		ls.gapCh = make(chan gap, 128)
-		if err := db.selectStreamGaps(ctx, ls); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		if err := db.selectStreamGaps(ctx, ls); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, errGapScanDeferred) {
 			t.Fatal(err)
 		}
 		var cold []gap
 		for _, g := range collectGaps(ls.gapCh) {
-			if g.start < gapProbeSize {
+			if g.start < 20_000 {
 				cold = append(cold, g)
 			}
 		}

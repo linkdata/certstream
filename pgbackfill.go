@@ -31,6 +31,32 @@ func (ls *LogStream) getGapEntries(ctx context.Context, start, end int64, histor
 	return ls.getEntries(ctx, start, end, historical, handleFn, gapcounter)
 }
 
+func (cdb *PgDB) queueGap(ctx context.Context, ls *LogStream, gapCh chan gap, g gap, deferOnFull bool) (err error) {
+	length := g.end - g.start + 1
+	ls.Backfill.Add(length)
+	if deferOnFull {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case gapCh <- g:
+		default:
+			err = errGapScanDeferred
+		}
+	} else {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case gapCh <- g:
+		}
+	}
+	if err == nil {
+		cdb.recordGap(ls, g)
+	} else {
+		ls.Backfill.Add(-length)
+	}
+	return
+}
+
 func (e errLogEntriesTooOld) Error() string {
 	return "log entries are older than " + strconv.Itoa(e.MaxAge) + " days"
 }
@@ -66,15 +92,18 @@ func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream,
 		scanErr = maxErr
 		if gapCh := ls.getGapCh(); gapCh != nil {
 			allGapsFilled := maxErr == nil
+			if lastgap.end != 0 {
+				ls.Backfill.Add(lastgap.end - lastgap.start + 1)
+			}
 			fillGap := func(g gap) {
 				if ctx.Err() == nil {
-					ls.Backfill.Add((g.end - g.start) + 1)
 					next, _ := fetchFn(ctx, g.start, g.end, true, ls.sendEntry, &ls.Backfill)
 					// Fetched entries enter a queue; only a later DB scan proves they were stored.
 					if next < g.end+1 {
 						allGapsFilled = false
 					}
 				} else {
+					ls.Backfill.Add(-(g.end - g.start + 1))
 					allGapsFilled = false
 				}
 			}
@@ -103,6 +132,10 @@ func (cdb *PgDB) scanAndBackfillGaps(ctx context.Context, ls *LogStream, fetchFn
 }
 
 func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, includeTrailing bool) (scanErr error) {
+	return cdb.scanAndBackfillGapsModeAt(ctx, ls, fetchFn, includeTrailing, nil, true, nil)
+}
+
+func (cdb *PgDB) scanAndBackfillGapsModeAt(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, includeTrailing bool, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
@@ -114,7 +147,7 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 
 	scanDone := make(chan error, 1)
 	go func() {
-		scanDone <- cdb.selectStreamGaps(ctx, ls)
+		scanDone <- cdb.selectStreamGapsMode(ctx, ls, cold, scanRecent, coldPending)
 	}()
 	scanErr = cdb.backfillGapsWithFetcherMode(ctx, ls, fetchFn, scanDone, includeTrailing)
 
@@ -134,15 +167,38 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 
 func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, wg *sync.WaitGroup) {
 	defer wg.Done()
+	nextHot := next
+	nextCold := time.Now().Add(gapColdInterval)
+	cold := coldScanState{next: -1, end: -1}
 	for ctx.Err() == nil {
+		next = nextHot
+		if nextCold.Before(next) {
+			next = nextCold
+		}
 		if sleep(ctx, time.Until(next)) != nil {
 			return
 		}
-		_ = cdb.scanAndBackfillGapsMode(ctx, ls, ls.getGapEntries, false)
+		scanRecent := !time.Now().Before(nextHot)
+		var coldPending bool
+		scanErr := cdb.scanAndBackfillGapsModeAt(ctx, ls, ls.getGapEntries, false, &cold, scanRecent, &coldPending)
 		if err := cdb.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil && !errors.Is(err, errGapScanDeferred) {
 			_ = cdb.LogError(err, "recoverTrailingGap", "url", ls.URL())
 		}
-		next = time.Now().Add(gapScanInterval)
+		if scanRecent {
+			if errors.Is(scanErr, errGapScanDeferred) {
+				nextHot = time.Now().Add(gapColdInterval)
+			} else {
+				nextHot = time.Now().Add(gapScanInterval)
+			}
+		}
+		// Continue unfinished sweeps promptly, but back off after a full sweep.
+		if coldPending && cold.next < 0 {
+			nextCold = time.Now().Add(gapRetryInterval)
+		} else if scanErr != nil || coldPending {
+			nextCold = time.Now().Add(gapColdInterval)
+		} else {
+			nextCold = nextHot
+		}
 	}
 }
 
@@ -198,7 +254,7 @@ func (cdb *PgDB) backfillMinIndex(ctx context.Context, ls *LogStream) (minIndex 
 
 func (cdb *PgDB) backfillSetGapStartIndex(ctx context.Context, ls *LogStream, logindex int64) (err error) {
 	if cdb != nil && ls != nil {
-		if ctx.Err() == nil {
+		if err = ctx.Err(); err == nil {
 			if logindex >= 0 {
 				_, err = cdb.Exec(ctx, cdb.stmtUpdateBackfillIdx, logindex, ls.Id)
 				err = cdb.LogError(err, "Backfill/UpdateIndex", "url", ls.URL(), "stream", ls.Id, "logindex", logindex)

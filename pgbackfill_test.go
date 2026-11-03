@@ -38,11 +38,21 @@ func TestPgDB_GapLoggingDiscovery(t *testing.T) {
 	if got := db.gaps[ls.Id]; got != (gapCounts{url: url, gaps: 2, entries: 3}) {
 		t.Fatalf("discovered gaps = %+v", got)
 	}
+	firstFetch := true
 	if err := db.backfillGapsWithFetcher(ctx, ls, func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+		if firstFetch {
+			firstFetch = false
+			if got := remaining.Load(); got != 1005 {
+				t.Fatalf("backfill including queued and trailing gaps = %d, want 1005", got)
+			}
+		}
 		remaining.Add(-((end - start) + 1))
 		return end + 1, true
 	}, nil); err != nil {
 		t.Fatal(err)
+	}
+	if got := ls.Backfill.Load(); got != 0 {
+		t.Fatalf("backfill after fetch = %d, want 0", got)
 	}
 	// Consuming the discovered gaps must not count them again; only the trailing
 	// gap (6..1007) adds to the totals.
@@ -352,7 +362,8 @@ func TestPgDB_BackfillGapsLeavesCursorUntilStored(t *testing.T) {
 	ctx, db, cs := setupSelectGapsDB(t)
 	if db != nil && cs != nil {
 		var operatorID int32
-		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+		if err := db.QueryRow(
+			ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
 			"op", "op@example.com",
 		).Scan(&operatorID); err != nil {
 			t.Fatalf("insert operator failed: %v", err)
@@ -369,6 +380,7 @@ func TestPgDB_BackfillGapsLeavesCursorUntilStored(t *testing.T) {
 				ls.LastIndex.Store(-1)
 				ls.gapCh = make(chan gap, 1)
 				g := gap{start: 10, end: 12}
+				ls.Backfill.Add(g.end - g.start + 1)
 				ls.gapCh <- g
 				close(ls.gapCh)
 
@@ -386,7 +398,8 @@ func TestPgDB_BackfillGapsLeavesCursorUntilStored(t *testing.T) {
 				}
 
 				var backfillIndex int64
-				if err = db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
+				if err = db.QueryRow(
+					ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
@@ -404,7 +417,8 @@ func TestPgDB_BackfillGapsDoesNotAdvanceOnIncompleteFetch(t *testing.T) {
 	ctx, db, cs := setupSelectGapsDB(t)
 	if db != nil && cs != nil {
 		var operatorID int32
-		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+		if err := db.QueryRow(
+			ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
 			"op", "op@example.com",
 		).Scan(&operatorID); err != nil {
 			t.Fatalf("insert operator failed: %v", err)
@@ -422,6 +436,7 @@ func TestPgDB_BackfillGapsDoesNotAdvanceOnIncompleteFetch(t *testing.T) {
 				}
 				ls.LastIndex.Store(-1)
 				ls.gapCh = make(chan gap, 1)
+				ls.Backfill.Add(3)
 				ls.gapCh <- gap{start: 3, end: 5}
 				close(ls.gapCh)
 
@@ -439,7 +454,8 @@ func TestPgDB_BackfillGapsDoesNotAdvanceOnIncompleteFetch(t *testing.T) {
 				}
 
 				var backfillIndex int64
-				if err = db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
+				if err = db.QueryRow(
+					ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
@@ -457,7 +473,8 @@ func TestPgDB_BackfillGapsStopsAdvancingAfterIncompleteGap(t *testing.T) {
 	ctx, db, cs := setupSelectGapsDB(t)
 	if db != nil && cs != nil {
 		var operatorID int32
-		if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
+		if err := db.QueryRow(
+			ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id;`),
 			"op", "op@example.com",
 		).Scan(&operatorID); err != nil {
 			t.Fatalf("insert operator failed: %v", err)
@@ -475,6 +492,7 @@ func TestPgDB_BackfillGapsStopsAdvancingAfterIncompleteGap(t *testing.T) {
 				}
 				ls.LastIndex.Store(-1)
 				ls.gapCh = make(chan gap, 2)
+				ls.Backfill.Add(6)
 				ls.gapCh <- gap{start: 3, end: 5}
 				ls.gapCh <- gap{start: 7, end: 9}
 				close(ls.gapCh)
@@ -496,7 +514,8 @@ func TestPgDB_BackfillGapsStopsAdvancingAfterIncompleteGap(t *testing.T) {
 				}
 
 				var backfillIndex int64
-				if err = db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
+				if err = db.QueryRow(
+					ctx, db.Pfx(`SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`),
 					streamID,
 				).Scan(&backfillIndex); err != nil {
 					t.Fatalf("select backfill_logindex failed: %v", err)
