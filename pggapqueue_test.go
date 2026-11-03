@@ -22,7 +22,7 @@ func TestPgDB_QueueGapReservation(t *testing.T) {
 	if got := ls.Backfill.Load(); got != 5 {
 		t.Fatalf("queued backfill = %d, want 5", got)
 	}
-	if err := db.queueGap(t.Context(), ls, gapCh, gap{start: 9, end: 9}, true); !errors.Is(err, errGapScanDeferred) {
+	if err := db.queueGap(t.Context(), ls, gapCh, gap{start: 9, end: 9}, true); !errors.Is(err, errGapChannelFull) || errors.Is(err, errGapScanDeferred) {
 		t.Fatalf("full channel error = %v, want scan deferred", err)
 	}
 	if got := ls.Backfill.Load(); got != 5 {

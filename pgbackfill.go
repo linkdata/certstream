@@ -40,7 +40,7 @@ func (cdb *PgDB) queueGap(ctx context.Context, ls *LogStream, gapCh chan gap, g 
 			err = ctx.Err()
 		case gapCh <- g:
 		default:
-			err = errGapScanDeferred
+			err = errGapChannelFull
 		}
 	} else {
 		select {

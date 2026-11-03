@@ -36,13 +36,6 @@ const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE
 
 const SelectMinIndexFrom = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1 AND logindex >= $2;`
 
-const selectGapCount = `WITH CERTDB_gap_count AS (
-  SELECT count(*) AS entries
-  FROM CERTDB_entry
-  WHERE stream = $1 AND logindex BETWEEN $2 AND $3
-)
-SELECT entries FROM CERTDB_gap_count;`
-
 const selectGapWindow = `SELECT /* CERTDB_gap_window */ logindex FROM CERTDB_entry WHERE stream = $1 AND logindex BETWEEN $2 AND $3 ORDER BY logindex;` // #nosec G101 -- this is a SQL query, not a credential
 
 const SelectBackfillIndex = `SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`
