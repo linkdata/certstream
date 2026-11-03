@@ -37,6 +37,7 @@ type PgDB struct {
 	funcStreamID          string
 	funcIngestBatch       string
 	stmtSelectGapWindow   string
+	stmtSelectGapCount    string
 	stmtSelectMinIdx      string
 	stmtSelectMaxIdx      string
 	stmtSelectBackfillIdx string
@@ -79,7 +80,7 @@ func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string
 	return
 }
 
-// NewPgDB creates a PgDB and creates the needed tables and indices if they don't exist.
+// NewPgDB creates a PgDB and applies [CreateSchema].
 func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 	const callOperatorID = `SELECT CERTDB_operator_id($1,$2);`
 	const callStreamID = `SELECT CERTDB_stream_id($1,$2,$3);`
@@ -120,6 +121,7 @@ func NewPgDB(ctx context.Context, cs *CertStream) (cdb *PgDB, err error) {
 							funcStreamID:          pfx(callStreamID),
 							funcIngestBatch:       pfx(`SELECT CERTDB_ingest_batch($1::jsonb);`),
 							stmtSelectGapWindow:   pfx(selectGapWindow),
+							stmtSelectGapCount:    pfx(selectGapCount),
 							stmtSelectMinIdx:      pfx(SelectMinIndex),
 							stmtSelectMaxIdx:      pfx(SelectMaxIndex),
 							stmtSelectBackfillIdx: pfx(SelectBackfillIndex),
