@@ -74,6 +74,9 @@ func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
 				} else if backfillIndex != 5 {
 					t.Fatalf("backfill_logindex = %d, want %d", backfillIndex, 5)
 				}
+				if got := ls.GapScanIndex.Load(); got != 0 {
+					t.Fatalf("GapScanIndex = %d, want 0 without a cold sweep", got)
+				}
 			}
 		}
 	}
