@@ -2,10 +2,11 @@ package certstream
 
 import _ "embed"
 
-// CreateSchema contains SQL to create the CertDB schema.
+// CreateSchema contains SQL to apply the CertDB schema.
 //
 // Existing tables remain unchanged. New databases receive B-tree domain
-// indexes and no trigram index.
+// indexes and no trigram index. It removes the CERTDB_gap type,
+// CERTDB_findgap function, and CERTDB_set_backfill_first_gap procedure.
 //
 //go:embed assets/createschema.sql
 var CreateSchema string
@@ -35,9 +36,7 @@ const SelectMaxIndex = `SELECT MAX(logindex) AS logindex FROM CERTDB_entry WHERE
 
 const SelectMinIndexFrom = `SELECT MIN(logindex) AS logindex FROM CERTDB_entry WHERE stream = $1 AND logindex >= $2;`
 
-const SelectFindGap = `SELECT start_gap, end_gap FROM CERTDB_findgap($1, $2, $3);`
-
-const selectGapWindow = `SELECT logindex FROM CERTDB_entry WHERE stream = $1 AND logindex BETWEEN $2 AND $3 ORDER BY logindex;` // #nosec G101 -- this is a SQL query, not a credential
+const selectGapWindow = `SELECT /* CERTDB_gap_window */ logindex FROM CERTDB_entry WHERE stream = $1 AND logindex BETWEEN $2 AND $3 ORDER BY logindex;` // #nosec G101 -- this is a SQL query, not a credential
 
 const SelectBackfillIndex = `SELECT backfill_logindex FROM CERTDB_stream WHERE id = $1;`
 

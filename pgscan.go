@@ -9,11 +9,12 @@ import (
 
 const (
 	gapWindowSize      int64 = 10_000
+	gapColdChunkSize   int64 = 1_000_000
 	gapRecentLookback  int64 = 1_000_000
-	gapQueryTimeout          = 2 * time.Second
+	gapQueryTimeout          = 5 * time.Minute
 	gapRecentBudget          = 3 * time.Second
-	gapColdBudget            = 3 * time.Second
-	gapScanPassTimeout       = 10 * time.Second
+	gapColdStartBudget       = 3 * time.Second
+	gapScanPassTimeout       = 6 * time.Minute
 	gapScanInterval          = 15 * time.Minute
 )
 
@@ -131,7 +132,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 	recentCtx, cancel := context.WithTimeout(ctx, gapRecentBudget)
 	hotFloor := maxIndex + 1
 	firstGap := int64(-1)
-	for end := maxIndex; end >= recentStart && scanErr == nil; {
+	for end := maxIndex; end >= recentStart; {
 		start := max(recentStart, end-gapWindowSize+1)
 		var gaps []gap
 		if cdb.QueueUsage() > 50 {
@@ -165,20 +166,11 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 		}
 		end = start - 1
 	}
-	hotErr := scanErr
-	hotBudgetExpired := errors.Is(recentCtx.Err(), context.DeadlineExceeded)
 	cancel()
-	if hotErr != nil && (ctx.Err() != nil || !errors.Is(hotErr, context.DeadlineExceeded)) {
+	if scanErr != nil && (ctx.Err() != nil || !errors.Is(scanErr, context.DeadlineExceeded)) {
 		return
 	}
 	scanErr = nil
-	if !hotBudgetExpired {
-		defer func() {
-			if scanErr == nil {
-				scanErr = hotErr
-			}
-		}()
-	}
 	if firstGap >= 0 && firstGap < cursor {
 		if _, scanErr = cdb.Exec(ctx, cdb.stmtLowerBackfillIdx, firstGap, ls.Id); scanErr != nil {
 			return
@@ -207,16 +199,19 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 		return
 	}
 	coldEnd := hotFloor - 1
-	coldCtx, cancel := context.WithTimeout(ctx, gapColdBudget)
-	defer cancel()
-	for cursor <= coldEnd && scanErr == nil {
-		if cdb.QueueUsage() > 50 {
-			return errGapScanDeferred
+	coldStarted := time.Now()
+	// The first read is small and always starts; the budget limits later reads.
+	firstRead := true
+	for cursor <= coldEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
+		size := gapColdChunkSize
+		if firstRead {
+			size = gapWindowSize
+			firstRead = false
 		}
-		end := min(coldEnd, cursor+gapWindowSize-1)
+		end := min(coldEnd, cursor+size-1)
 		var found bool
-		found, scanErr = cdb.sendGapWindow(coldCtx, ls, gapCh, cursor, end, &cursor)
-		if found || end == coldEnd {
+		found, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, cursor, end, &cursor)
+		if scanErr != nil || found {
 			break
 		}
 		cursor = end + 1
