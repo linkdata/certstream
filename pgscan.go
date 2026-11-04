@@ -132,7 +132,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 	recentCtx, cancel := context.WithTimeout(ctx, gapRecentBudget)
 	hotFloor := maxIndex + 1
 	firstGap := int64(-1)
-	for end := maxIndex; end >= recentStart && scanErr == nil; {
+	for end := maxIndex; end >= recentStart; {
 		start := max(recentStart, end-gapWindowSize+1)
 		var gaps []gap
 		if cdb.QueueUsage() > 50 {
@@ -166,20 +166,11 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 		}
 		end = start - 1
 	}
-	hotErr := scanErr
-	hotBudgetExpired := errors.Is(recentCtx.Err(), context.DeadlineExceeded)
 	cancel()
-	if hotErr != nil && (ctx.Err() != nil || !errors.Is(hotErr, context.DeadlineExceeded)) {
+	if scanErr != nil && (ctx.Err() != nil || !errors.Is(scanErr, context.DeadlineExceeded)) {
 		return
 	}
 	scanErr = nil
-	if !hotBudgetExpired {
-		defer func() {
-			if scanErr == nil {
-				scanErr = hotErr
-			}
-		}()
-	}
 	if firstGap >= 0 && firstGap < cursor {
 		if _, scanErr = cdb.Exec(ctx, cdb.stmtLowerBackfillIdx, firstGap, ls.Id); scanErr != nil {
 			return
@@ -209,19 +200,15 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 	}
 	coldEnd := hotFloor - 1
 	coldStarted := time.Now()
-	// Check the cursor first so an unresolved gap needs only one small read.
-	if cursor <= coldEnd {
-		end := min(coldEnd, cursor+gapWindowSize-1)
-		var found bool
-		found, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, cursor, end, &cursor)
-		if scanErr != nil || found {
-			return
+	// The first read is small and always starts; the budget limits later reads.
+	firstRead := true
+	for cursor <= coldEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
+		size := gapColdChunkSize
+		if firstRead {
+			size = gapWindowSize
+			firstRead = false
 		}
-		cursor = end + 1
-	}
-	// Let a started read finish; the budget limits only new cold ranges.
-	for cursor <= coldEnd && scanErr == nil && time.Since(coldStarted) < gapColdStartBudget {
-		end := min(coldEnd, cursor+gapColdChunkSize-1)
+		end := min(coldEnd, cursor+size-1)
 		var found bool
 		found, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, cursor, end, &cursor)
 		if scanErr != nil || found {
