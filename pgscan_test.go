@@ -116,11 +116,17 @@ func TestGapScanColdProgressAfterHotBudget(t *testing.T) {
 	) SELECT e.logindex FROM CERTDB_entry e CROSS JOIN pause
 	WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
-	ls.gapCh = make(chan gap, 8)
+	ls.gapCh = make(chan gap, 128)
 	if err := db.selectStreamGaps(ctx, ls); err != nil {
 		t.Fatal(err)
 	}
-	if got := collectGaps(ls.gapCh); !gapsEqual(got, []gap{{2, 2}, {4, 9}, {11, 9999}}) {
+	var cold []gap
+	for _, g := range collectGaps(ls.gapCh) {
+		if g.start < 10_000 {
+			cold = append(cold, g)
+		}
+	}
+	if got := cold; !gapsEqual(got, []gap{{2, 2}, {4, 9}, {11, 9999}}) {
 		t.Fatalf("cold gaps after hot budget expiry = %v", got)
 	}
 	var cursor int64

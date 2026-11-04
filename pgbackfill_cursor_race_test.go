@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -54,5 +55,30 @@ func TestGapCursorDoesNotOutrunVerifiedMax(t *testing.T) {
 	}
 	if got := collectGaps(ls.gapCh); !gapsEqual(got, []gap{{15, 15}}) {
 		t.Fatalf("rescan gaps = %v, want [{15 15}]", got)
+	}
+}
+
+func TestBackfillSetGapStartIndexCanceled(t *testing.T) {
+	ctx, db, cs := setupSelectGapsDB(t)
+	var operatorID, streamID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	url := "https://example.test/canceled-cursor"
+	if err := insertStream(ctx, db, url, operatorID, &streamID); err != nil {
+		t.Fatal(err)
+	}
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID, log: &loglist3.Log{URL: url}}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := db.backfillSetGapStartIndex(canceled, ls, 5); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled cursor update = %v, want context canceled", err)
+	}
+	var cursor int64
+	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 0 {
+		t.Fatalf("backfill_logindex = %d, want 0", cursor)
 	}
 }

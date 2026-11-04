@@ -8,10 +8,13 @@ Small library wrapping github.com/google/certificate-transparency-go and github.
 
 PostgreSQL is optional. Leave `Config.PgAddr` empty for live streaming without persistence.
 Configure a database for certificate storage and backfill.
-Streams with database and tail fetching enabled scan stored entry gaps at startup
-and every 15 minutes. Recent indexes are checked first in bounded windows;
-older indexes are checked as database capacity permits. Scans pause when the
-database queue exceeds 50%, and each gap query has a two-second deadline.
+Streams with database and tail fetching enabled scan stored entry gaps at startup.
+Recent indexes are checked first in bounded windows, normally every 15 minutes.
+Cold scans start with a 10,000-index read, then read chunks of up to one million
+indexes. Unfinished sweeps resume after 10 seconds; completed sweeps with
+unresolved gaps retry after one minute. Scans pause when the database queue
+exceeds 50%. Each gap read has a limit of five minutes; recent scans have a
+budget of three seconds.
 The recent pass covers up to one million indexes below the database maximum,
 regardless of the persisted scan cursor. The older pass resumes that cursor;
 indexes below an existing cursor and outside the recent range are not audited.

@@ -16,9 +16,20 @@ const (
 	gapColdStartBudget       = 3 * time.Second
 	gapScanPassTimeout       = 6 * time.Minute
 	gapScanInterval          = 15 * time.Minute
+	gapColdInterval          = 10 * time.Second
+	gapRetryInterval         = time.Minute
 )
 
-var errGapScanDeferred = errors.New("gap scan deferred while database queue is busy")
+var (
+	errGapScanDeferred = errors.New("gap scan deferred while database queue is busy")
+	errGapChannelFull  = errors.New("gap scan deferred while gap channel is full")
+)
+
+type coldScanState struct {
+	next          int64 // next index to scan, or -1 for a new sweep
+	end           int64 // fixed end of the current sweep, or -1 for a new sweep
+	cursorBlocked bool  // the sweep cannot advance the durable cursor
+}
 
 func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64) (gaps []gap, err error) {
 	queryCtx, cancel := context.WithTimeout(ctx, gapQueryTimeout)
@@ -51,9 +62,11 @@ func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64)
 	return
 }
 
-func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan gap, start, end int64, cursor *int64) (found bool, err error) {
+func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan gap, start, end int64, cursor *int64, persist bool) (found bool, next int64, err error) {
+	next = start
 	if cdb.QueueUsage() > 50 {
-		return false, errGapScanDeferred
+		err = errGapScanDeferred
+		return
 	}
 	var gaps []gap
 	if gaps, err = cdb.storedGaps(ctx, ls.Id, start, end); err != nil {
@@ -63,7 +76,7 @@ func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan ga
 	if len(gaps) > 0 {
 		verified = gaps[0].start
 	}
-	if verified > *cursor {
+	if persist && verified > *cursor {
 		if err = cdb.backfillSetGapStartIndex(ctx, ls, verified); err != nil {
 			return
 		}
@@ -71,18 +84,20 @@ func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan ga
 	}
 	for _, g := range gaps {
 		found = true
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
+		next = g.start
+		if err = cdb.queueGap(ctx, ls, gapCh, g, true); err != nil {
 			return
-		case gapCh <- g:
-			cdb.recordGap(ls, g)
 		}
 	}
+	next = end + 1
 	return
 }
 
-func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr error) {
+func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) error {
+	return cdb.selectStreamGapsMode(ctx, ls, nil, true, nil)
+}
+
+func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
 	gapCh := ls.getGapCh()
 	if gapCh == nil {
 		return nil
@@ -93,7 +108,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 			close(gapCh)
 		}
 		ls.mu.Unlock()
-		if scanErr != nil && !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, errGapScanDeferred) {
+		if scanErr != nil && !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, errGapScanDeferred) && !errors.Is(scanErr, errGapChannelFull) {
 			_ = cdb.LogError(scanErr, "selectStreamGaps", "stream", ls.Id, "url", ls.URL())
 		}
 	}()
@@ -132,7 +147,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 	recentCtx, cancel := context.WithTimeout(ctx, gapRecentBudget)
 	hotFloor := maxIndex + 1
 	firstGap := int64(-1)
-	for end := maxIndex; end >= recentStart; {
+	for end := maxIndex; scanRecent && end >= recentStart; {
 		start := max(recentStart, end-gapWindowSize+1)
 		var gaps []gap
 		if cdb.QueueUsage() > 50 {
@@ -147,12 +162,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 			if firstGap < 0 || g.start < firstGap {
 				firstGap = g.start
 			}
-			select {
-			case <-recentCtx.Done():
-				scanErr = recentCtx.Err()
-			case gapCh <- g:
-				cdb.recordGap(ls, g)
-			}
+			scanErr = cdb.queueGap(recentCtx, ls, gapCh, g, false)
 			if scanErr != nil {
 				break
 			}
@@ -186,7 +196,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 			cursor = first.Int64
 		}
 	}
-	if recentCutoff == 0 && hotFloor == recentStart && cursor >= recentStart {
+	if scanRecent && recentCutoff == 0 && hotFloor == recentStart && cursor >= recentStart {
 		verified := maxIndex
 		if firstGap >= 0 {
 			verified = firstGap
@@ -196,25 +206,56 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) (scanErr e
 				return
 			}
 		}
+		if coldPending != nil {
+			*coldPending = firstGap >= 0
+		}
+		if cold != nil {
+			*cold = coldScanState{next: -1, end: -1}
+		}
 		return
 	}
+	// Cold-only passes also cover the recent tail.
 	coldEnd := hotFloor - 1
 	coldStarted := time.Now()
+	scanPos := cursor
+	scanEnd := coldEnd
+	// Persist only while the sweep has verified every index since the cursor.
+	persist := true
+	if cold != nil {
+		if cold.end < 0 || cold.next < cursor || cold.next > min(coldEnd, cold.end) {
+			*cold = coldScanState{next: cursor, end: coldEnd}
+		}
+		scanEnd = min(scanEnd, cold.end)
+		scanPos = cold.next
+		persist = scanPos == cursor || (!cold.cursorBlocked && scanPos == cursor+1)
+		defer func() {
+			cold.next = scanPos
+			cold.cursorBlocked = !persist
+			if scanPos > scanEnd {
+				*cold = coldScanState{next: -1, end: -1}
+			}
+		}()
+	}
+	if coldPending != nil {
+		defer func() { *coldPending = cursor < coldEnd || firstGap >= 0 || !persist }()
+	}
 	// The first read is small and always starts; the budget limits later reads.
 	firstRead := true
-	for cursor <= coldEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
+	for scanPos <= scanEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
 		size := gapColdChunkSize
 		if firstRead {
 			size = gapWindowSize
 			firstRead = false
 		}
-		end := min(coldEnd, cursor+size-1)
+		end := min(scanEnd, scanPos+size-1)
 		var found bool
-		found, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, cursor, end, &cursor)
-		if scanErr != nil || found {
+		found, scanPos, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, scanPos, end, &cursor, persist)
+		if found {
+			persist = false
+		}
+		if scanErr != nil {
 			break
 		}
-		cursor = end + 1
 	}
 	return
 }
