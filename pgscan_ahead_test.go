@@ -32,41 +32,23 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 		LogOperator: &LogOperator{CertStream: cs},
 		Id:          streamID,
 		log:         &loglist3.Log{URL: url},
+		gapCh:       make(chan gap, 2),
 	}
-	for _, tc := range []struct {
-		name         string
-		capacity     int
-		want         []gap
-		wantErr      error
-		wantBackfill int64
-	}{
-		{name: "multiple windows", capacity: 2, want: []gap{{2, 2}, {15000, 15000}}, wantBackfill: 2},
-		{name: "full channel", capacity: 1, want: []gap{{2, 2}}, wantErr: errGapChannelFull, wantBackfill: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := db.Exec(ctx, db.Pfx(`UPDATE CERTDB_stream SET backfill_logindex = 0 WHERE id = $1`), streamID); err != nil {
-				t.Fatal(err)
-			}
-			ls.Backfill.Store(0)
-			ls.gapCh = make(chan gap, tc.capacity)
-			err := db.selectStreamGaps(ctx, ls)
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("scan error = %v, want %v", err, tc.wantErr)
-			}
-			if got := collectGaps(ls.gapCh); !gapsEqual(got, tc.want) {
-				t.Fatalf("queued gaps = %v, want %v", got, tc.want)
-			}
-			var cursor int64
-			if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
-				t.Fatal(err)
-			}
-			if cursor != 2 {
-				t.Fatalf("backfill_logindex = %d, want first gap at 2", cursor)
-			}
-			if got := ls.Backfill.Load(); got != tc.wantBackfill {
-				t.Fatalf("Backfill = %d, want %d queued entries", got, tc.wantBackfill)
-			}
-		})
+	if err := db.selectStreamGaps(ctx, ls); err != nil {
+		t.Fatal(err)
+	}
+	if got := collectGaps(ls.gapCh); !gapsEqual(got, []gap{{2, 2}, {15000, 15000}}) {
+		t.Fatalf("queued gaps = %v, want gaps at 2 and 15000", got)
+	}
+	var cursor int64
+	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 2 {
+		t.Fatalf("backfill_logindex = %d, want first gap at 2", cursor)
+	}
+	if got := ls.Backfill.Load(); got != 2 {
+		t.Fatalf("Backfill = %d, want 2 queued entries", got)
 	}
 }
 
@@ -113,21 +95,21 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 30005) AS n WHERE n NOT IN (2, 15
 		}
 	}
 	check(1, []gap{{2, 2}}, errGapChannelFull, 2)
-	if cold.next != 15_000 || cold.end != 30_005 || !cold.sawGap {
+	if cold.next != 15_000 || cold.end != 30_005 || !cold.cursorBlocked {
 		t.Fatalf("cold state after deferral = %+v, want next 15000, end 30005", cold)
 	}
 	if err := insertEntries(ctx, db, streamID, []int64{30_006}); err != nil {
 		t.Fatal(err)
 	}
 	check(2, []gap{{15000, 15000}}, nil, 2)
-	if cold.next != -1 || cold.end != -1 || cold.sawGap {
+	if cold.next != -1 || cold.end != -1 || cold.cursorBlocked {
 		t.Fatalf("cold state after complete sweep = %+v, want reset", cold)
 	}
 	// A sweep resuming at the durable cursor can advance after its gap is filled.
 	if err := insertEntries(ctx, db, streamID, []int64{2}); err != nil {
 		t.Fatal(err)
 	}
-	cold = coldScanState{next: 2, end: 30_006, sawGap: true}
+	cold = coldScanState{next: 2, end: 30_006, cursorBlocked: true}
 	check(2, []gap{{15000, 15000}}, nil, 15000)
 }
 
@@ -166,7 +148,7 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if cursor != 9_999 || cold.next != 10_000 || cold.sawGap || !pending {
+	if cursor != 9_999 || cold.next != 10_000 || cold.cursorBlocked || !pending {
 		t.Fatalf("first pass: cursor=%d, cold=%+v, pending=%t", cursor, cold, pending)
 	}
 

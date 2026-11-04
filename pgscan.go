@@ -26,9 +26,9 @@ var (
 )
 
 type coldScanState struct {
-	next   int64 // next index to scan, or -1 for a new sweep
-	end    int64 // fixed end of the current sweep, or -1 for a new sweep
-	sawGap bool  // an observed gap keeps the durable cursor at its start
+	next          int64 // next index to scan, or -1 for a new sweep
+	end           int64 // fixed end of the current sweep, or -1 for a new sweep
+	cursorBlocked bool  // the sweep cannot advance the durable cursor
 }
 
 func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64) (gaps []gap, err error) {
@@ -147,7 +147,7 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	recentCtx, cancel := context.WithTimeout(ctx, gapRecentBudget)
 	hotFloor := maxIndex + 1
 	firstGap := int64(-1)
-	for end := maxIndex; scanRecent && end >= recentStart && scanErr == nil; {
+	for end := maxIndex; scanRecent && end >= recentStart; {
 		start := max(recentStart, end-gapWindowSize+1)
 		var gaps []gap
 		if cdb.QueueUsage() > 50 {
@@ -210,16 +210,11 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 			*coldPending = firstGap >= 0
 		}
 		if cold != nil {
-			cold.next = -1
-			cold.end = -1
-			cold.sawGap = false
+			*cold = coldScanState{next: -1, end: -1}
 		}
 		return
 	}
-	if !scanRecent {
-		// The cold pass also checks the recent tail between full recent scans.
-		hotFloor = maxIndex + 1
-	}
+	// Cold-only passes also cover the recent tail.
 	coldEnd := hotFloor - 1
 	coldStarted := time.Now()
 	scanPos := cursor
@@ -228,47 +223,38 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	persist := true
 	if cold != nil {
 		if cold.end < 0 || cold.next < cursor || cold.next > min(coldEnd, cold.end) {
-			cold.end = coldEnd
-			cold.next = cursor
-			cold.sawGap = false
+			*cold = coldScanState{next: cursor, end: coldEnd}
 		}
 		scanEnd = min(scanEnd, cold.end)
-		if cold.next >= cursor && cold.next <= scanEnd {
-			scanPos = cold.next
-			persist = scanPos == cursor || (!cold.sawGap && scanPos == cursor+1)
-		}
+		scanPos = cold.next
+		persist = scanPos == cursor || (!cold.cursorBlocked && scanPos == cursor+1)
 		defer func() {
 			cold.next = scanPos
-			cold.sawGap = !persist
+			cold.cursorBlocked = !persist
 			if scanPos > scanEnd {
-				cold.next = -1
-				cold.end = -1
-				cold.sawGap = false
+				*cold = coldScanState{next: -1, end: -1}
 			}
 		}()
 	}
 	if coldPending != nil {
 		defer func() { *coldPending = cursor < coldEnd || firstGap >= 0 || !persist }()
 	}
-	// Keep the first read in each cold pass small.
-	if scanPos <= scanEnd {
-		end := min(scanEnd, scanPos+gapWindowSize-1)
+	// The first read is small and always starts; the budget limits later reads.
+	firstRead := true
+	for scanPos <= scanEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
+		size := gapColdChunkSize
+		if firstRead {
+			size = gapWindowSize
+			firstRead = false
+		}
+		end := min(scanEnd, scanPos+size-1)
 		var found bool
 		found, scanPos, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, scanPos, end, &cursor, persist)
 		if found {
 			persist = false
 		}
 		if scanErr != nil {
-			return
-		}
-	}
-	// Let a started read finish; the budget limits only new cold chunks.
-	for scanPos <= scanEnd && scanErr == nil && time.Since(coldStarted) < gapColdStartBudget {
-		end := min(scanEnd, scanPos+gapColdChunkSize-1)
-		var found bool
-		found, scanPos, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, scanPos, end, &cursor, persist)
-		if found {
-			persist = false
+			break
 		}
 	}
 	return

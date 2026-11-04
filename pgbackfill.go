@@ -128,14 +128,10 @@ func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream,
 }
 
 func (cdb *PgDB) scanAndBackfillGaps(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher) (scanErr error) {
-	return cdb.scanAndBackfillGapsMode(ctx, ls, fetchFn, true)
+	return cdb.scanAndBackfillGapsMode(ctx, ls, fetchFn, true, nil, true, nil)
 }
 
-func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, includeTrailing bool) (scanErr error) {
-	return cdb.scanAndBackfillGapsModeAt(ctx, ls, fetchFn, includeTrailing, nil, true, nil)
-}
-
-func (cdb *PgDB) scanAndBackfillGapsModeAt(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, includeTrailing bool, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
+func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, includeTrailing bool, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
@@ -180,7 +176,7 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 		}
 		scanRecent := !time.Now().Before(nextHot)
 		var coldPending bool
-		scanErr := cdb.scanAndBackfillGapsModeAt(ctx, ls, ls.getGapEntries, false, &cold, scanRecent, &coldPending)
+		scanErr := cdb.scanAndBackfillGapsMode(ctx, ls, ls.getGapEntries, false, &cold, scanRecent, &coldPending)
 		if err := cdb.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil && !errors.Is(err, errGapScanDeferred) {
 			_ = cdb.LogError(err, "recoverTrailingGap", "url", ls.URL())
 		}

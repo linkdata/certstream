@@ -50,7 +50,7 @@ type LogStream struct {
 	MinIndex       atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
 	MaxIndex       atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex      atomic.Int64 // atomic: highest index observed in a CT head, -1 until entries exist
-	Backfill       atomic.Int64 // estimate of discovered gap and reverse-backfill entries left to fetch
+	Backfill       atomic.Int64 // atomic: estimate of discovered gap and reverse-backfill entries left to fetch
 	Logger         *slog.Logger // toggled by LogToggle
 	Id             int32        // database ID, if available
 	gapCh          chan gap     // protected by LogOperator.mu
