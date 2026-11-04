@@ -15,14 +15,14 @@ func TestPgDB_QueueGapReservation(t *testing.T) {
 	ls := &LogStream{}
 	gapCh := make(chan gap, 2)
 	for _, g := range []gap{{start: 2, end: 3}, {start: 5, end: 7}} {
-		if err := db.queueGap(t.Context(), ls, gapCh, g, true); err != nil {
+		if err := db.queueGap(t.Context(), ls, gapCh, g, true, false); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if got := ls.Backfill.Load(); got != 5 {
 		t.Fatalf("queued backfill = %d, want 5", got)
 	}
-	if err := db.queueGap(t.Context(), ls, gapCh, gap{start: 9, end: 9}, true); !errors.Is(err, errGapChannelFull) || errors.Is(err, errGapScanDeferred) {
+	if err := db.queueGap(t.Context(), ls, gapCh, gap{start: 9, end: 9}, true, false); !errors.Is(err, errGapChannelFull) || errors.Is(err, errGapScanDeferred) {
 		t.Fatalf("full channel error = %v, want scan deferred", err)
 	}
 	if got := ls.Backfill.Load(); got != 5 {
@@ -39,7 +39,7 @@ func TestPgDB_QueueGapReservation(t *testing.T) {
 		unbuffered := make(chan gap)
 		done := make(chan error, 1)
 		go func() {
-			done <- db.queueGap(ctx, waiting, unbuffered, gap{start: 10, end: 12}, false)
+			done <- db.queueGap(ctx, waiting, unbuffered, gap{start: 10, end: 12}, false, false)
 		}()
 		synctest.Wait()
 		if got := waiting.Backfill.Load(); got != 3 {

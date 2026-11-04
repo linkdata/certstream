@@ -21,7 +21,7 @@ const (
 )
 
 var (
-	errGapScanDeferred = errors.New("gap scan deferred while database queue is busy")
+	errGapScanDeferred = errors.New("gap scan deferred")
 	errGapChannelFull  = errors.New("gap scan deferred while gap channel is full")
 )
 
@@ -62,9 +62,9 @@ func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64)
 	return
 }
 
-func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan gap, start, end int64, cursor *int64, persist bool) (found bool, next int64, err error) {
+func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan gap, start, end int64, cursor *int64, persist, continuous bool) (found bool, next int64, err error) {
 	next = start
-	if cdb.QueueUsage() > 50 {
+	if continuous != ls.GapScanContinuous() || (!continuous && cdb.QueueUsage() > 50) {
 		err = errGapScanDeferred
 		return
 	}
@@ -83,9 +83,13 @@ func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan ga
 		*cursor = verified
 	}
 	for _, g := range gaps {
+		if continuous != ls.GapScanContinuous() {
+			err = errGapScanDeferred
+			return
+		}
 		found = true
 		next = g.start
-		if err = cdb.queueGap(ctx, ls, gapCh, g, true); err != nil {
+		if err = cdb.queueGap(ctx, ls, gapCh, g, !continuous, continuous); err != nil {
 			return
 		}
 	}
@@ -98,6 +102,7 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) error {
 }
 
 func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
+	continuous := ls.GapScanContinuous()
 	gapCh := ls.getGapCh()
 	if gapCh == nil {
 		return nil
@@ -112,18 +117,32 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 			_ = cdb.LogError(scanErr, "selectStreamGaps", "stream", ls.Id, "url", ls.URL())
 		}
 	}()
-	if cdb.QueueUsage() > 50 {
+	if !continuous && cdb.QueueUsage() > 50 {
 		return errGapScanDeferred
 	}
-	select {
-	case cdb.gapScanPermit <- struct{}{}:
-		defer func() { <-cdb.gapScanPermit }()
-	case <-ctx.Done():
-		return ctx.Err()
+	if !continuous {
+		acquired := false
+		for !acquired {
+			select {
+			case cdb.gapScanPermit <- struct{}{}:
+				acquired = true
+				defer func() { <-cdb.gapScanPermit }()
+			case <-ls.gapScanWakeCh():
+				if continuous != ls.GapScanContinuous() {
+					return errGapScanDeferred
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
+	parentCtx := ctx
 	ctx, cancelPass := context.WithTimeout(ctx, gapScanPassTimeout)
 	defer cancelPass()
-	if cdb.QueueUsage() > 50 {
+	if continuous != ls.GapScanContinuous() {
+		return errGapScanDeferred
+	}
+	if !continuous && cdb.QueueUsage() > 50 {
 		return errGapScanDeferred
 	}
 	var maxRow sql.NullInt64
@@ -150,7 +169,7 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	for end := maxIndex; scanRecent && end >= recentStart; {
 		start := max(recentStart, end-gapWindowSize+1)
 		var gaps []gap
-		if cdb.QueueUsage() > 50 {
+		if continuous != ls.GapScanContinuous() || (!continuous && cdb.QueueUsage() > 50) {
 			scanErr = errGapScanDeferred
 			break
 		}
@@ -159,10 +178,14 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 			break
 		}
 		for _, g := range gaps {
+			if continuous != ls.GapScanContinuous() {
+				scanErr = errGapScanDeferred
+				break
+			}
 			if firstGap < 0 || g.start < firstGap {
 				firstGap = g.start
 			}
-			scanErr = cdb.queueGap(recentCtx, ls, gapCh, g, false)
+			scanErr = cdb.queueGap(recentCtx, ls, gapCh, g, false, continuous)
 			if scanErr != nil {
 				break
 			}
@@ -242,7 +265,12 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	ls.GapScanIndex.Store(scanPos)
 	// The first read is small and always starts; the budget limits later reads.
 	firstRead := true
-	for scanPos <= scanEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
+	passStart := scanPos
+	for scanPos <= scanEnd && (continuous || firstRead || time.Since(coldStarted) < gapColdStartBudget) {
+		if continuous != ls.GapScanContinuous() {
+			scanErr = errGapScanDeferred
+			break
+		}
 		size := gapColdChunkSize
 		if firstRead {
 			size = gapWindowSize
@@ -250,7 +278,7 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		}
 		end := min(scanEnd, scanPos+size-1)
 		var found bool
-		found, scanPos, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, scanPos, end, &cursor, persist)
+		found, scanPos, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, scanPos, end, &cursor, persist, continuous)
 		ls.GapScanIndex.Store(scanPos)
 		if found {
 			persist = false
@@ -258,6 +286,9 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		if scanErr != nil {
 			break
 		}
+	}
+	if continuous && scanPos > passStart && parentCtx.Err() == nil && errors.Is(scanErr, context.DeadlineExceeded) && ctx.Err() == context.DeadlineExceeded {
+		scanErr = errGapScanDeferred
 	}
 	return
 }

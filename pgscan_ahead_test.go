@@ -203,7 +203,7 @@ func TestSendGapWindowResumesAtUnqueuedGap(t *testing.T) {
 	}
 	cursor := int64(0)
 	gapCh := make(chan gap, 2)
-	found, next, err := db.sendGapWindow(ctx, ls, gapCh, 0, 9, &cursor, true)
+	found, next, err := db.sendGapWindow(ctx, ls, gapCh, 0, 9, &cursor, true, false)
 	if !found || !errors.Is(err, errGapChannelFull) || next != 6 {
 		t.Fatalf("first window = (%t, %d, %v), want (true, 6, deferred)", found, next, err)
 	}
@@ -215,7 +215,7 @@ func TestSendGapWindowResumesAtUnqueuedGap(t *testing.T) {
 		t.Fatalf("cursor = %d, want first gap at 2", cursor)
 	}
 	gapCh = make(chan gap, 2)
-	found, next, err = db.sendGapWindow(ctx, ls, gapCh, next, 9, &cursor, false)
+	found, next, err = db.sendGapWindow(ctx, ls, gapCh, next, 9, &cursor, false, false)
 	if !found || err != nil || next != 10 {
 		t.Fatalf("resumed window = (%t, %d, %v), want (true, 10, nil)", found, next, err)
 	}

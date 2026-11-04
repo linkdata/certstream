@@ -43,7 +43,7 @@ WHERE n NOT IN (5, 10005)`), streamID); err != nil {
 				ls.Backfill.Store(0)
 				gapCh := make(chan gap, 2)
 				cursor := int64(0)
-				found, _, err := db.sendGapWindow(ctx, ls, gapCh, 0, gapWindowSize-1, &cursor, false)
+				found, _, err := db.sendGapWindow(ctx, ls, gapCh, 0, gapWindowSize-1, &cursor, false, false)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -51,7 +51,7 @@ WHERE n NOT IN (5, 10005)`), streamID); err != nil {
 					b.Fatal("first gap not found")
 				}
 				if tc.want == 2 {
-					found, _, err = db.sendGapWindow(ctx, ls, gapCh, gapWindowSize, 2*gapWindowSize-1, &cursor, false)
+					found, _, err = db.sendGapWindow(ctx, ls, gapCh, gapWindowSize, 2*gapWindowSize-1, &cursor, false, false)
 					if err != nil {
 						b.Fatal(err)
 					}
