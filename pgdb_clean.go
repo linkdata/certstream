@@ -13,6 +13,7 @@ var CleanBatchSize = 10000
 // CleanResetInterval is the pause after a completed certificate cleanup sweep.
 //
 // Each sweep revisits skipped locks and certificates inserted behind its position.
+// [PgDB.RestartCleanupSweep] can bypass the pause for a manual sweep.
 var CleanResetInterval = time.Hour
 
 const cleanPagesPerBatch = 256
@@ -51,8 +52,9 @@ FROM CERTDB_deleted_cert;`
 // Each sweep covers the heap size at its start. Later sweeps revisit certificates
 // that expire, are inserted or move behind the cursor, as well as skipped locks
 // and table rewrites. After a sweep completes, calls return zero until
-// [CleanResetInterval] has passed. If saving a checkpoint fails, rowsDeleted can
-// be positive with a non-nil error because deletion has already committed.
+// [CleanResetInterval] has passed unless [PgDB.RestartCleanupSweep] is called.
+// If saving a checkpoint fails, rowsDeleted can be positive with a non-nil
+// error because deletion has already committed.
 // A nil PgDB or a batchSize below one deletes nothing.
 func (cdb *PgDB) DeleteCertificates(ctx context.Context, cutoff time.Time, batchSize int) (rowsDeleted int64, err error) {
 	if cdb != nil {
@@ -111,6 +113,29 @@ pg_relation_size('CERTDB_cert'::regclass) / current_setting('block_size')::bigin
 				cdb.cleanResetAt = time.Now()
 				err = cdb.saveCleanState(ctx, true)
 			}
+		}
+	}
+	return
+}
+
+// RestartCleanupSweep requests a fresh deletion sweep on this PgDB.
+//
+// The next [PgDB.DeleteCertificates] call can bypass [CleanResetInterval].
+// The request is in memory until that call. An active sweep keeps its
+// position. A nil PgDB has no effect.
+func (cdb *PgDB) RestartCleanupSweep(ctx context.Context) (err error) {
+	if cdb != nil {
+		cdb.beginCall()
+		defer cdb.endCall()
+		cdb.cleanMu.Lock()
+		defer cdb.cleanMu.Unlock()
+		if !cdb.cleanLoaded {
+			if err = cdb.loadCleanState(ctx); err != nil {
+				return
+			}
+		}
+		if cdb.cleanEnd == 0 {
+			cdb.cleanResetAt = time.Time{}
 		}
 	}
 	return
