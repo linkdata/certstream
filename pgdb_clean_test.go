@@ -165,6 +165,54 @@ func TestPgDB_DeleteCertificates_DrainedCursor(t *testing.T) {
 	}
 }
 
+func TestPgDB_RestartCleanupSweep(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC().Add(-time.Hour)
+	if err := insertCleanTestCert(ctx, db, identID, cutoff.Add(-time.Hour), 1); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 1 {
+		t.Fatalf("first sweep deleted %d: %v", deleted, err)
+	}
+	if err := insertCleanTestCert(ctx, db, identID, cutoff.Add(-time.Hour), 2); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 0 {
+		t.Fatalf("cooldown deleted %d: %v", deleted, err)
+	}
+	if err := db.RestartCleanupSweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 10); err != nil || deleted != 1 {
+		t.Fatalf("restarted sweep deleted %d: %v", deleted, err)
+	}
+}
+
+func TestPgDB_RestartCleanupSweepKeepsActivePosition(t *testing.T) {
+	t.Parallel()
+	ctx, db, _, _, identID := cleanTestFixture(t)
+	cutoff := time.Now().UTC().Add(-time.Hour)
+	for seed := 1; seed <= 2; seed++ {
+		if err := insertCleanTestCert(ctx, db, identID, cutoff.Add(-time.Hour), seed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if deleted, err := db.DeleteCertificates(ctx, cutoff, 1); err != nil || deleted != 1 {
+		t.Fatalf("first batch deleted %d: %v", deleted, err)
+	}
+	from, end := db.cleanFrom, db.cleanEnd
+	if end == 0 {
+		t.Fatal("first batch completed the sweep")
+	}
+	if err := db.RestartCleanupSweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if db.cleanFrom != from || db.cleanEnd != end {
+		t.Fatalf("active sweep moved from (%v, %d) to (%v, %d)", from, end, db.cleanFrom, db.cleanEnd)
+	}
+}
+
 func TestPgDB_DeleteCertificates_StartupAndResume(t *testing.T) {
 	t.Parallel()
 	ctx, db, _, _, identID := cleanTestFixture(t)
