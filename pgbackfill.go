@@ -147,6 +147,10 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
+	if cold == nil {
+		cold = &coldScanState{next: -1, end: -1}
+	}
+	cold.completeMode = 0
 
 	gapQueueSize := 8
 	if ls.GapScanContinuous() {
@@ -172,6 +176,10 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 	if err := ctx.Err(); err != nil {
 		scanErr = errors.Join(scanErr, err)
 	}
+	if ctx.Err() == nil && cold.completeMode != 0 && (scanErr == nil || errors.Is(scanErr, errGapIncomplete)) {
+		// The completed pass needs no wake; a wake would start a gated pass immediately.
+		ls.gapScanMode.CompareAndSwap(cold.completeMode, cold.completeMode+1)
+	}
 	if scanErr == nil {
 		cdb.LogInfo("gap scan completed", "url", ls.URL(), "stream", ls.Id, "elapsed", time.Since(started).Round(time.Millisecond))
 	}
@@ -196,6 +204,10 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 				return
 			case <-timer.C:
 			case <-ls.gapScanWakeCh():
+				if !ls.GapScanContinuous() {
+					timer.Stop()
+					continue
+				}
 			}
 			timer.Stop()
 		}

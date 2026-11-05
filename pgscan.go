@@ -26,12 +26,18 @@ var (
 )
 
 type coldScanState struct {
-	next          int64 // next index to scan, or -1 for a new sweep
-	end           int64 // fixed end of the current sweep, or -1 for a new sweep
-	cursorBlocked bool  // the sweep cannot advance the durable cursor
+	next          int64  // next index to scan, or -1 for a new sweep
+	end           int64  // fixed end of the current sweep, or -1 for a new sweep
+	cursorBlocked bool   // the sweep cannot advance the durable cursor
+	sweepMode     uint64 // mode generation that started this sweep
+	completeMode  uint64 // continuous mode generation that scanned through the fixed end, or zero
 }
 
 func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64) (gaps []gap, err error) {
+	return cdb.storedGapsProgress(ctx, stream, start, end, nil)
+}
+
+func (cdb *PgDB) storedGapsProgress(ctx context.Context, stream int32, start, end int64, progress func(int64)) (gaps []gap, err error) {
 	queryCtx, cancel := context.WithTimeout(ctx, gapQueryTimeout)
 	defer cancel()
 	rows, err := cdb.Query(queryCtx, cdb.stmtSelectGapWindow, stream, start, end)
@@ -39,6 +45,7 @@ func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64)
 		return nil, err
 	}
 	expected := start
+	nextProgress := start + gapWindowSize - 1
 	for rows.Next() {
 		var index int64
 		if err = rows.Scan(&index); err != nil {
@@ -48,6 +55,11 @@ func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64)
 			gaps = append(gaps, gap{start: expected, end: index - 1})
 		}
 		expected = index + 1
+		if progress != nil && index >= nextProgress {
+			// Rows arrive during the query, so a long window can show live progress.
+			progress(expected)
+			nextProgress = index + gapWindowSize
+		}
 	}
 	if err == nil {
 		err = rows.Err()
@@ -69,7 +81,7 @@ func (cdb *PgDB) sendGapWindow(ctx context.Context, ls *LogStream, gapCh chan ga
 		return
 	}
 	var gaps []gap
-	if gaps, err = cdb.storedGaps(ctx, ls.Id, start, end); err != nil {
+	if gaps, err = cdb.storedGapsProgress(ctx, ls.Id, start, end, ls.GapScanIndex.Store); err != nil {
 		return
 	}
 	verified := end
@@ -102,7 +114,8 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) error {
 }
 
 func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
-	continuous := ls.GapScanContinuous()
+	mode := ls.gapScanMode.Load()
+	continuous := mode&1 != 0
 	gapCh := ls.getGapCh()
 	if gapCh == nil {
 		return nil
@@ -234,6 +247,9 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		}
 		if cold != nil {
 			*cold = coldScanState{next: -1, end: -1}
+			if continuous {
+				cold.completeMode = mode
+			}
 		}
 		return
 	}
@@ -245,8 +261,9 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	// Persist only while the sweep has verified every index since the cursor.
 	persist := true
 	if cold != nil {
-		if cold.end < 0 || cold.next < cursor || cold.next > min(coldEnd, cold.end) {
-			*cold = coldScanState{next: cursor, end: coldEnd}
+		if cold.end < 0 || cold.next < cursor || cold.next > min(coldEnd, cold.end) || (continuous && cold.sweepMode != mode) {
+			// A new continuous request covers the durable cursor, including any shared-mode prefix.
+			*cold = coldScanState{next: cursor, end: coldEnd, sweepMode: mode}
 		}
 		scanEnd = min(scanEnd, cold.end)
 		scanPos = cold.next
@@ -256,6 +273,9 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 			cold.cursorBlocked = !persist
 			if scanPos > scanEnd {
 				*cold = coldScanState{next: -1, end: -1}
+				if continuous && scanErr == nil {
+					cold.completeMode = mode
+				}
 			}
 		}()
 	}

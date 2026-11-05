@@ -51,7 +51,7 @@ type LogStream struct {
 	MaxIndex       atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex      atomic.Int64 // atomic: highest index observed in a CT head, -1 until entries exist
 	Backfill       atomic.Int64 // atomic: estimate of discovered gap and reverse-backfill entries left to fetch
-	GapScanIndex   atomic.Int64 // atomic: next cold scan index; holds end+1 after a sweep; 0 before the first sweep
+	GapScanIndex   atomic.Int64 // atomic: cold scan read position, updated during queries; rolls back on failed windows; 0 until the first cold scan
 	Logger         *slog.Logger // toggled by LogToggle
 	Id             int32        // database ID, if available
 	gapCh          chan gap     // protected by LogOperator.mu
@@ -68,28 +68,37 @@ type LogStream struct {
 	cancel         context.CancelFunc // stops this reader on retirement
 	done           chan struct{}      // closed after reader and backfill stop
 
-	gapScanContinuous atomic.Bool
-	gapScanWakeOnce   sync.Once
-	gapScanWake       chan struct{}
+	gapScanMode     atomic.Uint64 // odd values enable continuous scans; each change increments the value
+	gapScanWakeOnce sync.Once
+	gapScanWake     chan struct{}
 }
 
 // GapScanContinuous reports whether this stream uses continuous gap scanning.
 //
 // The zero value uses shared gap scan scheduling.
 func (ls *LogStream) GapScanContinuous() bool {
-	return ls.gapScanContinuous.Load()
+	return ls.gapScanMode.Load()&1 != 0
 }
 
 // SetGapScanContinuous selects continuous gap scanning for this stream.
 //
 // Continuous scans run without the shared scan permit or database queue limit.
+// The setting turns off after a complete sweep through the end fixed when that sweep starts,
+// even if some gap fetches fail. Partial scans and query errors keep it on.
 // Changing the setting wakes a sleeping scanner. An in-flight query may run
 // until it completes or reaches its timeout.
 func (ls *LogStream) SetGapScanContinuous(enabled bool) {
-	if ls.gapScanContinuous.Swap(enabled) != enabled {
-		select {
-		case ls.gapScanWakeCh() <- struct{}{}:
-		default:
+	for {
+		mode := ls.gapScanMode.Load()
+		if (mode&1 != 0) == enabled {
+			return
+		}
+		if ls.gapScanMode.CompareAndSwap(mode, mode+1) {
+			select {
+			case ls.gapScanWakeCh() <- struct{}{}:
+			default:
+			}
+			return
 		}
 	}
 }
