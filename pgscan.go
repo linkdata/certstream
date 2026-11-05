@@ -9,7 +9,7 @@ import (
 
 const (
 	gapWindowSize      int64 = 10_000
-	gapColdChunkSize   int64 = 1_000_000
+	gapColdChunkSize   int64 = 100_000
 	gapRecentLookback  int64 = 1_000_000
 	gapQueryTimeout          = 5 * time.Minute
 	gapRecentBudget          = 3 * time.Second
@@ -29,6 +29,7 @@ type coldScanState struct {
 	next          int64 // next index to scan, or -1 for a new sweep
 	end           int64 // fixed end of the current sweep, or -1 for a new sweep
 	cursorBlocked bool  // the sweep cannot advance the durable cursor
+	wasContinuous bool  // the last pass of this sweep used continuous mode
 }
 
 func (cdb *PgDB) storedGaps(ctx context.Context, stream int32, start, end int64) (gaps []gap, err error) {
@@ -103,6 +104,9 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) error {
 
 func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
 	continuous := ls.GapScanContinuous()
+	if cold != nil && !continuous {
+		cold.wasContinuous = false
+	}
 	gapCh := ls.getGapCh()
 	if gapCh == nil {
 		return nil
@@ -235,6 +239,9 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		if cold != nil {
 			*cold = coldScanState{next: -1, end: -1}
 		}
+		if continuous {
+			ls.SetGapScanContinuous(false)
+		}
 		return
 	}
 	// Cold-only passes also cover the recent tail.
@@ -245,20 +252,26 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	// Persist only while the sweep has verified every index since the cursor.
 	persist := true
 	if cold != nil {
-		if cold.end < 0 || cold.next < cursor || cold.next > min(coldEnd, cold.end) {
-			*cold = coldScanState{next: cursor, end: coldEnd}
+		if cold.end < 0 || cold.next < cursor || cold.next > min(coldEnd, cold.end) || (continuous && !cold.wasContinuous) {
+			// A continuous sweep covers the durable cursor, including any shared-mode prefix.
+			*cold = coldScanState{next: cursor, end: coldEnd, wasContinuous: continuous}
 		}
 		scanEnd = min(scanEnd, cold.end)
 		scanPos = cold.next
 		persist = scanPos == cursor || (!cold.cursorBlocked && scanPos == cursor+1)
-		defer func() {
+	}
+	defer func() {
+		if cold != nil {
 			cold.next = scanPos
 			cold.cursorBlocked = !persist
 			if scanPos > scanEnd {
 				*cold = coldScanState{next: -1, end: -1}
 			}
-		}()
-	}
+		}
+		if continuous && scanErr == nil && scanPos > scanEnd {
+			ls.SetGapScanContinuous(false)
+		}
+	}()
 	if coldPending != nil {
 		defer func() { *coldPending = cursor < coldEnd || firstGap >= 0 || !persist }()
 	}

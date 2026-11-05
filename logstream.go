@@ -83,6 +83,9 @@ func (ls *LogStream) GapScanContinuous() bool {
 // SetGapScanContinuous selects continuous gap scanning for this stream.
 //
 // Continuous scans run without the shared scan permit or database queue limit.
+// The setting turns off after a complete sweep through the end fixed when that sweep starts,
+// even if some gap fetches fail. Queued gap fetches may continue after it turns off.
+// Partial scans and query errors keep it on.
 // Changing the setting wakes a sleeping scanner. An in-flight query may run
 // until it completes or reaches its timeout.
 func (ls *LogStream) SetGapScanContinuous(enabled bool) {

@@ -150,7 +150,7 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 
 	gapQueueSize := 8
 	if ls.GapScanContinuous() {
-		// A million-index window can contain thousands of short gaps.
+		// A cold window can contain thousands of short gaps.
 		gapQueueSize = 4096
 	}
 	gapCh := make(chan gap, gapQueueSize)
@@ -196,6 +196,10 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 				return
 			case <-timer.C:
 			case <-ls.gapScanWakeCh():
+				if !ls.GapScanContinuous() {
+					timer.Stop()
+					continue
+				}
 			}
 			timer.Stop()
 		}

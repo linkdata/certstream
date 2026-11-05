@@ -27,7 +27,7 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 999999) AS n`), streamID); err !=
 		t.Fatal(err)
 	}
 
-	// A crawl of 10k cold windows exceeds the cold-start budget; one broad read fits.
+	// The cold-start budget covers 100k-index windows but not 10k-index windows.
 	db.stmtSelectGapWindow = db.Pfx(`WITH pause AS MATERIALIZED (
   SELECT pg_sleep(CASE WHEN $2::bigint >= 10000 AND $3::bigint - $2::bigint < 100000 THEN 0.1 ELSE 0.0 END)
 )
