@@ -239,6 +239,7 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 	if coldPending != nil {
 		defer func() { *coldPending = cursor < coldEnd || firstGap >= 0 || !persist }()
 	}
+	ls.GapScanIndex.Store(scanPos)
 	// The first read is small and always starts; the budget limits later reads.
 	firstRead := true
 	for scanPos <= scanEnd && (firstRead || time.Since(coldStarted) < gapColdStartBudget) {
@@ -250,6 +251,7 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		end := min(scanEnd, scanPos+size-1)
 		var found bool
 		found, scanPos, scanErr = cdb.sendGapWindow(ctx, ls, gapCh, scanPos, end, &cursor, persist)
+		ls.GapScanIndex.Store(scanPos)
 		if found {
 			persist = false
 		}

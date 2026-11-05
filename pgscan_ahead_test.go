@@ -47,6 +47,9 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	if cursor != 2 {
 		t.Fatalf("backfill_logindex = %d, want first gap at 2", cursor)
 	}
+	if got := ls.GapScanIndex.Load(); got != 20_006 {
+		t.Fatalf("GapScanIndex = %d, want 20006 after scanning past both gaps", got)
+	}
 	if got := ls.Backfill.Load(); got != 2 {
 		t.Fatalf("Backfill = %d, want 2 queued entries", got)
 	}
@@ -98,6 +101,9 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 30005) AS n WHERE n NOT IN (2, 15
 	if cold.next != 15_000 || cold.end != 30_005 || !cold.cursorBlocked {
 		t.Fatalf("cold state after deferral = %+v, want next 15000, end 30005", cold)
 	}
+	if got := ls.GapScanIndex.Load(); got != 15_000 {
+		t.Fatalf("GapScanIndex after deferral = %d, want 15000", got)
+	}
 	if err := insertEntries(ctx, db, streamID, []int64{30_006}); err != nil {
 		t.Fatal(err)
 	}
@@ -105,12 +111,18 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 30005) AS n WHERE n NOT IN (2, 15
 	if cold.next != -1 || cold.end != -1 || cold.cursorBlocked {
 		t.Fatalf("cold state after complete sweep = %+v, want reset", cold)
 	}
+	if got := ls.GapScanIndex.Load(); got != 30_006 {
+		t.Fatalf("GapScanIndex after sweep = %d, want 30006", got)
+	}
 	// A sweep resuming at the durable cursor can advance after its gap is filled.
 	if err := insertEntries(ctx, db, streamID, []int64{2}); err != nil {
 		t.Fatal(err)
 	}
 	cold = coldScanState{next: 2, end: 30_006, cursorBlocked: true}
 	check(2, []gap{{15000, 15000}}, nil, 15000)
+	if got := ls.GapScanIndex.Load(); got != 30_007 {
+		t.Fatalf("GapScanIndex after rescan = %d, want 30007", got)
+	}
 }
 
 func TestGapScanAheadPersistsGapFreeProgressAcrossPasses(t *testing.T) {
@@ -151,6 +163,9 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	if cursor != 9_999 || cold.next != 10_000 || cold.cursorBlocked || !pending {
 		t.Fatalf("first pass: cursor=%d, cold=%+v, pending=%t", cursor, cold, pending)
 	}
+	if got := ls.GapScanIndex.Load(); got != 10_000 {
+		t.Fatalf("GapScanIndex after first pass = %d, want 10000", got)
+	}
 
 	db.stmtSelectGapWindow = db.Pfx(selectGapWindow)
 	ls.gapCh = make(chan gap, 1)
@@ -162,6 +177,9 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	}
 	if cursor != 20_005 || cold.next != -1 || cold.end != -1 || pending {
 		t.Fatalf("second pass: cursor=%d, cold=%+v, pending=%t", cursor, cold, pending)
+	}
+	if got := ls.GapScanIndex.Load(); got != 20_006 {
+		t.Fatalf("GapScanIndex after second pass = %d, want 20006", got)
 	}
 }
 
