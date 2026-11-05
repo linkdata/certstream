@@ -31,7 +31,7 @@ func (ls *LogStream) getGapEntries(ctx context.Context, start, end int64, histor
 	return ls.getEntries(ctx, start, end, historical, handleFn, gapcounter)
 }
 
-func (cdb *PgDB) queueGap(ctx context.Context, ls *LogStream, gapCh chan gap, g gap, deferOnFull bool) (err error) {
+func (cdb *PgDB) queueGap(ctx context.Context, ls *LogStream, gapCh chan gap, g gap, deferOnFull, continuous bool) (err error) {
 	length := g.end - g.start + 1
 	ls.Backfill.Add(length)
 	if deferOnFull {
@@ -43,10 +43,22 @@ func (cdb *PgDB) queueGap(ctx context.Context, ls *LogStream, gapCh chan gap, g 
 			err = errGapChannelFull
 		}
 	} else {
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-		case gapCh <- g:
+		queued := false
+		for !queued && err == nil {
+			if continuous != ls.GapScanContinuous() {
+				err = errGapScanDeferred
+				break
+			}
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+			case gapCh <- g:
+				queued = true
+			case <-ls.gapScanWakeCh():
+				if continuous != ls.GapScanContinuous() {
+					err = errGapScanDeferred
+				}
+			}
 		}
 	}
 	if err == nil {
@@ -136,7 +148,12 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 	ctx, cancel := context.WithTimeout(ctx, time.Hour)
 	defer cancel()
 
-	gapCh := make(chan gap, 8)
+	gapQueueSize := 8
+	if ls.GapScanContinuous() {
+		// A million-index window can contain thousands of short gaps.
+		gapQueueSize = 4096
+	}
+	gapCh := make(chan gap, gapQueueSize)
 	ls.mu.Lock()
 	ls.gapCh = gapCh
 	ls.mu.Unlock()
@@ -171,8 +188,16 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 		if nextCold.Before(next) {
 			next = nextCold
 		}
-		if sleep(ctx, time.Until(next)) != nil {
-			return
+		if delay := time.Until(next); delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			case <-ls.gapScanWakeCh():
+			}
+			timer.Stop()
 		}
 		scanRecent := !time.Now().Before(nextHot)
 		var coldPending bool
@@ -192,6 +217,9 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 			nextCold = time.Now().Add(gapRetryInterval)
 		} else if scanErr != nil || coldPending {
 			nextCold = time.Now().Add(gapColdInterval)
+			if ls.GapScanContinuous() && (scanErr == nil || errors.Is(scanErr, errGapScanDeferred) || errors.Is(scanErr, errGapChannelFull)) {
+				nextCold = time.Now()
+			}
 		} else {
 			nextCold = nextHot
 		}

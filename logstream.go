@@ -67,6 +67,36 @@ type LogStream struct {
 	backoff        *logStreamBackoff
 	cancel         context.CancelFunc // stops this reader on retirement
 	done           chan struct{}      // closed after reader and backfill stop
+
+	gapScanContinuous atomic.Bool
+	gapScanWakeOnce   sync.Once
+	gapScanWake       chan struct{}
+}
+
+// GapScanContinuous reports whether this stream uses continuous gap scanning.
+//
+// The zero value uses shared gap scan scheduling.
+func (ls *LogStream) GapScanContinuous() bool {
+	return ls.gapScanContinuous.Load()
+}
+
+// SetGapScanContinuous selects continuous gap scanning for this stream.
+//
+// Continuous scans run without the shared scan permit or database queue limit.
+// Changing the setting wakes a sleeping scanner. An in-flight query may run
+// until it completes or reaches its timeout.
+func (ls *LogStream) SetGapScanContinuous(enabled bool) {
+	if ls.gapScanContinuous.Swap(enabled) != enabled {
+		select {
+		case ls.gapScanWakeCh() <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (ls *LogStream) gapScanWakeCh() chan struct{} {
+	ls.gapScanWakeOnce.Do(func() { ls.gapScanWake = make(chan struct{}, 1) })
+	return ls.gapScanWake
 }
 
 func (ls *LogStream) HTTPCalls() int64 {
