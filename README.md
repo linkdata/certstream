@@ -10,10 +10,11 @@ PostgreSQL is optional. Leave `Config.PgAddr` empty for live streaming without p
 Configure a database for certificate storage and backfill.
 Streams with database and tail fetching enabled scan stored entry gaps at startup.
 Recent indexes are checked first in bounded windows, normally every 15 minutes.
-Cold scans start with a 10,000-index read, then read chunks of up to one million
+Cold scans start with a 10,000-index read, then read chunks of up to 100,000
 indexes. Unfinished sweeps resume after 10 seconds; completed sweeps with
-unresolved gaps retry after one minute. Scans pause when the database queue
-exceeds 50%. Each gap read has a limit of five minutes; recent scans have a
+unresolved gaps retry after one minute. Scheduled scans pause when the database
+queue exceeds 50%. A continuous request bypasses this gate and turns off after
+a full sweep. Each gap read has a limit of five minutes; recent scans have a
 budget of three seconds.
 The recent pass covers up to one million indexes below the database maximum,
 regardless of the persisted scan cursor. The older pass resumes that cursor;

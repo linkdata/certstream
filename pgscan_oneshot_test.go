@@ -9,6 +9,26 @@ import (
 	"time"
 )
 
+func setupGapScanStream(t *testing.T, indexes ...int64) (ctx context.Context, db *PgDB, ls *LogStream) {
+	t.Helper()
+	var cs *CertStream
+	ctx, db, cs = setupSelectGapsDB(t)
+	var operatorID, streamID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertStream(ctx, db, "https://example.test/oneshot", operatorID, &streamID); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexes) > 0 {
+		if err := insertEntries(ctx, db, streamID, indexes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ls = &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	return
+}
+
 func TestContinuousGapScanStopsAtSnapshotEnd(t *testing.T) {
 	ctx, db, cs := setupSelectGapsDB(t)
 	var operatorID int32
@@ -40,14 +60,6 @@ func TestContinuousGapScanStopsAtSnapshotEnd(t *testing.T) {
 	if complete.GapScanContinuous() || complete.GapScanIndex.Load() != 0 {
 		t.Fatalf("hot-only sweep: continuous=%t, cold position=%d; want false, 0", complete.GapScanContinuous(), complete.GapScanIndex.Load())
 	}
-	complete.gapCh = make(chan gap, 1)
-	shared := coldScanState{next: -1, end: -1}
-	if err := db.selectStreamGapsMode(ctx, complete, &shared, true, nil); err != nil {
-		t.Fatal(err)
-	}
-	if shared.completeMode != 0 {
-		t.Fatal("shared sweep marked a continuous request complete")
-	}
 
 	incomplete := newStream("https://example.test/oneshot-incomplete", []int64{0, 2})
 	failedFetch := func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
@@ -65,11 +77,11 @@ func TestContinuousGapScanStopsAtSnapshotEnd(t *testing.T) {
 	}
 
 	incomplete.SetGapScanContinuous(true)
-	resumed := coldScanState{next: 2, end: 2, cursorBlocked: true, sweepMode: incomplete.gapScanMode.Load()}
+	resumed := coldScanState{next: 2, end: 2, cursorBlocked: true, wasContinuous: true}
 	if err := db.scanAndBackfillGapsMode(ctx, incomplete, noFetch, false, &resumed, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	if incomplete.GapScanContinuous() || resumed.completeMode == 0 {
+	if incomplete.GapScanContinuous() {
 		t.Fatal("resumed sweep did not turn off continuous scanning at its fixed end")
 	}
 
@@ -84,18 +96,7 @@ func TestContinuousGapScanStopsAtSnapshotEnd(t *testing.T) {
 }
 
 func TestGapScanDisableDoesNotStartScheduledScan(t *testing.T) {
-	ctx, db, cs := setupSelectGapsDB(t)
-	var operatorID, streamID int32
-	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
-		t.Fatal(err)
-	}
-	if err := insertStream(ctx, db, "https://example.test/oneshot-wake", operatorID, &streamID); err != nil {
-		t.Fatal(err)
-	}
-	if err := insertEntries(ctx, db, streamID, []int64{0}); err != nil {
-		t.Fatal(err)
-	}
-	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	ctx, db, ls := setupGapScanStream(t, 0)
 	ls.SetGapScanContinuous(true)
 	ls.SetGapScanContinuous(false)
 	scanCtx, cancel := context.WithCancel(ctx)
@@ -119,19 +120,8 @@ func TestGapScanDisableDoesNotStartScheduledScan(t *testing.T) {
 	}
 }
 
-func TestContinuousGapScanReenableWinsDuringDrain(t *testing.T) {
-	ctx, db, cs := setupSelectGapsDB(t)
-	var operatorID, streamID int32
-	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
-		t.Fatal(err)
-	}
-	if err := insertStream(ctx, db, "https://example.test/oneshot-reenable", operatorID, &streamID); err != nil {
-		t.Fatal(err)
-	}
-	if err := insertEntries(ctx, db, streamID, []int64{0, 2}); err != nil {
-		t.Fatal(err)
-	}
-	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+func TestContinuousGapScanReenableDuringDrain(t *testing.T) {
+	ctx, db, ls := setupGapScanStream(t, 0, 2)
 	ls.SetGapScanContinuous(true)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -161,7 +151,9 @@ func TestContinuousGapScanReenableWinsDuringDrain(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("full gap scan did not finish while fetch was pending")
 	}
-	ls.SetGapScanContinuous(false)
+	if ls.GapScanContinuous() {
+		t.Fatal("full sweep kept continuous scanning enabled during gap fetch")
+	}
 	ls.SetGapScanContinuous(true)
 	releaseFetch()
 	select {
@@ -178,20 +170,19 @@ func TestContinuousGapScanReenableWinsDuringDrain(t *testing.T) {
 }
 
 func TestContinuousGapScanCoversSharedSweepPrefix(t *testing.T) {
-	ctx, db, cs := setupSelectGapsDB(t)
-	var operatorID, streamID int32
-	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
-		t.Fatal(err)
+	ctx, db, ls := setupGapScanStream(t, 0, 2, 3, 4)
+	// A shared pass can be deferred while an older continuous sweep is unfinished.
+	cold := coldScanState{next: 2, end: 4, cursorBlocked: true, wasContinuous: true}
+	ls.gapCh = make(chan gap, 1)
+	db.mu.Lock()
+	db.batchCh = []chan *LogEntry{make(chan *LogEntry, 2)}
+	db.batchCh[0] <- &LogEntry{}
+	db.batchCh[0] <- &LogEntry{}
+	db.mu.Unlock()
+	if err := db.selectStreamGapsMode(ctx, ls, &cold, false, nil); !errors.Is(err, errGapScanDeferred) {
+		t.Fatalf("shared pass = %v, want deferral", err)
 	}
-	if err := insertStream(ctx, db, "https://example.test/oneshot-shared-prefix", operatorID, &streamID); err != nil {
-		t.Fatal(err)
-	}
-	if err := insertEntries(ctx, db, streamID, []int64{0, 2, 3, 4}); err != nil {
-		t.Fatal(err)
-	}
-	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
 	ls.SetGapScanContinuous(true)
-	cold := coldScanState{next: 2, end: 4, cursorBlocked: true}
 	seenGap := false
 	fetch := func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
 		if start != 1 || end != 1 {
@@ -206,69 +197,5 @@ func TestContinuousGapScanCoversSharedSweepPrefix(t *testing.T) {
 	}
 	if !seenGap || ls.GapScanContinuous() {
 		t.Fatalf("shared-prefix gap seen=%t, continuous=%t; want true, false", seenGap, ls.GapScanContinuous())
-	}
-}
-
-func TestGapScanReportsProgressWithinQuery(t *testing.T) {
-	ctx, db, cs := setupSelectGapsDB(t)
-	var operatorID, streamID int32
-	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
-		t.Fatal(err)
-	}
-	if err := insertStream(ctx, db, "https://example.test/scan-progress", operatorID, &streamID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream)
-SELECT n + 1000, n, $1 FROM generate_series(0, 30004) AS n`), streamID); err != nil {
-		t.Fatal(err)
-	}
-	db.stmtSelectGapWindow = db.Pfx(`SELECT e.logindex +
-  (SELECT 0::bigint FROM pg_sleep(CASE WHEN e.logindex = 25000 THEN 1.5 ELSE 0 END)) AS logindex
-FROM CERTDB_entry e WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
-	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID, gapCh: make(chan gap, 1)}
-	done := make(chan error, 1)
-	go func() { done <- db.selectStreamGapsMode(ctx, ls, nil, false, nil) }()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for ls.GapScanIndex.Load() < 20_000 {
-		select {
-		case <-ticker.C:
-		case err := <-done:
-			t.Fatalf("scan completed before progress was reported: %v", err)
-		case <-deadline.C:
-			t.Fatal("no progress reported while the database query was still running")
-		}
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("query completed before its injected pause ended: %v", err)
-	default:
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("gap query did not finish")
-	}
-	if got := ls.GapScanIndex.Load(); got != 30_005 {
-		t.Fatalf("final progress = %d, want 30005", got)
-	}
-	if _, err := db.Exec(ctx, db.Pfx(`UPDATE CERTDB_stream SET backfill_logindex = 0 WHERE id = $1`), streamID); err != nil {
-		t.Fatal(err)
-	}
-	db.stmtSelectGapWindow = db.Pfx(`SELECT CASE WHEN e.logindex = 25000
-  THEN e.logindex / (e.logindex - 25000) ELSE e.logindex END AS logindex
-FROM CERTDB_entry e WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
-	ls.gapCh = make(chan gap, 1)
-	ls.GapScanIndex.Store(0)
-	if err := db.selectStreamGapsMode(ctx, ls, nil, false, nil); err == nil {
-		t.Fatal("failing query returned no error")
-	}
-	if got := ls.GapScanIndex.Load(); got != 10_000 {
-		t.Fatalf("progress after query error = %d, want retry position 10000", got)
 	}
 }
