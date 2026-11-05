@@ -80,6 +80,9 @@ func (cs *CertStream) CountStreams() (n int) {
 	return
 }
 
+// GetLogStreamByID returns a stream with the given database ID.
+//
+// It returns nil when no operator has that stream.
 func (cs *CertStream) GetLogStreamByID(id int32) (ls *LogStream) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
