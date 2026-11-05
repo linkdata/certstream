@@ -128,10 +128,14 @@ func (lo *LogOperator) Streams() (sl []*LogStream) {
 	return
 }
 
+// GetStreamByID returns a stream by its database ID.
+//
+// It returns nil if this operator has no stream with that ID.
 func (lo *LogOperator) GetStreamByID(id int32) (ls *LogStream) {
 	lo.mu.Lock()
-	for _, ls = range lo.streams {
-		if ls.Id == id {
+	for _, stream := range lo.streams {
+		if stream.Id == id {
+			ls = stream
 			break
 		}
 	}
