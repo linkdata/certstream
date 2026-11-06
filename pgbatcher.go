@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const insertExpiredEntries = `INSERT /* CERTDB_expired_entries */ INTO CERTDB_entry (seen, logindex, cert, stream)
+const insertSkippedEntries = `INSERT /* CERTDB_skipped_entries */ INTO CERTDB_entry (seen, logindex, cert, stream)
 SELECT marker.seen AT TIME ZONE 'UTC', marker.logindex, 0, marker.stream
 FROM unnest($1::timestamptz[], $2::bigint[], $3::integer[]) AS marker(seen, logindex, stream)
 ORDER BY marker.stream, marker.logindex
@@ -32,7 +32,7 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	var markerIndexes []int64
 	var markerStreams []int32
 	for _, le := range queued {
-		if le.Certificate != nil && !cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff) {
+		if le.Certificate == nil || (!cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff)) {
 			at := le.Seen
 			if at.IsZero() {
 				at = batchTime
@@ -56,7 +56,7 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 		if len(markerSeen) != len(queued) {
 			batch.Queue(cdb.funcIngestBatch, string(b))
 		}
-		batch.Queue(cdb.Pfx(insertExpiredEntries), markerSeen, markerIndexes, markerStreams)
+		batch.Queue(cdb.Pfx(insertSkippedEntries), markerSeen, markerIndexes, markerStreams)
 		err = cdb.SendBatch(ctx, &batch).Close()
 	}
 	elapsed := time.Since(now)
@@ -115,7 +115,7 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 					flushAck = nil
 				}
 				for _, le := range queued {
-					if !stop {
+					if !stop && le.Certificate != nil {
 						select {
 						case <-ctx.Done():
 							stop = true
