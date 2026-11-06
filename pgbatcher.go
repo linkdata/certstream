@@ -5,21 +5,60 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+const insertExpiredEntries = `INSERT /* CERTDB_expired_entries */ INTO CERTDB_entry (seen, logindex, cert, stream)
+SELECT marker.seen AT TIME ZONE 'UTC', marker.logindex, 0, marker.stream
+FROM unnest($1::timestamptz[], $2::bigint[], $3::integer[]) AS marker(seen, logindex, stream)
+ORDER BY marker.stream, marker.logindex
+ON CONFLICT (stream, logindex) DO NOTHING;`
+
 func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
+	batchTime := time.Now().UTC()
+	var cutoff time.Time
+	if cdb.PgCertCutoff != nil {
+		cutoff = cdb.PgCertCutoff()
+	} else if cdb.PgCertMaxAge > 0 {
+		cutoff = batchTime.Add(-cdb.PgCertMaxAge)
+	}
+	if cutoff.After(batchTime) {
+		cutoff = batchTime
+	}
 	var b []byte
 	b = append(b, `[`...)
-	for i, le := range queued {
-		if i > 0 {
-			b = append(b, `,`...)
+	var markerSeen []time.Time
+	var markerIndexes []int64
+	var markerStreams []int32
+	for _, le := range queued {
+		if le.Certificate != nil && !cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff) {
+			at := le.Seen
+			if at.IsZero() {
+				at = batchTime
+			}
+			markerSeen = append(markerSeen, at.UTC().Truncate(time.Second))
+			markerIndexes = append(markerIndexes, le.Index())
+			markerStreams = append(markerStreams, le.LogStream.Id)
+		} else {
+			if len(b) > 1 {
+				b = append(b, `,`...)
+			}
+			b = le.appendJSON(b)
 		}
-		b = le.appendJSON(b)
 	}
 	b = append(b, `]`...)
 	now := time.Now()
-	_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
+	if len(markerSeen) == 0 {
+		_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
+	} else {
+		var batch pgx.Batch
+		if len(markerSeen) != len(queued) {
+			batch.Queue(cdb.funcIngestBatch, string(b))
+		}
+		batch.Queue(cdb.Pfx(insertExpiredEntries), markerSeen, markerIndexes, markerStreams)
+		err = cdb.SendBatch(ctx, &batch).Close()
+	}
 	elapsed := time.Since(now)
 	if err != nil {
 		if pe, ok := err.(*pgconn.PgError); ok {
