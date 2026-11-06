@@ -65,7 +65,7 @@ END IF;
 IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_entry (
     seen TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
-    -- Certificate cleanup leaves entries; 0 marks certificates skipped by retention.
+    -- Certificate cleanup leaves entries; 0 marks entries skipped by retention or parsing.
     cert BIGINT NOT NULL, -- do not reference CERTDB_cert since we have no index on this column
     logindex BIGINT NOT NULL,
     stream INTEGER NOT NULL REFERENCES CERTDB_stream (id) ON DELETE CASCADE,

@@ -355,6 +355,11 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 				err = os.ErrInvalid
 			}
 			_ = ls.LogError(err, "sendEntry", "url", ls.URL(), "stream", ls.Id, "logindex", le.LogIndex)
+			if le.Err != nil && ctx.Err() == nil {
+				if db := ls.DB(); db != nil {
+					db.sendToBatcher(ctx, le)
+				}
+			}
 		}
 	}
 	return
