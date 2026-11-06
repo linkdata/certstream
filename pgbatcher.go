@@ -28,18 +28,18 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	}
 	var b []byte
 	b = append(b, `[`...)
-	var seen []time.Time
-	var indexes []int64
-	var streams []int32
+	var markerSeen []time.Time
+	var markerIndexes []int64
+	var markerStreams []int32
 	for _, le := range queued {
 		if le.Certificate != nil && !cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff) {
 			at := le.Seen
 			if at.IsZero() {
 				at = batchTime
 			}
-			seen = append(seen, at.UTC().Truncate(time.Second))
-			indexes = append(indexes, le.Index())
-			streams = append(streams, le.LogStream.Id)
+			markerSeen = append(markerSeen, at.UTC().Truncate(time.Second))
+			markerIndexes = append(markerIndexes, le.Index())
+			markerStreams = append(markerStreams, le.LogStream.Id)
 		} else {
 			if len(b) > 1 {
 				b = append(b, `,`...)
@@ -49,14 +49,14 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	}
 	b = append(b, `]`...)
 	now := time.Now()
-	if len(seen) == 0 {
+	if len(markerSeen) == 0 {
 		_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
 	} else {
 		var batch pgx.Batch
-		if len(seen) != len(queued) {
+		if len(markerSeen) != len(queued) {
 			batch.Queue(cdb.funcIngestBatch, string(b))
 		}
-		batch.Queue(cdb.Pfx(insertExpiredEntries), seen, indexes, streams)
+		batch.Queue(cdb.Pfx(insertExpiredEntries), markerSeen, markerIndexes, markerStreams)
 		err = cdb.SendBatch(ctx, &batch).Close()
 	}
 	elapsed := time.Since(now)
