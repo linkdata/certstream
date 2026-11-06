@@ -2,11 +2,19 @@ package certstream
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+const insertExpiredEntries = `INSERT /* CERTDB_expired_entries */ INTO CERTDB_entry (seen, logindex, cert, stream)
+SELECT marker.seen AT TIME ZONE 'UTC', marker.logindex, 0, marker.stream
+FROM unnest($1::timestamptz[], $2::bigint[], $3::integer[]) AS marker(seen, logindex, stream)
+ORDER BY marker.stream, marker.logindex
+ON CONFLICT (stream, logindex) DO NOTHING;`
 
 func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	batchTime := time.Now().UTC()
@@ -21,18 +29,42 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	}
 	var b []byte
 	b = append(b, `[`...)
-	for i, le := range queued {
-		if i > 0 {
-			b = append(b, `,`...)
+	var seen []time.Time
+	var indexes []int64
+	var streams []int32
+	for _, le := range queued {
+		if le.Certificate != nil && !cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff) {
+			at := le.Seen
+			if at.IsZero() {
+				at = batchTime
+			}
+			seen = append(seen, at.UTC().Truncate(time.Second))
+			indexes = append(indexes, le.Index())
+			streams = append(streams, le.LogStream.Id)
+		} else {
+			if len(b) > 1 {
+				b = append(b, `,`...)
+			}
+			b = le.appendJSON(b)
 		}
-		b = le.appendJSON(b, cutoff)
 	}
 	b = append(b, `]`...)
 	now := time.Now()
-	_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
+	switch {
+	case len(seen) == 0:
+		_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
+	case len(b) == 2:
+		_, err = cdb.Exec(ctx, cdb.Pfx(insertExpiredEntries), seen, indexes, streams)
+	default:
+		var batch pgx.Batch
+		batch.Queue(cdb.funcIngestBatch, string(b))
+		batch.Queue(cdb.Pfx(insertExpiredEntries), seen, indexes, streams)
+		err = cdb.SendBatch(ctx, &batch).Close()
+	}
 	elapsed := time.Since(now)
 	if err != nil {
-		if pe, ok := err.(*pgconn.PgError); ok {
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) {
 			if pe.SQLState() == "22P02" {
 				cdb.LogInfo("generated invalid JSON data", "json", string(b))
 			}

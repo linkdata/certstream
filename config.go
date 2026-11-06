@@ -46,7 +46,8 @@ type Config struct {
 	// PgCertCutoff returns the expiration cutoff for ingestion.
 	//
 	// Certificates with NotAfter at or before the cutoff keep only CT index
-	// markers. The callback runs once per database batch and may run concurrently.
+	// markers. Marked entries are not refetched if the cutoff later moves earlier.
+	// The callback runs once per database batch and may run concurrently.
 	// A zero time disables filtering; nil uses PgCertMaxAge. Future cutoffs are
 	// capped at batch time. [Start] copies the callback; keep the copy on
 	// [CertStream] unchanged while streaming.

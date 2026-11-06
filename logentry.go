@@ -23,7 +23,7 @@ type LogEntry struct {
 	flushAck    chan struct{} // internal batch-worker barrier; never sent to callers
 }
 
-func (le *LogEntry) appendJSON(b []byte, cutoff time.Time) []byte {
+func (le *LogEntry) appendJSON(b []byte) []byte {
 	if cert := le.Cert(); cert != nil {
 		logindex := le.Index()
 		var dnsnames []string
@@ -93,10 +93,6 @@ func (le *LogEntry) appendJSON(b []byte, cutoff time.Time) []byte {
 		b = strconv.AppendQuote(b, strings.Join(emails, " "))
 		b = append(b, `,"uris":`...)
 		b = strconv.AppendQuote(b, strings.Join(uris, " "))
-		if !cutoff.IsZero() && !cert.NotAfter.After(cutoff) {
-			// An ingest function that ignores store_cert still needs the full row.
-			b = append(b, `,"store_cert":false`...)
-		}
 		b = append(b, `}`...)
 	} else {
 		b = append(b, `{}`...)

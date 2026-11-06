@@ -35,7 +35,8 @@ Ingest also skips certificates expired at least this long ago. It stores
 their CT indexes in `CERTDB_entry` with `cert = 0`, so gap scans can
 distinguish them from missing entries. [Config.PgCertCutoff] can supply a
 different ingest cutoff, for example when another process manages cleanup; it
-does not change automatic cleanup.
+does not change automatic cleanup. Moving the cutoff earlier does not refill
+existing marker rows.
 
 Two things worth knowing about what that does:
 

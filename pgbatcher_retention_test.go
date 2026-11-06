@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"strconv"
 	"testing"
@@ -30,38 +29,6 @@ func retentionEntry(t *testing.T, ls *LogStream, index int64, expires time.Time)
 	}
 }
 
-func TestLogEntryAppendJSONRetention(t *testing.T) {
-	t.Parallel()
-	expires := time.Now().UTC().Truncate(time.Second)
-	le := retentionEntry(t, &LogStream{Id: 7}, 11, expires)
-	for _, tc := range []struct {
-		name    string
-		cutoff  time.Time
-		skipped bool
-	}{
-		{"zero cutoff", time.Time{}, false},
-		{"before expiry", expires.Add(-time.Nanosecond), false},
-		{"at expiry", expires, true},
-		{"after expiry", expires.Add(time.Nanosecond), true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var row map[string]json.RawMessage
-			if err := json.Unmarshal(le.appendJSON(nil, tc.cutoff), &row); err != nil {
-				t.Fatal(err)
-			}
-			for _, key := range []string{"notbefore", "notafter", "sha256_hex", "seen", "stream", "logindex", "dnsnames"} {
-				if _, ok := row[key]; !ok {
-					t.Errorf("missing %s", key)
-				}
-			}
-			_, skipped := row["store_cert"]
-			if skipped != tc.skipped {
-				t.Errorf("store_cert present = %t, want %t", skipped, tc.skipped)
-			}
-		})
-	}
-}
-
 func TestPgDBRunBatchRetention(t *testing.T) {
 	t.Parallel()
 	ctx, db, cs, streamID, _ := cleanTestFixture(t)
@@ -81,6 +48,13 @@ func TestPgDBRunBatchRetention(t *testing.T) {
 	}
 	if callbackCount != 1 {
 		t.Fatalf("cutoff callback calls = %d, want 1", callbackCount)
+	}
+	var oldSeen time.Time
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT seen FROM CERTDB_entry WHERE stream = $1 AND logindex = 1`), streamID).Scan(&oldSeen); err != nil {
+		t.Fatal(err)
+	}
+	if want := old.Seen.UTC().Truncate(time.Second); !oldSeen.Equal(want) {
+		t.Fatalf("marker seen = %v, want %v", oldSeen, want)
 	}
 
 	// A skipped certificate gets a marker even when its hash already exists.
@@ -134,6 +108,27 @@ func TestPgDBRunBatchRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Marker-only batches bypass certificate ingest, tolerate duplicates, and preserve existing entries.
+	cs.PgCertCutoff = func() time.Time { return cutoff }
+	cutoff = newCert.Certificate.NotAfter.Add(time.Second)
+	marker := retentionEntry(t, ls, 9, old.Certificate.NotAfter)
+	marker.Seen = time.Time{}
+	ingestQuery := db.funcIngestBatch
+	db.funcIngestBatch = "SELECT 1/0"
+	before := time.Now().UTC().Truncate(time.Second)
+	if err := db.runBatch(ctx, []*LogEntry{marker, marker, newCert}); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UTC().Truncate(time.Second)
+	db.funcIngestBatch = ingestQuery
+	var markerSeen time.Time
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT seen FROM CERTDB_entry WHERE stream = $1 AND logindex = 9`), streamID).Scan(&markerSeen); err != nil {
+		t.Fatal(err)
+	}
+	if markerSeen.Before(before) || markerSeen.After(after) {
+		t.Fatalf("zero-seen marker = %v, want within [%v, %v]", markerSeen, before, after)
+	}
+
 	rows, err := db.Query(ctx, db.Pfx(`SELECT logindex, cert FROM CERTDB_entry WHERE stream = $1 ORDER BY logindex`), streamID)
 	if err != nil {
 		t.Fatal(err)
@@ -152,10 +147,10 @@ func TestPgDBRunBatchRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows.Close()
-	if len(got) != 8 {
-		t.Fatalf("stored indexes = %v, want 1 through 8", got)
+	if len(got) != 9 {
+		t.Fatalf("stored indexes = %v, want 1 through 9", got)
 	}
-	for _, index := range []int64{1, 2, 4, 6} {
+	for _, index := range []int64{1, 2, 4, 6, 9} {
 		if got[index] != 0 {
 			t.Errorf("index %d cert = %d, want marker 0", index, got[index])
 		}
@@ -175,9 +170,29 @@ func TestPgDBRunBatchRetention(t *testing.T) {
 	if certs != 4 || domains != 4 {
 		t.Errorf("certificates/domains = %d/%d, want 4/4", certs, domains)
 	}
-	if gaps, err := db.storedGaps(ctx, streamID, 1, 8); err != nil {
+	if gaps, err := db.storedGaps(ctx, streamID, 1, 9); err != nil {
 		t.Fatal(err)
 	} else if len(gaps) != 0 {
 		t.Errorf("stored gaps = %v, want none", gaps)
+	}
+}
+
+func TestPgDBRunBatchRetentionMixedRollback(t *testing.T) {
+	t.Parallel()
+	ctx, db, cs, streamID, _ := cleanTestFixture(t)
+	cs.PgCertCutoff = func() time.Time { return time.Now().UTC().Add(-24 * time.Hour) }
+	valid := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	missing := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: -1}
+	retained := retentionEntry(t, valid, 1, time.Now().UTC().Add(24*time.Hour))
+	marker := retentionEntry(t, missing, 2, time.Now().UTC().Add(-48*time.Hour))
+	if err := db.runBatch(ctx, []*LogEntry{retained, marker}); err == nil {
+		t.Fatal("mixed batch with invalid marker stream succeeded")
+	}
+	var certs, entries int64
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT (SELECT count(*) FROM CERTDB_cert), (SELECT count(*) FROM CERTDB_entry)`)).Scan(&certs, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if certs != 0 || entries != 0 {
+		t.Fatalf("failed mixed batch committed %d certificates and %d entries", certs, entries)
 	}
 }
