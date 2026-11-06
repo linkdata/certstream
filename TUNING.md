@@ -31,6 +31,12 @@ cfg := certstream.NewConfig()
 cfg.PgCertMaxAge = 180 * 24 * time.Hour // delete certs 180 days after they expire
 ```
 
+Ingest also skips certificates expired at least this long ago. It stores
+their CT indexes in `CERTDB_entry` with `cert = 0`, so gap scans can
+distinguish them from missing entries. [Config.PgCertCutoff] can supply a
+different ingest cutoff, for example when another process manages cleanup; it
+does not change automatic cleanup.
+
 Two things worth knowing about what that does:
 
 - Deletion walks the certificate heap in storage order. Each statement selects
@@ -215,5 +221,6 @@ Two ways to misread these:
   the signal §2 exists for.
 
 [Config.PgCertMaxAge]: https://pkg.go.dev/github.com/linkdata/certstream#Config
+[Config.PgCertCutoff]: https://pkg.go.dev/github.com/linkdata/certstream#Config
 [CleanBatchSize]: https://pkg.go.dev/github.com/linkdata/certstream#CleanBatchSize
 [CleanResetInterval]: https://pkg.go.dev/github.com/linkdata/certstream#CleanResetInterval

@@ -9,13 +9,23 @@ import (
 )
 
 func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
+	batchTime := time.Now().UTC()
+	var cutoff time.Time
+	if cdb.PgCertCutoff != nil {
+		cutoff = cdb.PgCertCutoff()
+	} else if cdb.PgCertMaxAge > 0 {
+		cutoff = batchTime.Add(-cdb.PgCertMaxAge)
+	}
+	if cutoff.After(batchTime) {
+		cutoff = batchTime
+	}
 	var b []byte
 	b = append(b, `[`...)
 	for i, le := range queued {
 		if i > 0 {
 			b = append(b, `,`...)
 		}
-		b = le.appendJSON(b)
+		b = le.appendJSON(b, cutoff)
 	}
 	b = append(b, `]`...)
 	now := time.Now()

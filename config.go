@@ -24,7 +24,7 @@ type Config struct {
 	PgConns          int                                         // max number of database connections, default 100
 	PgWorkerBits     int                                         // number of prefix bits that determine DB workers, default 5 (32 workers)
 	PgMaxAge         int                                         // maximum age in days to backfill
-	PgCertMaxAge     time.Duration                               // delete certificates this long after they expire; zero disables cleanup
+	PgCertMaxAge     time.Duration                               // cleanup delay after expiry; also sets ingest cutoff when PgCertCutoff is nil; zero disables cleanup
 	PgNoSSL          bool                                        // if true, do not use SSL
 	PgSyncCommit     bool                                        // if true, do not set synchronous_commit=off
 	Concurrency      int                                         // number of concurrent requests per stream, default is 4
@@ -42,6 +42,15 @@ type Config struct {
 	// returned [CertStream] is a startup snapshot; do not mutate it while
 	// streaming. Use [CertStream.SetProviderConcurrency] to change limits.
 	ProviderConcurrency map[string]int
+
+	// PgCertCutoff returns the expiration cutoff for ingestion.
+	//
+	// Certificates with NotAfter at or before the cutoff keep only CT index
+	// markers. The callback runs once per database batch and may run concurrently.
+	// A zero time disables filtering; nil uses PgCertMaxAge. Future cutoffs are
+	// capped at batch time. [Start] copies the callback; keep the copy on
+	// [CertStream] unchanged while streaming.
+	PgCertCutoff func() time.Time
 }
 
 // NewConfig returns a Config with default values.

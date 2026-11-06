@@ -89,7 +89,8 @@ SELECT
     coalesce(x.dnsnames, '') AS dnsnames,
     coalesce(x.ipaddrs, '') AS ipaddrs,
     coalesce(x.emails, '') AS emails,
-    coalesce(x.uris, '') AS uris
+    coalesce(x.uris, '') AS uris,
+    coalesce(x.store_cert, true) AS store_cert
 FROM jsonb_to_recordset($1) AS x(
     iss_org text,
     iss_prov text,
@@ -108,7 +109,8 @@ FROM jsonb_to_recordset($1) AS x(
     dnsnames text,
     ipaddrs text,
     emails text,
-    uris text
+    uris text,
+    store_cert boolean
 )
 $sql$;
     tmp_new_certs_sql text := $sql$
@@ -131,6 +133,7 @@ WITH unique_certs AS (
         emails,
         uris
     FROM tmp_ingest
+    WHERE store_cert
     ORDER BY sha256
 ),
 new_certs AS (
@@ -218,9 +221,10 @@ FROM cert_inserts
 $sql$;
     insert_entry_sql text := $sql$
 INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
-SELECT ti.seen, ti.logindex, c.id, ti.stream
+SELECT ti.seen, ti.logindex, coalesce(c.id, 0), ti.stream
 FROM tmp_ingest ti
-INNER JOIN CERTDB_cert c ON c.sha256 = ti.sha256
+LEFT JOIN CERTDB_cert c ON c.sha256 = ti.sha256 AND ti.store_cert
+WHERE NOT ti.store_cert OR c.id IS NOT NULL
 ON CONFLICT (stream, logindex) DO NOTHING
 $sql$;
     insert_uri_sql text := $sql$
