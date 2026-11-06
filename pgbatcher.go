@@ -2,7 +2,6 @@ package certstream
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -50,21 +49,19 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	}
 	b = append(b, `]`...)
 	now := time.Now()
-	switch {
-	case len(seen) == 0:
+	if len(seen) == 0 {
 		_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
-	case len(b) == 2:
-		_, err = cdb.Exec(ctx, cdb.Pfx(insertExpiredEntries), seen, indexes, streams)
-	default:
+	} else {
 		var batch pgx.Batch
-		batch.Queue(cdb.funcIngestBatch, string(b))
+		if len(seen) != len(queued) {
+			batch.Queue(cdb.funcIngestBatch, string(b))
+		}
 		batch.Queue(cdb.Pfx(insertExpiredEntries), seen, indexes, streams)
 		err = cdb.SendBatch(ctx, &batch).Close()
 	}
 	elapsed := time.Since(now)
 	if err != nil {
-		var pe *pgconn.PgError
-		if errors.As(err, &pe) {
+		if pe, ok := err.(*pgconn.PgError); ok {
 			if pe.SQLState() == "22P02" {
 				cdb.LogInfo("generated invalid JSON data", "json", string(b))
 			}
