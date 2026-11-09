@@ -73,6 +73,21 @@ IF to_regclass('CERTDB_entry') IS NULL THEN
   );
 END IF;
 
+IF to_regclass('CERTDB_badcert') IS NULL THEN
+  CREATE TABLE IF NOT EXISTS CERTDB_badcert (
+    seen TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
+    logindex BIGINT NOT NULL,
+    stream INTEGER NOT NULL REFERENCES CERTDB_stream (id) ON DELETE CASCADE,
+    commonname TEXT NOT NULL,
+    subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
+    issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
+    sha256 BYTEA NOT NULL,
+    rawcert BYTEA NOT NULL, -- TBS DER when full precertificate DER is unavailable
+    PRIMARY KEY (stream, logindex)
+  );
+  CREATE INDEX IF NOT EXISTS CERTDB_badcert_sha256_idx ON CERTDB_badcert (sha256); -- one certificate may appear in several streams
+END IF;
+
 IF to_regclass('CERTDB_domain') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_domain (
     cert BIGINT NOT NULL REFERENCES CERTDB_cert (id) ON DELETE CASCADE,

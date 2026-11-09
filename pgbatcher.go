@@ -31,13 +31,18 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	var markerSeen []time.Time
 	var markerIndexes []int64
 	var markerStreams []int32
+	var batch pgx.Batch
 	for _, le := range queued {
 		if le.Certificate == nil || (!cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff)) {
 			at := le.Seen
 			if at.IsZero() {
 				at = batchTime
 			}
-			markerSeen = append(markerSeen, at.UTC().Truncate(time.Second))
+			at = at.UTC().Truncate(time.Second)
+			if le.Certificate == nil && le.rawCert != nil {
+				cdb.queueBadCert(&batch, le, at)
+			}
+			markerSeen = append(markerSeen, at)
 			markerIndexes = append(markerIndexes, le.Index())
 			markerStreams = append(markerStreams, le.LogStream.Id)
 		} else {
@@ -52,7 +57,6 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	if len(markerSeen) == 0 {
 		_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
 	} else {
-		var batch pgx.Batch
 		if len(markerSeen) != len(queued) {
 			batch.Queue(cdb.funcIngestBatch, string(b))
 		}

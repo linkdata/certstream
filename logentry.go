@@ -10,6 +10,10 @@ import (
 	"golang.org/x/net/idna"
 )
 
+// LogEntry describes a fetched CT log entry.
+//
+// Entries without a parsed Certificate are not sent on [CertStream.C]. With
+// PostgreSQL configured, parse failures receive an entry marker instead.
 type LogEntry struct {
 	*LogStream
 	Err         error // error from RawLogEntryFromLeaf or ToLogEntry, or nil
@@ -21,6 +25,7 @@ type LogEntry struct {
 	Signature   []byte
 	Seen        time.Time
 	flushAck    chan struct{} // internal batch-worker barrier; never sent to callers
+	rawCert     []byte        // certificate DER or precertificate TBS bytes when parsing fails
 }
 
 func (le *LogEntry) appendJSON(b []byte) []byte {

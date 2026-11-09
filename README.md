@@ -11,7 +11,11 @@ Configure a database for certificate storage and backfill.
 
 With database storage, an unparseable fetched CT entry gets a `CERTDB_entry`
 row with `cert=0`. Gap scans do not refetch marked indexes, and unparseable
-entries are not sent on `CertStream.C`.
+entries are not sent on `CertStream.C`. When certificate bytes are available,
+`CERTDB_badcert` stores those bytes, their SHA-256 hash, and names recoverable
+from the signed certificate body. Missing names use empty values. For
+precertificates without full DER, `rawcert` holds TBS DER and `sha256` hashes
+those stored bytes.
 
 Streams with database and tail fetching enabled scan stored entry gaps at startup.
 Recent indexes are checked first in bounded windows, normally every 15 minutes.
