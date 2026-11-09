@@ -4,9 +4,8 @@ import _ "embed"
 
 // CreateSchema contains SQL to apply the CertDB schema.
 //
-// Existing tables remain unchanged. New databases receive B-tree domain
-// indexes and no trigram index. It removes the CERTDB_gap type,
-// CERTDB_findgap function, and CERTDB_set_backfill_first_gap procedure.
+// It creates missing tables and views, including CERTDB_badcert, and removes
+// obsolete gap-scan database objects.
 //
 //go:embed assets/createschema.sql
 var CreateSchema string

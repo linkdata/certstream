@@ -65,12 +65,27 @@ END IF;
 IF to_regclass('CERTDB_entry') IS NULL THEN
   CREATE TABLE IF NOT EXISTS CERTDB_entry (
     seen TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
-    -- Certificate cleanup leaves entries; 0 marks certificates skipped by retention.
+    -- Certificate cleanup leaves entries; 0 marks entries skipped by retention or parsing.
     cert BIGINT NOT NULL, -- do not reference CERTDB_cert since we have no index on this column
     logindex BIGINT NOT NULL,
     stream INTEGER NOT NULL REFERENCES CERTDB_stream (id) ON DELETE CASCADE,
     PRIMARY KEY (stream, logindex)
   );
+END IF;
+
+IF to_regclass('CERTDB_badcert') IS NULL THEN
+  CREATE TABLE IF NOT EXISTS CERTDB_badcert (
+    seen TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC'),
+    logindex BIGINT NOT NULL,
+    stream INTEGER NOT NULL REFERENCES CERTDB_stream (id) ON DELETE CASCADE,
+    commonname TEXT NOT NULL,
+    subject INTEGER NOT NULL REFERENCES CERTDB_ident (id),
+    issuer INTEGER NOT NULL REFERENCES CERTDB_ident (id),
+    sha256 BYTEA NOT NULL,
+    rawcert BYTEA NOT NULL, -- TBS DER when full precertificate DER is unavailable
+    PRIMARY KEY (stream, logindex)
+  );
+  CREATE INDEX IF NOT EXISTS CERTDB_badcert_sha256_idx ON CERTDB_badcert (sha256); -- one certificate may appear in several streams
 END IF;
 
 IF to_regclass('CERTDB_domain') IS NULL THEN

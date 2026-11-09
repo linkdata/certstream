@@ -23,6 +23,8 @@ import (
 	"github.com/google/certificate-transparency-go/client"
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
+	"github.com/google/certificate-transparency-go/tls"
+	"github.com/google/certificate-transparency-go/x509"
 )
 
 var (
@@ -309,15 +311,42 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 			le.Certificate = ctle.Precert.TBSCertificate
 		}
 	}
+	var raw []byte
+	var hasRaw bool
 	if ctrle != nil {
-		if len(ctrle.Cert.Data) > 0 {
-			shasig := sha256.Sum256(ctrle.Cert.Data)
-			le.Signature = shasig[:]
-		}
+		raw = ctrle.Cert.Data
+		hasRaw = true
 		if tse := ctrle.Leaf.TimestampedEntry; tse != nil {
 			ts := int64(tse.Timestamp) //#nosec G115
 			le.Seen = time.UnixMilli(ts).UTC()
 		}
+	} else if leaferr != nil {
+		// A malformed extra_data can leave certificate or TBS bytes in leaf_input.
+		var leaf ct.MerkleTreeLeaf
+		if rest, err := tls.Unmarshal(entry.LeafInput, &leaf); err == nil && len(rest) == 0 {
+			if tse := leaf.TimestampedEntry; tse != nil {
+				ts := int64(tse.Timestamp) //#nosec G115
+				le.Seen = time.UnixMilli(ts).UTC()
+				if tse.X509Entry != nil {
+					raw = tse.X509Entry.Data
+					hasRaw = true
+					// X.509 leaf_input has full DER even when extra_data is malformed.
+					if cert, certErr := x509.ParseCertificate(raw); !x509.IsFatal(certErr) {
+						le.Certificate = cert
+					}
+				} else if tse.PrecertEntry != nil {
+					raw = tse.PrecertEntry.TBSCertificate
+					hasRaw = true
+				}
+			}
+		}
+	}
+	if len(raw) > 0 {
+		shasig := sha256.Sum256(raw)
+		le.Signature = shasig[:]
+	}
+	if hasRaw && le.Certificate == nil && le.Err != nil {
+		le.rawCert = append([]byte{}, raw...)
 	}
 	if len(le.Signature) == 0 && le.Certificate != nil {
 		if raw := le.Certificate.Raw; len(raw) > 0 {
@@ -355,6 +384,11 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 				err = os.ErrInvalid
 			}
 			_ = ls.LogError(err, "sendEntry", "url", ls.URL(), "stream", ls.Id, "logindex", le.LogIndex)
+			if le.Err != nil && ctx.Err() == nil {
+				if db := ls.DB(); db != nil {
+					db.sendToBatcher(ctx, le)
+				}
+			}
 		}
 	}
 	return

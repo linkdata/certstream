@@ -33,12 +33,16 @@ func (ls *LogStream) makeTileLogEntry(logindex int64, entry *sunlight.LogEntry, 
 			le.Err = certErr
 		}
 		le.Certificate = cert
+		raw := entry.Certificate
 		if entry.IsPrecert && len(entry.PreCertificate) > 0 {
-			shasig := sha256.Sum256(entry.PreCertificate)
+			raw = entry.PreCertificate
+		}
+		if len(raw) > 0 {
+			shasig := sha256.Sum256(raw)
 			le.Signature = shasig[:]
-		} else if len(entry.Certificate) > 0 {
-			shasig := sha256.Sum256(entry.Certificate)
-			le.Signature = shasig[:]
+		}
+		if le.Certificate == nil && le.Err != nil {
+			le.rawCert = append([]byte{}, raw...)
 		}
 	}
 	if len(le.Signature) == 0 && le.Certificate != nil {
