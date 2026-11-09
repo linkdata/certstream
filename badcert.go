@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"crypto/sha256"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"strings"
 	"time"
@@ -33,17 +34,15 @@ type badCertMetadata struct {
 }
 
 func parseBadCertMetadata(raw []byte) (metadata badCertMetadata) {
-	var cert *x509.Certificate
+	tbs := raw
 	var outer, first asn1.RawValue
 	// The outer signature field may be invalid while the signed TBS remains readable.
 	if _, err := asn1.Unmarshal(raw, &outer); err == nil && outer.Class == 0 && outer.Tag == asn1.TagSequence {
 		if _, err = asn1.Unmarshal(outer.Bytes, &first); err == nil && first.Class == 0 && first.Tag == asn1.TagSequence {
-			cert, _ = x509.ParseTBSCertificate(first.FullBytes)
+			tbs = first.FullBytes
 		}
 	}
-	if cert == nil {
-		cert, _ = x509.ParseTBSCertificate(raw)
-	}
+	cert, _ := x509.ParseTBSCertificate(tbs)
 	if cert != nil {
 		metadata.commonName = badCertText((&Certificate{Certificate: cert}).GetCommonName())
 		metadata.subject = [3]string{
@@ -55,6 +54,45 @@ func parseBadCertMetadata(raw []byte) (metadata badCertMetadata) {
 			badCertText(strings.Join(cert.Issuer.Organization, ",")),
 			badCertText(strings.Join(cert.Issuer.Province, ",")),
 			badCertText(strings.Join(cert.Issuer.Country, ",")),
+		}
+	} else {
+		metadata = parseBadCertNames(tbs)
+	}
+	return
+}
+
+func parseBadCertNames(tbs []byte) (metadata badCertMetadata) {
+	var fields struct {
+		Version   int `asn1:"optional,explicit,default:0,tag:0"`
+		Serial    asn1.RawValue
+		Signature asn1.RawValue
+		Issuer    asn1.RawValue
+		Validity  asn1.RawValue
+		Subject   asn1.RawValue
+	}
+	if _, err := asn1.Unmarshal(tbs, &fields); err == nil &&
+		fields.Serial.Class == 0 && fields.Serial.Tag == asn1.TagInteger &&
+		fields.Signature.Class == 0 && fields.Signature.Tag == asn1.TagSequence &&
+		fields.Validity.Class == 0 && fields.Validity.Tag == asn1.TagSequence {
+		_, metadata.issuer = parseBadCertName(fields.Issuer)
+		metadata.commonName, metadata.subject = parseBadCertName(fields.Subject)
+	}
+	return
+}
+
+func parseBadCertName(raw asn1.RawValue) (commonName string, identity [3]string) {
+	if raw.Class != 0 || raw.Tag != asn1.TagSequence {
+		return
+	}
+	var rdn pkix.RDNSequence
+	if rest, err := asn1.Unmarshal(raw.FullBytes, &rdn); err == nil && len(rest) == 0 {
+		var name pkix.Name
+		name.FillFromRDNSequence(&rdn)
+		commonName = badCertText(name.CommonName)
+		identity = [3]string{
+			badCertText(strings.Join(name.Organization, ",")),
+			badCertText(strings.Join(name.Province, ",")),
+			badCertText(strings.Join(name.Country, ",")),
 		}
 	}
 	return

@@ -24,6 +24,7 @@ import (
 	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/loglist3"
 	"github.com/google/certificate-transparency-go/tls"
+	"github.com/google/certificate-transparency-go/x509"
 )
 
 var (
@@ -329,6 +330,10 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 				if tse.X509Entry != nil {
 					raw = tse.X509Entry.Data
 					hasRaw = true
+					// X.509 leaf_input has full DER even when extra_data is malformed.
+					if cert, certErr := x509.ParseCertificate(raw); !x509.IsFatal(certErr) {
+						le.Certificate = cert
+					}
 				} else if tse.PrecertEntry != nil {
 					raw = tse.PrecertEntry.TBSCertificate
 					hasRaw = true

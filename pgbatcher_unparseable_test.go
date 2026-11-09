@@ -185,6 +185,34 @@ EXISTS(SELECT 1 FROM CERTDB_entry WHERE stream = $1 AND logindex = 2)`), streamI
 	}
 }
 
+func TestMalformedExtraDataKeepsValidCertificate(t *testing.T) {
+	ctx, db, cs, streamID, _ := cleanTestFixture(t)
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	leaf := makeTestLeafEntry(t, time.Now().UTC())
+	leaf.ExtraData = []byte{0xff}
+	le := ls.makeLogEntry(1, leaf, true)
+	if le.Certificate == nil || le.rawCert != nil {
+		t.Fatalf("entry = (certificate %v, raw %x), want parsed certificate", le.Certificate, le.rawCert)
+	}
+	if err := db.runBatch(ctx, []*LogEntry{le}); err != nil {
+		t.Fatal(err)
+	}
+	var certID int64
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT cert FROM CERTDB_entry WHERE stream = $1 AND logindex = 1`), streamID).Scan(&certID); err != nil {
+		t.Fatal(err)
+	}
+	if certID == 0 {
+		t.Fatal("valid leaf certificate was marked unparseable")
+	}
+	var badCount int
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM CERTDB_badcert WHERE stream = $1 AND logindex = 1`), streamID).Scan(&badCount); err != nil {
+		t.Fatal(err)
+	}
+	if badCount != 0 {
+		t.Fatalf("bad certificate rows = %d, want 0", badCount)
+	}
+}
+
 func TestBadCertStoresRecoveredIdentities(t *testing.T) {
 	ctx, db, cs, streamID, _ := cleanTestFixture(t)
 	raw, err := os.ReadFile("testdata/hetu2027-8925345.der")
