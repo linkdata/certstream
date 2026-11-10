@@ -150,8 +150,35 @@ IF to_regtype('CERTDB_split_domain_result') IS NULL THEN
 END IF;
 
 DROP PROCEDURE IF EXISTS CERTDB_set_backfill_first_gap();
-DROP FUNCTION IF EXISTS CERTDB_findgap(integer, bigint, bigint);
-DROP TYPE IF EXISTS CERTDB_gap;
+IF to_regtype('CERTDB_gap') IS NOT NULL THEN
+  DROP FUNCTION IF EXISTS CERTDB_findgap(integer, bigint, bigint);
+  DROP TYPE CERTDB_gap;
+END IF;
+
+-- Find gaps between stored entries within the inclusive index range.
+CREATE OR REPLACE FUNCTION CERTDB_findgap(
+  stream_id integer,
+  start_logindex bigint,
+  end_logindex bigint
+)
+RETURNS TABLE (gap_start bigint, gap_end bigint)
+LANGUAGE sql
+STABLE
+PARALLEL SAFE
+AS $$
+SELECT previous_id + 1 AS gap_start,
+       logindex - 1 AS gap_end
+FROM (
+  SELECT logindex,
+         lag(logindex) OVER (ORDER BY logindex) AS previous_id
+  FROM CERTDB_entry
+  WHERE stream = stream_id
+    AND logindex >= start_logindex
+    AND logindex <= end_logindex
+) AS ordered
+WHERE logindex > previous_id + 1
+ORDER BY logindex;
+$$;
 
 CREATE OR REPLACE FUNCTION CERTDB_split_domain(_fqdn text)
 RETURNS CERTDB_split_domain_result

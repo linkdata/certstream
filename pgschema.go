@@ -4,8 +4,8 @@ import _ "embed"
 
 // CreateSchema contains SQL to apply the CertDB schema.
 //
-// It creates missing tables and views, including CERTDB_badcert, and removes
-// obsolete gap-scan database objects.
+// It creates missing tables and views, including CERTDB_badcert, and installs
+// CERTDB_findgap for finding gaps between stored entries.
 //
 //go:embed assets/createschema.sql
 var CreateSchema string
