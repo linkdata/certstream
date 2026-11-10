@@ -97,11 +97,11 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 }
 
 func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing bool) (scanErr error) {
-	scanErr, _ = cdb.backfillGapsWithFetcherCursor(ctx, ls, fetchFn, scanDone, includeTrailing, true)
+	scanErr = cdb.backfillGapsWithFetcherCursor(ctx, ls, fetchFn, scanDone, includeTrailing, true)
 	return
 }
 
-func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing, cursorReady bool) (scanErr error, advanced bool) {
+func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing, cursorReady bool) (scanErr error) {
 	if cdb != nil && ls != nil {
 		var lastgap gap
 		var maxErr error
@@ -247,8 +247,6 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 							if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
 								scanErr = errors.Join(scanErr, err)
 								cursorReady = false
-							} else if target > group.gaps[0].start {
-								advanced = true
 							}
 						}
 						for _, le := range entries {
@@ -399,14 +397,9 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 	if ready != nil {
 		cursorReady = <-ready
 	}
-	var advanced bool
-	scanErr, advanced = cdb.backfillGapsWithFetcherCursor(ctx, ls, fetchFn, scanDone, includeTrailing, cursorReady)
+	scanErr = cdb.backfillGapsWithFetcherCursor(ctx, ls, fetchFn, scanDone, includeTrailing, cursorReady)
 	if cold != nil {
-		if advanced {
-			cold.cursorBlocked = false
-			cold.retryResume = 0
-			cold.retryDone = false
-		} else if cold.retryResume > 0 {
+		if cold.retryResume > 0 {
 			if cold.next > cold.cursor {
 				if cold.cursorBlocked {
 					cold.next = max(cold.next, cold.retryResume)
