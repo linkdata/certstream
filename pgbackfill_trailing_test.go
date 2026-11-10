@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/certificate-transparency-go/loglist3"
 )
 
 func TestRecoverTrailingGapAfterFailedHeadBatch(t *testing.T) {
@@ -128,5 +130,36 @@ func TestRecoverTrailingGapFiltersAlignedPrefix(t *testing.T) {
 	}
 	if got := ls.Backfill.Load(); got != 0 {
 		t.Fatalf("Backfill = %d, want 0", got)
+	}
+}
+
+func TestRecoverTrailingGapReleasesTileCache(t *testing.T) {
+	ctx, db, cs := setupSelectGapsDB(t)
+	var operatorID, streamID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertStream(ctx, db, "https://example.test/tiled-tail", operatorID, &streamID); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertEntries(ctx, db, streamID, []int64{0}); err != nil {
+		t.Fatal(err)
+	}
+	ls, transport := newTileTestStream(t, 3)
+	ls.LogOperator = &LogOperator{CertStream: cs}
+	ls.Id = streamID
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.MaxIndex.Store(2)
+	if err := db.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.dataTileCalls.Load(); got != 1 {
+		t.Fatalf("data tile requests = %d, want 1", got)
+	}
+	if ls.gapRead.reader != nil || ls.gapRead.entries != nil {
+		t.Fatal("trailing gap tile cache retained after fetch")
 	}
 }

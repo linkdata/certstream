@@ -69,6 +69,52 @@ func TestGapScanCommitsFetchedEntryAndAdvancesCursor(t *testing.T) {
 	}
 }
 
+func TestGapScanCommitsAvailableTilePrefixBeforeCheckpointCatchesUp(t *testing.T) {
+	ctx, db, cs := setupSelectGapsDB(t)
+	var operatorID, streamID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertStream(ctx, db, "https://example.test/partial-gap-checkpoint", operatorID, &streamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream)
+SELECT n + 1000, n, $1 FROM generate_series(0, 280) AS n WHERE n NOT IN (265, 280)`), streamID); err != nil {
+		t.Fatal(err)
+	}
+	cs.sendEntryCh = make(chan *LogEntry, 1)
+	ls, _ := newTileTestStream(t, 271)
+	ls.CertStream = cs
+	ls.Id = streamID
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.LastIndex.Store(280)
+	queueTestGaps(ls, []gap{{265, 265}, {280, 280}})
+	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	if err := db.backfillGapsWithFetcherMode(fetchCtx, ls, ls.getGapEntries, nil, false); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("backfill error = %v, want %v", err, errGapIncomplete)
+	}
+	if err := fetchCtx.Err(); err != nil {
+		t.Fatalf("available prefix waited for the gap checkpoint: %v", err)
+	}
+	var first, second bool
+	if err := db.QueryRow(ctx, db.Pfx(`SELECT EXISTS(SELECT 1 FROM CERTDB_entry WHERE stream = $1 AND logindex = 265),
+EXISTS(SELECT 1 FROM CERTDB_entry WHERE stream = $1 AND logindex = 280)`), streamID).Scan(&first, &second); err != nil {
+		t.Fatal(err)
+	}
+	if !first || second {
+		t.Fatalf("stored gaps = (%t, %t), want (true, false)", first, second)
+	}
+	var cursor int64
+	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 280 {
+		t.Fatalf("backfill_logindex = %d, want 280", cursor)
+	}
+}
+
 func TestGapScanCommitsUnparseableLeafAndAdvancesCursor(t *testing.T) {
 	ctx, db, cs := setupSelectGapsDB(t)
 	var operatorID, streamID int32
@@ -164,14 +210,11 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 258) AS n WHERE n NOT IN (1, 257)
 	db.funcIngestBatch = `SELECT 1/0 WHERE $1::jsonb IS NOT NULL`
 	t.Cleanup(func() { db.funcIngestBatch = goodQuery })
 	fetch := func(ctx context.Context, start, end int64, historical bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
-		return ls.getGapEntries(ctx, start, end, historical, func(ctx context.Context, now time.Time, le *LogEntry) bool {
-			wanted := handle(ctx, now, le)
-			if le.Index() == 256 {
-				// The first tile has attempted its batch before the second begins.
-				db.funcIngestBatch = goodQuery
-			}
-			return wanted
-		}, remaining)
+		if start == 257 {
+			// The first tile has attempted its batch before the second begins.
+			db.funcIngestBatch = goodQuery
+		}
+		return ls.getGapEntries(ctx, start, end, historical, handle, remaining)
 	}
 	err := db.scanAndBackfillGaps(ctx, ls, fetch)
 	var pgErr *pgconn.PgError

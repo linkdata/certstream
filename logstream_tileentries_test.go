@@ -33,9 +33,13 @@ type tileRoundTripper struct {
 	entries         []*sunlight.LogEntry
 	hashStore       *tileHashStore
 	checkpoint      []byte
+	signer          *ecdsa.PrivateKey
 	partialHashTile map[tlog.Tile]bool
 	requests        atomic.Int64
+	checkpointCalls atomic.Int64
 	dataTileCalls   atomic.Int64
+	corruptDataOnce atomic.Bool
+	denyDataTile    *tlog.Tile
 }
 
 type injectedSigner struct {
@@ -181,6 +185,7 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 	status := http.StatusOK
 	var data []byte
 	if path == "checkpoint" {
+		rt.checkpointCalls.Add(1)
 		data = rt.checkpoint
 	} else if strings.HasPrefix(path, "tile/") {
 		var tile tlog.Tile
@@ -188,7 +193,14 @@ func (rt *tileRoundTripper) RoundTrip(req *http.Request) (resp *http.Response, e
 		if err == nil {
 			if tile.L == -1 {
 				rt.dataTileCalls.Add(1)
-				data, err = rt.dataTile(tile)
+				if rt.denyDataTile != nil && tile == *rt.denyDataTile {
+					status = http.StatusNotFound
+				} else {
+					data, err = rt.dataTile(tile)
+					if err == nil && len(data) > 0 && rt.corruptDataOnce.Swap(false) {
+						data[0] ^= 1
+					}
+				}
 			} else if tile.L >= 0 {
 				if tile.W < sunlight.TileWidth && !rt.partialHashTile[tile] {
 					status = http.StatusNotFound
@@ -246,6 +258,7 @@ func newTileTestStream(t testing.TB, count int) (*LogStream, *tileRoundTripper) 
 		entries:         entries,
 		hashStore:       store,
 		checkpoint:      checkpoint,
+		signer:          priv,
 		partialHashTile: make(map[tlog.Tile]bool),
 	}
 	for _, tile := range tlog.NewTiles(sunlight.TileHeight, 0, tree.N) {
@@ -276,6 +289,20 @@ func newTileTestStream(t testing.TB, count int) (*LogStream, *tileRoundTripper) 
 		gapTile:  gapClient,
 	}
 	return ls, rt
+}
+
+func (rt *tileRoundTripper) setCheckpoint(t testing.TB, count int64) {
+	t.Helper()
+	root, err := tlog.TreeHash(count, tlog.HashReaderFunc(rt.hashStore.readHashes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.checkpoint = mustSignedCheckpoint(t, "test-log", rt.signer, tlog.Tree{N: count, Hash: root})
+	for _, tile := range tlog.NewTiles(sunlight.TileHeight, 0, count) {
+		if tile.W < sunlight.TileWidth {
+			rt.partialHashTile[tile] = true
+		}
+	}
 }
 
 func TestGetTileEntriesReturnsNextIndex(t *testing.T) {

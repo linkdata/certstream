@@ -49,6 +49,109 @@ func TestBackfillGroupsTiledHoles(t *testing.T) {
 	if got := transport.dataTileCalls.Load(); got != 1 {
 		t.Fatalf("data tile requests = %d, want 1", got)
 	}
+	if ls.gapRead.reader != nil || ls.gapRead.entries != nil {
+		t.Fatal("gap tile cache retained after scan")
+	}
+}
+
+func TestBackfillSparseTiledHolesFetchOnlyMissingTiles(t *testing.T) {
+	ls, transport := newTileTestStream(t, 100*sunlight.TileWidth)
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, 2)
+	ls.LastIndex.Store(100*sunlight.TileWidth - 1)
+	queueTestGaps(ls, []gap{{sunlight.TileWidth, sunlight.TileWidth}, {49 * sunlight.TileWidth, 49 * sunlight.TileWidth}})
+
+	if err := (&PgDB{}).backfillGapsWithFetcherMode(t.Context(), ls, ls.getGapEntries, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := queuedTestIndexes(ls), []int64{sunlight.TileWidth, 49 * sunlight.TileWidth}; !slices.Equal(got, want) {
+		t.Fatalf("queued indexes = %v, want %v", got, want)
+	}
+	if got := transport.dataTileCalls.Load(); got != 2 {
+		t.Fatalf("data tile requests = %d, want 2", got)
+	}
+	if got := transport.requests.Load(); got != 6 {
+		t.Fatalf("HTTP requests = %d, want 6", got)
+	}
+}
+
+func TestBackfillSparseTiledHolesWithLaggingHead(t *testing.T) {
+	ls, transport := newTileTestStream(t, 100*sunlight.TileWidth)
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, 4)
+	ls.LastIndex.Store(4*sunlight.TileWidth - 1)
+	queueTestGaps(ls, []gap{{0, 0}, {sunlight.TileWidth, sunlight.TileWidth}, {2 * sunlight.TileWidth, 2 * sunlight.TileWidth}, {3 * sunlight.TileWidth, 3 * sunlight.TileWidth}})
+
+	if err := (&PgDB{}).backfillGapsWithFetcherMode(t.Context(), ls, ls.getGapEntries, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.dataTileCalls.Load(); got != 4 {
+		t.Fatalf("data tile requests = %d, want 4", got)
+	}
+	if got := transport.requests.Load(); got != 10 {
+		t.Fatalf("HTTP requests = %d, want 10", got)
+	}
+}
+
+func TestBackfillSparseMixedTiledHoles(t *testing.T) {
+	ls, transport := newTileTestStream(t, 100*sunlight.TileWidth)
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, 3)
+	ls.LastIndex.Store(100*sunlight.TileWidth - 1)
+	queueTestGaps(ls, []gap{{50 * sunlight.TileWidth, 50 * sunlight.TileWidth}, {99 * sunlight.TileWidth, 99*sunlight.TileWidth + 1}})
+
+	if err := (&PgDB{}).backfillGapsWithFetcherMode(t.Context(), ls, ls.getGapEntries, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.dataTileCalls.Load(); got != 2 {
+		t.Fatalf("data tile requests = %d, want 2", got)
+	}
+}
+
+func TestBackfillTiledHoleBehindGapCheckpoint(t *testing.T) {
+	ls, transport := newTileTestStream(t, sunlight.TileWidth+15)
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, 1)
+	ls.LastIndex.Store(2*sunlight.TileWidth - 1)
+	queueTestGaps(ls, []gap{{sunlight.TileWidth + 9, sunlight.TileWidth + 9}})
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+
+	if err := (&PgDB{}).backfillGapsWithFetcherMode(ctx, ls, ls.getGapEntries, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("hole fetch waited for the gap checkpoint: %v", err)
+	}
+	if got, want := queuedTestIndexes(ls), []int64{sunlight.TileWidth + 9}; !slices.Equal(got, want) {
+		t.Fatalf("queued indexes = %v, want %v", got, want)
+	}
+	if got := transport.dataTileCalls.Load(); got != 1 {
+		t.Fatalf("data tile requests = %d, want 1", got)
+	}
+}
+
+func TestBackfillCachesPartialRightEdgeHashTile(t *testing.T) {
+	const count = 100*sunlight.TileWidth + 15
+	ls, transport := newTileTestStream(t, count)
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, 3)
+	ls.LastIndex.Store(count - 1)
+	queueTestGaps(ls, []gap{
+		{sunlight.TileWidth, sunlight.TileWidth},
+		{2 * sunlight.TileWidth, 2 * sunlight.TileWidth},
+		{3 * sunlight.TileWidth, 3 * sunlight.TileWidth},
+	})
+
+	if err := (&PgDB{}).backfillGapsWithFetcherMode(t.Context(), ls, ls.getGapEntries, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := transport.dataTileCalls.Load(); got != 3 {
+		t.Fatalf("data tile requests = %d, want 3", got)
+	}
+	if got := transport.requests.Load(); got != 9 {
+		t.Fatalf("HTTP requests = %d, want 9", got)
+	}
 }
 
 func TestBackfillAlignedGapRanges(t *testing.T) {
@@ -59,12 +162,12 @@ func TestBackfillAlignedGapRanges(t *testing.T) {
 		wantFetch []gap
 		classic   bool
 	}{
-		{"tiled singleton", 512, []gap{{257, 257}}, []gap{{256, 511}}, false},
+		{"tiled singleton", 512, []gap{{257, 257}}, []gap{{257, 257}}, false},
 		{"classic singleton", 512, []gap{{257, 257}}, []gap{{256, 511}}, true},
-		{"partial head tile", 271, []gap{{265, 265}}, []gap{{256, 270}}, false},
-		{"spanning tiled", 512, []gap{{250, 260}}, []gap{{0, 511}}, false},
+		{"partial head tile", 271, []gap{{265, 265}}, []gap{{265, 265}}, false},
+		{"spanning tiled", 512, []gap{{250, 260}}, []gap{{250, 255}, {256, 260}}, false},
 		{"spanning classic", 512, []gap{{250, 260}}, []gap{{0, 255}, {256, 511}}, true},
-		{"sparse tiled", 1024, []gap{{257, 257}, {768, 768}}, []gap{{256, 1023}}, false},
+		{"sparse tiled", 1024, []gap{{257, 257}, {768, 768}}, []gap{{257, 257}, {768, 768}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ls, transport := newTileTestStream(t, tc.count)
@@ -134,8 +237,8 @@ func TestBackfillGroupedPartialFetch(t *testing.T) {
 	if err := (&PgDB{}).backfillGapsWithFetcherMode(t.Context(), ls, fetch, nil, false); !errors.Is(err, errGapIncomplete) {
 		t.Fatalf("backfill error = %v, want %v", err, errGapIncomplete)
 	}
-	if !gapsEqual(fetched, []gap{{256, 511}}) {
-		t.Fatalf("fetches = %v, want one 256..511 attempt", fetched)
+	if !gapsEqual(fetched, []gap{{257, 263}}) {
+		t.Fatalf("fetches = %v, want one gap-bearing range", fetched)
 	}
 	if got := queuedTestIndexes(ls); !slices.Equal(got, []int64{257}) {
 		t.Fatalf("queued indexes = %v, want [257]", got)
@@ -149,7 +252,7 @@ func TestBackfillGroupedPartialFetch(t *testing.T) {
 	if err := (&PgDB{}).backfillGapsWithFetcherMode(t.Context(), ls, fetch, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if !gapsEqual(fetched, []gap{{256, 511}, {256, 511}}) {
+	if !gapsEqual(fetched, []gap{{257, 263}, {257, 263}}) {
 		t.Fatalf("fetches = %v, want retry on next scan", fetched)
 	}
 	if got := queuedTestIndexes(ls); !slices.Equal(got, []int64{257, 263}) {
@@ -231,5 +334,8 @@ func TestBackfillReusesTileWhileScanIsOpen(t *testing.T) {
 	}
 	if got := transport.dataTileCalls.Load(); got != 1 {
 		t.Fatalf("data tile requests = %d, want 1", got)
+	}
+	if got := transport.requests.Load(); got != 4 {
+		t.Fatalf("HTTP requests = %d, want 4", got)
 	}
 }

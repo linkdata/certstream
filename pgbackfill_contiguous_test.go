@@ -101,8 +101,8 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 511) AS n WHERE n NOT BETWEEN 250
 	case <-time.After(10 * time.Second):
 		t.Fatal("backfill did not finish after fetch resumed")
 	}
-	if len(fetched) != 1 || fetched[0] != (gap{start: 0, end: 511}) {
-		t.Fatalf("fetch ranges = %v, want one aligned 0..511 request", fetched)
+	if len(fetched) != 2 || fetched[0] != (gap{start: 250, end: 255}) || fetched[1] != (gap{start: 256, end: 510}) {
+		t.Fatalf("fetch ranges = %v, want one request per tile", fetched)
 	}
 	var missing int64
 	if err := db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM generate_series(250, 510) AS series(logindex)

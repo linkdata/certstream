@@ -67,6 +67,8 @@ type LogStream struct {
 	headTile       *sunlight.Client
 	tailTile       *sunlight.Client
 	gapTile        *sunlight.Client
+	gapReadMu      sync.Mutex
+	gapRead        gapTileReadState
 	backoff        *logStreamBackoff
 	cancel         context.CancelFunc // stops this reader on retirement
 	done           chan struct{}      // closed after reader and backfill stop

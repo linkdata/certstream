@@ -33,8 +33,8 @@ func TestGapScanPartialFetchCommitsPrefixAndResumes(t *testing.T) {
 	partialCalls := 0
 	partial := func(ctx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
 		partialCalls++
-		if start != 0 || end != 4 {
-			t.Fatalf("partial fetch = %d..%d, want 0..4", start, end)
+		if start != 1 || end != 3 {
+			t.Fatalf("partial fetch = %d..%d, want 1..3", start, end)
 		}
 		var wanted bool
 		for index := start; index < 2; index++ {

@@ -89,6 +89,20 @@ func BenchmarkBackfillTiledContiguousGap(b *testing.B) {
 	benchmarkBackfillTiledGapBatch(b, int(end+1), []gap{{start: start, end: end}})
 }
 
+func BenchmarkBackfillTiledLargeContiguousGap(b *testing.B) {
+	const start = int64(sunlight.TileWidth)
+	const length = 128 * sunlight.TileWidth
+	const end = start + length - 1
+	benchmarkBackfillTiledGapBatch(b, int(end+1), []gap{{start: start, end: end}})
+}
+
+func BenchmarkBackfillTiledPartialTreeGap(b *testing.B) {
+	const start = int64(sunlight.TileWidth)
+	const length = 50 * sunlight.TileWidth
+	const end = start + length - 1
+	benchmarkBackfillTiledGapBatch(b, 100*sunlight.TileWidth+15, []gap{{start: start, end: end}})
+}
+
 func BenchmarkBackfillTiledSpacedGaps(b *testing.B) {
 	const holes = 32
 	gaps := make([]gap, holes)

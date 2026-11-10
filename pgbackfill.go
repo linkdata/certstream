@@ -33,10 +33,14 @@ type gapTileGroup struct {
 
 func (ls *LogStream) getGapEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	if ls.gapTile != nil {
-		return ls.getTileEntriesWithClient(ctx, ls.gapTile, start, end, historical, handleFn, gapcounter)
+		return ls.getGapTileEntries(ctx, ls.gapTile, start, end, historical, handleFn, gapcounter)
 	}
 	if ls.isTiled() {
-		return ls.getEntries(ctx, start, end, historical, handleFn, gapcounter)
+		client := ls.headTile
+		if historical && ls.tailTile != nil {
+			client = ls.tailTile
+		}
+		return ls.getGapTileEntries(ctx, client, start, end, historical, handleFn, gapcounter)
 	}
 	client := ls.headClient
 	if ls.tailClient != nil {
@@ -103,6 +107,10 @@ func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream,
 
 func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing, cursorReady bool) (scanErr error) {
 	if cdb != nil && ls != nil {
+		if ls.isTiled() {
+			ls.resetGapTileReader()
+			defer ls.resetGapTileReader()
+		}
 		var lastgap gap
 		var maxErr error
 		if includeTrailing {
@@ -129,7 +137,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 			}
 			cachedTileStart := int64(-1)
 			var cachedEntries []*LogEntry
-			fillTile := func(group gapTileGroup, advanceCursor bool, prefetched []*LogEntry) {
+			fillTile := func(group gapTileGroup, advanceCursor bool) {
 				if ctx.Err() != nil {
 					ls.Backfill.Add(-group.missing)
 					allGapsFilled = false
@@ -137,6 +145,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					return
 				}
 				storeDirect := ls.LogOperator != nil && ls.CertStream != nil && ls.DB() == cdb && cdb.Pool != nil
+				cacheDecoded := !ls.isTiled()
 				seen := make([]bool, int(group.end-group.start+1))
 				var entries []*LogEntry
 				gapIndex := 0
@@ -166,12 +175,8 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					seen[position] = true
 					return ls.sendEntry(ctx, now, le)
 				}
-				cached := prefetched != nil
+				cached := cacheDecoded && cachedTileStart == group.start
 				if cached {
-					cachedTileStart = group.start
-					cachedEntries = prefetched
-				} else if cachedTileStart == group.start {
-					cached = true
 					for _, g := range group.gaps {
 						for index := g.start; index <= g.end; index++ {
 							position := int(index - group.start)
@@ -191,27 +196,28 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					next = group.gaps[len(group.gaps)-1].end + 1
 					for _, g := range group.gaps {
 						for index := g.start; index <= g.end; index++ {
-							position := index - group.start
-							if position >= int64(len(cachedEntries)) || cachedEntries[position] == nil ||
-								(cachedEntries[position].Certificate == nil && cachedEntries[position].Err == nil) {
-								next = min(next, index)
-								continue
-							}
-							handle(ctx, time.Now(), cachedEntries[position])
+							handle(ctx, time.Now(), cachedEntries[index-group.start])
 						}
 					}
 				} else {
 					var remaining atomic.Int64
-					remaining.Store(group.end - group.start + 1)
-					cachedTileStart = group.start
-					cachedEntries = make([]*LogEntry, group.end-group.start+1)
-					capture := func(ctx context.Context, now time.Time, le *LogEntry) bool {
-						if le != nil && le.Index() >= group.start && le.Index() <= group.end {
-							cachedEntries[le.Index()-group.start] = le
+					fetchHandle := handle
+					if cacheDecoded {
+						cachedTileStart = group.start
+						cachedEntries = make([]*LogEntry, group.end-group.start+1)
+						fetchHandle = func(ctx context.Context, now time.Time, le *LogEntry) bool {
+							if le != nil && le.Index() >= group.start && le.Index() <= group.end {
+								cachedEntries[le.Index()-group.start] = le
+							}
+							return handle(ctx, now, le)
 						}
-						return handle(ctx, now, le)
 					}
-					next, _ = fetchFn(ctx, group.start, group.end, true, capture, &remaining)
+					start := group.start
+					if ls.isTiled() {
+						start = group.gaps[0].start
+					}
+					remaining.Store(group.end - start + 1)
+					next, _ = fetchFn(ctx, start, group.end, true, fetchHandle, &remaining)
 				}
 				ls.Backfill.Add(-group.missing)
 				complete := next > group.gaps[len(group.gaps)-1].end
@@ -265,67 +271,31 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					cursorReady = false
 				}
 			}
-			var groups []gapTileGroup
-			flushGroups := func(advanceCursor bool) {
-				if len(groups) == 0 {
-					return
+			var group gapTileGroup
+			flushGroup := func(advanceCursor bool) {
+				if len(group.gaps) > 0 {
+					fillTile(group, advanceCursor)
+					group = gapTileGroup{}
 				}
-				if len(groups) == 1 {
-					for _, group := range groups {
-						fillTile(group, advanceCursor, nil)
-					}
-					groups = groups[:0]
-					return
-				}
-				current := 0
-				entries := make([]*LogEntry, groups[0].end-groups[0].start+1)
-				capture := func(_ context.Context, _ time.Time, le *LogEntry) bool {
-					if le == nil {
-						return false
-					}
-					for current < len(groups) && le.Index() > groups[current].end {
-						fillTile(groups[current], advanceCursor, entries)
-						current++
-						if current < len(groups) {
-							entries = make([]*LogEntry, groups[current].end-groups[current].start+1)
-						}
-					}
-					if current < len(groups) && le.Index() >= groups[current].start {
-						entries[le.Index()-groups[current].start] = le
-					}
-					return false
-				}
-				start := groups[0].start
-				end := groups[len(groups)-1].end
-				var remaining atomic.Int64
-				remaining.Store(end - start + 1)
-				fetchFn(ctx, start, end, true, capture, &remaining)
-				if current < len(groups) {
-					fillTile(groups[current], advanceCursor, entries)
-					current++
-				}
-				for ; current < len(groups); current++ {
-					fillTile(groups[current], advanceCursor, nil)
-				}
-				groups = groups[:0]
 			}
 			appendGap := func(g gap, advanceCursor bool) {
 				for start := g.start; start <= g.end; {
 					tileStart := start / sunlight.TileWidth * sunlight.TileWidth
 					tileEnd := tileStart + sunlight.TileWidth - 1
 					partEnd := min(g.end, tileEnd)
-					// Torchwood fetches up to 50 tiles per iterator; reuse that HTTP work.
-					if len(groups) > 0 && groups[len(groups)-1].start != tileStart &&
-						(!ls.isTiled() || tileStart-groups[0].start >= 50*sunlight.TileWidth) {
-						flushGroups(advanceCursor)
+					if len(group.gaps) > 0 && group.start != tileStart {
+						flushGroup(advanceCursor)
 					}
-					if len(groups) == 0 || groups[len(groups)-1].start != tileStart {
-						groups = append(groups, gapTileGroup{
+					if len(group.gaps) == 0 {
+						end := partEnd
+						if !ls.isTiled() {
+							end = min(tileEnd, max(g.end, ls.LastIndex.Load(), ls.MaxIndex.Load()))
+						}
+						group = gapTileGroup{
 							start: tileStart,
-							end:   min(tileEnd, max(g.end, ls.LastIndex.Load(), ls.MaxIndex.Load())),
-						})
+							end:   end,
+						}
 					}
-					group := &groups[len(groups)-1]
 					group.end = max(group.end, partEnd)
 					group.gaps = append(group.gaps, gap{start: start, end: partEnd})
 					group.missing += partEnd - start + 1
@@ -338,7 +308,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 				select {
 				case g, ok = <-gapCh:
 				default:
-					flushGroups(true)
+					flushGroup(true)
 					g, ok = <-gapCh
 				}
 				if !ok {
@@ -346,7 +316,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 				}
 				appendGap(g, true)
 			}
-			flushGroups(true)
+			flushGroup(true)
 			if scanDone != nil {
 				scanErr = errors.Join(scanErr, <-scanDone)
 				if scanErr != nil {
@@ -355,7 +325,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 			}
 			if lastgap.end != 0 {
 				appendGap(lastgap, false)
-				flushGroups(false)
+				flushGroup(false)
 			}
 			if !allGapsFilled && scanErr == nil && ctx.Err() == nil {
 				scanErr = errGapIncomplete
@@ -524,6 +494,9 @@ func (cdb *PgDB) recoverTrailingGap(ctx context.Context, ls *LogStream, fetchFn 
 			return ls.sendEntry(ctx, now, le)
 		}
 		return false
+	}
+	if ls.isTiled() {
+		defer ls.resetGapTileReader()
 	}
 	next, _ := fetchFn(ctx, fetchStart, fetchEnd, true, handle, &remaining)
 	ls.Backfill.Add(-missing)
