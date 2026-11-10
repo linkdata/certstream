@@ -18,16 +18,15 @@ precertificates without full DER, `rawcert` holds TBS DER and `sha256` hashes
 those stored bytes.
 
 Streams with database and tail fetching enabled scan stored entry gaps at startup.
-Within each pass, missing indexes are fetched in ascending order. Each fetch
-starts on a 256-index boundary and covers a full 256-index range when the CT
-head allows it. Multiple holes in the same range share one fetch; only missing
-entries are stored.
-Classic CT gap requests use this width regardless of `LogBatchSize`.
-Each fetched range commits its missing entries as one database batch. The durable
-`backfill_logindex` cursor advances through verified gap-free ranges and after
-successful commits through the contiguous repaired prefix. `GapScanIndex` tracks
-the cold scan position; it can be ahead of the durable cursor and moves back
-when the scan retries a gap.
+Within each pass, missing indexes are fetched in ascending order. Fetches start
+on a 256-index boundary and cover full tiles when the CT head allows it.
+Classic CT logs request one 256-index range at a time, regardless of
+`LogBatchSize`. Tiled logs share one fetch across up to 50 tiles. Only missing
+entries are stored, and each tile's missing entries commit as one database batch.
+The durable `backfill_logindex` cursor advances through verified gap-free
+ranges and after successful commits through the contiguous repaired prefix.
+`GapScanIndex` tracks the cold scan position. It can be ahead of the durable
+cursor and moves back when the scan retries a gap.
 Cold scans start with a 10,000-index read, then read chunks of up to 100,000
 indexes. Unfinished sweeps retry after 10 seconds; completed sweeps with
 unresolved gaps retry after one minute. Scheduled scans pause when the database

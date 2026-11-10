@@ -109,6 +109,13 @@ func (cdb *PgDB) selectStreamGaps(ctx context.Context, ls *LogStream) error {
 }
 
 func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *coldScanState, scanRecent bool, coldPending *bool) (scanErr error) {
+	return cdb.selectStreamGapsModeReady(ctx, ls, cold, scanRecent, coldPending, nil)
+}
+
+func (cdb *PgDB) selectStreamGapsModeReady(ctx context.Context, ls *LogStream, cold *coldScanState, scanRecent bool, coldPending *bool, ready chan<- bool) (scanErr error) {
+	if ready != nil {
+		defer close(ready)
+	}
 	recentComplete := false
 	if cold != nil {
 		defer func() { cold.recentComplete = recentComplete }()
@@ -209,7 +216,7 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 				scanErr = errGapScanDeferred
 				break
 			}
-			if firstGap < 0 || g.start < firstGap {
+			if firstGap < 0 {
 				firstGap = g.start
 			}
 			if g.start < cursor {
@@ -242,12 +249,8 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		cursor = firstGap
 	}
 	if scanRecent && hotFloor > maxIndex {
-		verified := maxIndex
-		if firstGap >= 0 {
-			verified = firstGap
-		}
-		if verified > cursor {
-			if scanErr = cdb.backfillSetGapStartIndex(ctx, ls, verified); scanErr != nil {
+		if firstGap < 0 && maxIndex > cursor {
+			if scanErr = cdb.backfillSetGapStartIndex(ctx, ls, maxIndex); scanErr != nil {
 				return
 			}
 		}
@@ -287,6 +290,9 @@ func (cdb *PgDB) selectStreamGapsMode(ctx context.Context, ls *LogStream, cold *
 		scanEnd = min(scanEnd, cold.end)
 		scanPos = cold.next
 		persist = persist && (scanPos == cursor || (!cold.cursorBlocked && scanPos == cursor+1))
+	}
+	if ready != nil {
+		ready <- persist
 	}
 	defer func() {
 		if cold != nil {

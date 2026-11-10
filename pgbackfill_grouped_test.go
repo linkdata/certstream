@@ -62,7 +62,8 @@ func TestBackfillAlignedGapRanges(t *testing.T) {
 		{"tiled singleton", 512, gap{257, 257}, []gap{{256, 511}}, false},
 		{"classic singleton", 512, gap{257, 257}, []gap{{256, 511}}, true},
 		{"partial head tile", 271, gap{265, 265}, []gap{{256, 270}}, false},
-		{"spanning tiles", 512, gap{250, 260}, []gap{{0, 255}, {256, 511}}, false},
+		{"spanning tiled", 512, gap{250, 260}, []gap{{0, 511}}, false},
+		{"spanning classic", 512, gap{250, 260}, []gap{{0, 255}, {256, 511}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ls, transport := newTileTestStream(t, tc.count)

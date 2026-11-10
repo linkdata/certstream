@@ -81,3 +81,76 @@ func BenchmarkBackfillTiledTrickledGaps(b *testing.B) {
 	b.ReportMetric(float64(transport.requests.Load())/float64(b.N), "http-requests/op")
 	b.ReportMetric(float64(transport.dataTileCalls.Load())/float64(b.N), "data-tiles/op")
 }
+
+func BenchmarkBackfillTiledContiguousGap(b *testing.B) {
+	const start = int64(sunlight.TileWidth)
+	const length = 8192
+	const end = start + length - 1
+	ls, transport := newTileTestStream(b, int(end+1))
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, length)
+	ls.LastIndex.Store(end)
+	db := &PgDB{}
+	ctx := b.Context()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		ls.gapCh = make(chan gap, 1)
+		ls.gapCh <- gap{start: start, end: end}
+		close(ls.gapCh)
+		ls.Backfill.Store(length)
+		if err := db.backfillGapsWithFetcherMode(ctx, ls, ls.getGapEntries, nil, false); err != nil {
+			b.Fatal(err)
+		}
+		if got := ls.Backfill.Load(); got != 0 {
+			b.Fatalf("Backfill = %d, want 0", got)
+		}
+		if got := len(ls.sendEntryCh); got != length {
+			b.Fatalf("queued entries = %d, want %d", got, length)
+		}
+		for range length {
+			<-ls.sendEntryCh
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(transport.requests.Load())/float64(b.N), "http-requests/op")
+	b.ReportMetric(float64(transport.dataTileCalls.Load())/float64(b.N), "data-tiles/op")
+}
+
+func BenchmarkBackfillTiledSpacedGaps(b *testing.B) {
+	const holes = 32
+	ls, transport := newTileTestStream(b, (holes+1)*sunlight.TileWidth)
+	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
+	ls.sendEntryCh = make(chan *LogEntry, holes)
+	ls.LastIndex.Store((holes+1)*sunlight.TileWidth - 1)
+	db := &PgDB{}
+	ctx := b.Context()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		ls.gapCh = make(chan gap, holes)
+		for i := range holes {
+			index := int64((i + 1) * sunlight.TileWidth)
+			ls.gapCh <- gap{start: index, end: index}
+		}
+		close(ls.gapCh)
+		ls.Backfill.Store(holes)
+		if err := db.backfillGapsWithFetcherMode(ctx, ls, ls.getGapEntries, nil, false); err != nil {
+			b.Fatal(err)
+		}
+		if got := ls.Backfill.Load(); got != 0 {
+			b.Fatalf("Backfill = %d, want 0", got)
+		}
+		if got := len(ls.sendEntryCh); got != holes {
+			b.Fatalf("queued entries = %d, want %d", got, holes)
+		}
+		for range holes {
+			<-ls.sendEntryCh
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(float64(transport.requests.Load())/float64(b.N), "http-requests/op")
+	b.ReportMetric(float64(transport.dataTileCalls.Load())/float64(b.N), "data-tiles/op")
+}

@@ -164,10 +164,14 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 258) AS n WHERE n NOT IN (1, 257)
 	db.funcIngestBatch = `SELECT 1/0 WHERE $1::jsonb IS NOT NULL`
 	t.Cleanup(func() { db.funcIngestBatch = goodQuery })
 	fetch := func(ctx context.Context, start, end int64, historical bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
-		if start == 256 {
-			db.funcIngestBatch = goodQuery
-		}
-		return ls.getGapEntries(ctx, start, end, historical, handle, remaining)
+		return ls.getGapEntries(ctx, start, end, historical, func(ctx context.Context, now time.Time, le *LogEntry) bool {
+			wanted := handle(ctx, now, le)
+			if le.Index() == 256 {
+				// The first tile has attempted its batch before the second begins.
+				db.funcIngestBatch = goodQuery
+			}
+			return wanted
+		}, remaining)
 	}
 	err := db.scanAndBackfillGaps(ctx, ls, fetch)
 	var pgErr *pgconn.PgError
