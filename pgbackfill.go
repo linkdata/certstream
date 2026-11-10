@@ -270,7 +270,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 				if len(groups) == 0 {
 					return
 				}
-				if !ls.isTiled() || len(groups) == 1 {
+				if len(groups) == 1 {
 					for _, group := range groups {
 						fillTile(group, advanceCursor, nil)
 					}
@@ -314,7 +314,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					tileStart := start / sunlight.TileWidth * sunlight.TileWidth
 					tileEnd := tileStart + sunlight.TileWidth - 1
 					partEnd := min(g.end, tileEnd)
-					// Torchwood prefetches at most 50 tiles per iterator.
+					// Torchwood fetches up to 50 tiles per iterator; reuse that HTTP work.
 					if len(groups) > 0 && groups[len(groups)-1].start != tileStart &&
 						(!ls.isTiled() || tileStart-groups[0].start >= 50*sunlight.TileWidth) {
 						flushGroups(advanceCursor)

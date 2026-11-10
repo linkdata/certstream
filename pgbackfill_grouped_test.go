@@ -55,15 +55,16 @@ func TestBackfillAlignedGapRanges(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		count     int
-		missing   gap
+		missing   []gap
 		wantFetch []gap
 		classic   bool
 	}{
-		{"tiled singleton", 512, gap{257, 257}, []gap{{256, 511}}, false},
-		{"classic singleton", 512, gap{257, 257}, []gap{{256, 511}}, true},
-		{"partial head tile", 271, gap{265, 265}, []gap{{256, 270}}, false},
-		{"spanning tiled", 512, gap{250, 260}, []gap{{0, 511}}, false},
-		{"spanning classic", 512, gap{250, 260}, []gap{{0, 255}, {256, 511}}, true},
+		{"tiled singleton", 512, []gap{{257, 257}}, []gap{{256, 511}}, false},
+		{"classic singleton", 512, []gap{{257, 257}}, []gap{{256, 511}}, true},
+		{"partial head tile", 271, []gap{{265, 265}}, []gap{{256, 270}}, false},
+		{"spanning tiled", 512, []gap{{250, 260}}, []gap{{0, 511}}, false},
+		{"spanning classic", 512, []gap{{250, 260}}, []gap{{0, 255}, {256, 511}}, true},
+		{"sparse tiled", 1024, []gap{{257, 257}, {768, 768}}, []gap{{256, 1023}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ls, transport := newTileTestStream(t, tc.count)
@@ -74,7 +75,7 @@ func TestBackfillAlignedGapRanges(t *testing.T) {
 			}
 			ls.sendEntryCh = make(chan *LogEntry, tc.count)
 			ls.LastIndex.Store(int64(tc.count - 1))
-			queueTestGaps(ls, []gap{tc.missing})
+			queueTestGaps(ls, tc.missing)
 			var fetched []gap
 			fetch := func(ctx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
 				fetched = append(fetched, gap{start, end})
@@ -93,8 +94,10 @@ func TestBackfillAlignedGapRanges(t *testing.T) {
 				t.Fatalf("fetches = %v, want %v", fetched, tc.wantFetch)
 			}
 			var want []int64
-			for index := tc.missing.start; index <= tc.missing.end; index++ {
-				want = append(want, index)
+			for _, g := range tc.missing {
+				for index := g.start; index <= g.end; index++ {
+					want = append(want, index)
+				}
 			}
 			if got := queuedTestIndexes(ls); !slices.Equal(got, want) {
 				t.Fatalf("queued indexes = %v, want %v", got, want)
