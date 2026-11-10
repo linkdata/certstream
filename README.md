@@ -18,16 +18,27 @@ precertificates without full DER, `rawcert` holds TBS DER and `sha256` hashes
 those stored bytes.
 
 Streams with database and tail fetching enabled scan stored entry gaps at startup.
-Recent indexes are checked first in bounded windows, normally every 15 minutes.
+Within each pass, missing indexes are fetched in ascending order. Each fetch
+starts on a 256-index boundary and covers a full 256-index range when the CT
+head allows it. Multiple holes in the same range share one fetch; only missing
+entries are stored.
+Classic CT gap requests use this width regardless of `LogBatchSize`.
+Each fetched range commits its missing entries as one database batch. The durable
+`backfill_logindex` cursor advances through verified gap-free ranges and after
+successful commits through the contiguous repaired prefix. `GapScanIndex` tracks
+the cold scan position; it can be ahead of the durable cursor and moves back
+when the scan retries a gap.
 Cold scans start with a 10,000-index read, then read chunks of up to 100,000
-indexes. Unfinished sweeps resume after 10 seconds; completed sweeps with
+indexes. Unfinished sweeps retry after 10 seconds; completed sweeps with
 unresolved gaps retry after one minute. Scheduled scans pause when the database
 queue exceeds 50%. A continuous request bypasses this gate and turns off after
 a full sweep. Each gap read has a limit of five minutes; recent scans have a
 budget of three seconds.
-The recent pass covers up to one million indexes below the database maximum,
-regardless of the persisted scan cursor. The older pass resumes that cursor;
-indexes below an existing cursor and outside the recent range are not audited.
+An unfinished sweep retries its oldest unresolved gap once, then continues
+scanning later indexes if that gap remains unfilled.
+The recent pass runs normally every 15 minutes after the cold cursor reaches
+the recent range and no older sweep is unfinished. It covers up to one million
+indexes below the database maximum; older indexes below the cursor are not audited.
 When a fetched head range remains absent from the database across two scans,
 up to 10,000 of those trailing indexes are fetched again.
 

@@ -24,11 +24,26 @@ type errLogEntriesTooOld struct {
 
 type rawEntriesFetcher func(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool)
 
+type gapTileGroup struct {
+	start   int64
+	end     int64
+	gaps    []gap
+	missing int64
+}
+
 func (ls *LogStream) getGapEntries(ctx context.Context, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (next int64, wanted bool) {
 	if ls.gapTile != nil {
 		return ls.getTileEntriesWithClient(ctx, ls.gapTile, start, end, historical, handleFn, gapcounter)
 	}
-	return ls.getEntries(ctx, start, end, historical, handleFn, gapcounter)
+	if ls.isTiled() || !historical {
+		return ls.getEntries(ctx, start, end, historical, handleFn, gapcounter)
+	}
+	client := ls.headClient
+	if ls.tailClient != nil {
+		client = ls.tailClient
+	}
+	wanted, next, _ = ls.getRawEntriesSized(ctx, client, start, end, historical, handleFn, gapcounter, sunlight.TileWidth)
+	return
 }
 
 func (cdb *PgDB) queueGap(ctx context.Context, ls *LogStream, gapCh chan gap, g gap, deferOnFull, continuous bool) (err error) {
@@ -82,6 +97,11 @@ func (cdb *PgDB) backfillGapsWithFetcher(ctx context.Context, ls *LogStream, fet
 }
 
 func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing bool) (scanErr error) {
+	scanErr, _ = cdb.backfillGapsWithFetcherCursor(ctx, ls, fetchFn, scanDone, includeTrailing, true)
+	return
+}
+
+func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStream, fetchFn rawEntriesFetcher, scanDone <-chan error, includeTrailing, cursorReady bool) (scanErr error, advanced bool) {
 	if cdb != nil && ls != nil {
 		var lastgap gap
 		var maxErr error
@@ -107,20 +127,179 @@ func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream,
 			if lastgap.end != 0 {
 				ls.Backfill.Add(lastgap.end - lastgap.start + 1)
 			}
-			fillGap := func(g gap) {
-				if ctx.Err() == nil {
-					next, _ := fetchFn(ctx, g.start, g.end, true, ls.sendEntry, &ls.Backfill)
-					// Fetched entries enter a queue; only a later DB scan proves they were stored.
-					if next < g.end+1 {
-						allGapsFilled = false
+			cachedTileStart := int64(-1)
+			var cachedEntries []*LogEntry
+			fillTile := func(group gapTileGroup, advanceCursor bool) {
+				if ctx.Err() != nil {
+					ls.Backfill.Add(-group.missing)
+					allGapsFilled = false
+					cursorReady = false
+					return
+				}
+				storeDirect := ls.LogOperator != nil && ls.CertStream != nil && ls.DB() == cdb && cdb.Pool != nil
+				seen := make([]bool, int(group.end-group.start+1))
+				var entries []*LogEntry
+				gapIndex := 0
+				handle := func(ctx context.Context, now time.Time, le *LogEntry) bool {
+					if le == nil {
+						return false
 					}
+					index := le.Index()
+					for gapIndex < len(group.gaps) && group.gaps[gapIndex].end < index {
+						gapIndex++
+					}
+					if gapIndex >= len(group.gaps) || index < group.gaps[gapIndex].start {
+						return false
+					}
+					position := int(index - group.start)
+					if seen[position] {
+						return false
+					}
+					if storeDirect {
+						wanted, store := ls.prepareEntry(ctx, now, le)
+						if store {
+							seen[position] = true
+							entries = append(entries, le)
+						}
+						return wanted
+					}
+					seen[position] = true
+					return ls.sendEntry(ctx, now, le)
+				}
+				var remaining atomic.Int64
+				remaining.Store(group.end - group.start + 1)
+				cached := cachedTileStart == group.start
+				if cached {
+					for _, g := range group.gaps {
+						for index := g.start; index <= g.end; index++ {
+							position := int(index - group.start)
+							if position >= len(cachedEntries) || cachedEntries[position] == nil ||
+								(cachedEntries[position].Cert() == nil && cachedEntries[position].Err == nil) {
+								cached = false
+								break
+							}
+						}
+						if !cached {
+							break
+						}
+					}
+				}
+				var next int64
+				if cached {
+					for _, g := range group.gaps {
+						for index := g.start; index <= g.end; index++ {
+							handle(ctx, time.Now(), cachedEntries[index-group.start])
+						}
+					}
+					next = group.gaps[len(group.gaps)-1].end + 1
 				} else {
-					ls.Backfill.Add(-(g.end - g.start + 1))
+					cachedTileStart = group.start
+					cachedEntries = make([]*LogEntry, group.end-group.start+1)
+					capture := func(ctx context.Context, now time.Time, le *LogEntry) bool {
+						if le != nil && le.Index() >= group.start && le.Index() <= group.end {
+							cachedEntries[le.Index()-group.start] = le
+						}
+						return handle(ctx, now, le)
+					}
+					next, _ = fetchFn(ctx, group.start, group.end, true, capture, &remaining)
+				}
+				ls.Backfill.Add(-group.missing)
+				complete := next > group.gaps[len(group.gaps)-1].end
+				target := group.gaps[len(group.gaps)-1].end + 1
+				if storeDirect {
+					for _, g := range group.gaps {
+						for index := g.start; index <= g.end; index++ {
+							if !seen[index-group.start] {
+								complete = false
+								if target > index {
+									target = index
+								}
+							}
+						}
+					}
+				}
+				if !complete {
 					allGapsFilled = false
 				}
+				if storeDirect && len(entries) > 0 {
+					if err := cdb.runBatch(ctx, entries); err != nil {
+						for _, le := range entries {
+							if le.Certificate != nil {
+								ls.Count.Add(-1)
+								ls.LogOperator.Count.Add(-1)
+							}
+						}
+						scanErr = errors.Join(scanErr, cdb.LogError(err, "backfill gap batch", "stream", ls.Id, "start", group.start, "end", group.end))
+						allGapsFilled = false
+						cursorReady = false
+					} else {
+						if cursorReady && advanceCursor {
+							if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
+								scanErr = errors.Join(scanErr, err)
+								cursorReady = false
+							} else if target > group.gaps[0].start {
+								advanced = true
+							}
+						}
+						for _, le := range entries {
+							if le.Certificate != nil {
+								if ch := cdb.getSendEntryCh(); ch != nil {
+									select {
+									case <-ctx.Done():
+									case ch <- le:
+									}
+								}
+							}
+						}
+					}
+				}
+				if !complete || !storeDirect || !advanceCursor {
+					cursorReady = false
+				}
 			}
-			for gap := range gapCh {
-				fillGap(gap)
+			var group gapTileGroup
+			appendGap := func(g gap, advanceCursor bool) {
+				for start := g.start; start <= g.end; {
+					tileStart := start / sunlight.TileWidth * sunlight.TileWidth
+					tileEnd := tileStart + sunlight.TileWidth - 1
+					partEnd := min(g.end, tileEnd)
+					if len(group.gaps) > 0 && group.start != tileStart {
+						fillTile(group, advanceCursor)
+						group = gapTileGroup{}
+					}
+					if len(group.gaps) == 0 {
+						group.start = tileStart
+						group.end = min(tileEnd, max(g.end, ls.LastIndex.Load(), ls.MaxIndex.Load()))
+					}
+					group.end = max(group.end, partEnd)
+					group.gaps = append(group.gaps, gap{start: start, end: partEnd})
+					group.missing += partEnd - start + 1
+					start = partEnd + 1
+					if start <= g.end {
+						fillTile(group, advanceCursor)
+						group = gapTileGroup{}
+					}
+				}
+			}
+			for gapCh != nil {
+				select {
+				case g, ok := <-gapCh:
+					if ok {
+						appendGap(g, true)
+					} else {
+						gapCh = nil
+					}
+				default:
+					if len(group.gaps) > 0 {
+						fillTile(group, true)
+						group = gapTileGroup{}
+					}
+					if g, ok := <-gapCh; ok {
+						appendGap(g, true)
+					} else {
+						gapCh = nil
+					}
+				}
 			}
 			if scanDone != nil {
 				scanErr = errors.Join(scanErr, <-scanDone)
@@ -129,7 +308,14 @@ func (cdb *PgDB) backfillGapsWithFetcherMode(ctx context.Context, ls *LogStream,
 				}
 			}
 			if lastgap.end != 0 {
-				fillGap(lastgap)
+				if len(group.gaps) > 0 {
+					fillTile(group, true)
+					group = gapTileGroup{}
+				}
+				appendGap(lastgap, false)
+			}
+			if len(group.gaps) > 0 {
+				fillTile(group, lastgap.end == 0)
 			}
 			if !allGapsFilled && scanErr == nil && ctx.Err() == nil {
 				scanErr = errGapIncomplete
@@ -158,11 +344,33 @@ func (cdb *PgDB) scanAndBackfillGapsMode(ctx context.Context, ls *LogStream, fet
 	ls.gapCh = gapCh
 	ls.mu.Unlock()
 
+	cursorReady := cold == nil || !cold.cursorBlocked || cold.next <= cold.cursor
 	scanDone := make(chan error, 1)
 	go func() {
 		scanDone <- cdb.selectStreamGapsMode(ctx, ls, cold, scanRecent, coldPending)
 	}()
-	scanErr = cdb.backfillGapsWithFetcherMode(ctx, ls, fetchFn, scanDone, includeTrailing)
+	var advanced bool
+	scanErr, advanced = cdb.backfillGapsWithFetcherCursor(ctx, ls, fetchFn, scanDone, includeTrailing, cursorReady)
+	if cold != nil {
+		if advanced {
+			cold.cursorBlocked = false
+			cold.retryResume = 0
+			cold.retryDone = false
+		} else if cold.retryResume > 0 {
+			if cold.next > cold.cursor {
+				if cold.cursorBlocked {
+					cold.next = max(cold.next, cold.retryResume)
+					cold.retryDone = true
+				}
+				cold.retryResume = 0
+			}
+		} else if cold.cursorBlocked && !cold.retryDone && cold.next > cold.cursor {
+			// Retry the oldest gap once, then continue this sweep if it still fails.
+			cold.retryResume = cold.next
+			cold.next = cold.cursor
+			cold.cursorBlocked = false
+		}
+	}
 
 	ls.mu.Lock()
 	if ls.gapCh == gapCh {
@@ -209,8 +417,9 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 		if err := cdb.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil && !errors.Is(err, errGapScanDeferred) {
 			_ = cdb.LogError(err, "recoverTrailingGap", "url", ls.URL())
 		}
+		hotIncomplete := scanRecent && !cold.recentComplete
 		if scanRecent {
-			if errors.Is(scanErr, errGapScanDeferred) {
+			if errors.Is(scanErr, errGapScanDeferred) || hotIncomplete {
 				nextHot = time.Now().Add(gapColdInterval)
 			} else {
 				nextHot = time.Now().Add(gapScanInterval)
@@ -226,6 +435,9 @@ func (cdb *PgDB) rescanGaps(ctx context.Context, ls *LogStream, next time.Time, 
 			}
 		} else {
 			nextCold = nextHot
+		}
+		if hotIncomplete && nextHot.Before(nextCold) {
+			nextHot = nextCold
 		}
 	}
 }
@@ -258,8 +470,20 @@ func (cdb *PgDB) recoverTrailingGap(ctx context.Context, ls *LogStream, fetchFn 
 		return
 	}
 	end := min(head, storedMax+gapWindowSize)
-	ls.Backfill.Add(end - storedMax)
-	next, _ := fetchFn(ctx, storedMax+1, end, true, ls.sendEntry, &ls.Backfill)
+	missing := end - storedMax
+	fetchStart := (storedMax + 1) / sunlight.TileWidth * sunlight.TileWidth
+	fetchEnd := min(head, end/sunlight.TileWidth*sunlight.TileWidth+sunlight.TileWidth-1)
+	ls.Backfill.Add(missing)
+	var remaining atomic.Int64
+	remaining.Store(fetchEnd - fetchStart + 1)
+	handle := func(ctx context.Context, now time.Time, le *LogEntry) bool {
+		if le != nil && le.Index() > storedMax && le.Index() <= end {
+			return ls.sendEntry(ctx, now, le)
+		}
+		return false
+	}
+	next, _ := fetchFn(ctx, fetchStart, fetchEnd, true, handle, &remaining)
+	ls.Backfill.Add(-missing)
 	if next <= end {
 		err = errGapIncomplete
 	}

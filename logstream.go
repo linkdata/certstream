@@ -32,8 +32,9 @@ var (
 	HistoricalBatchSize = 1000 // number of rows to SELECT when getting historical certificates
 	// LogBatchSize sets the classic CT request window.
 	//
-	// The default is 256. It also aligns reverse backfill windows. Set it to a
-	// positive value before calling [Start].
+	// The default is 256. Gap repair uses fixed 256-index requests. Reverse
+	// backfill windows align to this setting. Set it to a positive value before
+	// calling [Start].
 	LogBatchSize  = int64(256)
 	MaxErrors     = 100
 	IdleCloseTime = time.Hour * 24 * 7
@@ -48,12 +49,12 @@ type rawEntriesClient interface {
 // LogStream tracks one CT log's head, entries, and historical fetches.
 type LogStream struct {
 	*LogOperator
-	Count          atomic.Int64 // number of certificates sent to the channel
+	Count          atomic.Int64 // atomic: parsed certificates accepted for delivery
 	MinIndex       atomic.Int64 // atomic: lowest index seen so far, -1 if none seen yet
 	MaxIndex       atomic.Int64 // atomic: highest index seen so far, -1 if none seen yet
 	LastIndex      atomic.Int64 // atomic: highest index observed in a CT head, -1 until entries exist
 	Backfill       atomic.Int64 // atomic: estimate of discovered gap and reverse-backfill entries left to fetch
-	GapScanIndex   atomic.Int64 // atomic: next cold scan index; holds end+1 after a sweep; 0 before the first sweep
+	GapScanIndex   atomic.Int64 // atomic: next cold scan index after its last update; may rewind on retry; 0 before the first sweep
 	Logger         *slog.Logger // toggled by LogToggle
 	Id             int32        // database ID, if available
 	gapCh          chan gap     // protected by LogOperator.mu
@@ -360,7 +361,7 @@ func (ls *LogStream) makeLogEntry(logindex int64, entry ct.LeafEntry, historical
 	return le
 }
 
-func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
+func (ls *LogStream) prepareEntry(ctx context.Context, now time.Time, le *LogEntry) (wanted, store bool) {
 	if le != nil {
 		if cert := le.Cert(); cert != nil {
 			ls.seeIndex(le.LogIndex)
@@ -368,14 +369,7 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 			if ctx.Err() == nil {
 				ls.Count.Add(1)
 				ls.LogOperator.Count.Add(1)
-				if db := ls.DB(); db != nil {
-					db.sendToBatcher(ctx, le)
-				} else {
-					select {
-					case <-ctx.Done():
-					case ls.getSendEntryCh() <- le:
-					}
-				}
+				store = true
 			}
 		} else {
 			wanted = true
@@ -385,9 +379,22 @@ func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry)
 			}
 			_ = ls.LogError(err, "sendEntry", "url", ls.URL(), "stream", ls.Id, "logindex", le.LogIndex)
 			if le.Err != nil && ctx.Err() == nil {
-				if db := ls.DB(); db != nil {
-					db.sendToBatcher(ctx, le)
-				}
+				store = true
+			}
+		}
+	}
+	return
+}
+
+func (ls *LogStream) sendEntry(ctx context.Context, now time.Time, le *LogEntry) (wanted bool) {
+	wanted, store := ls.prepareEntry(ctx, now, le)
+	if store {
+		if db := ls.DB(); db != nil {
+			db.sendToBatcher(ctx, le)
+		} else if le.Certificate != nil {
+			select {
+			case <-ctx.Done():
+			case ls.getSendEntryCh() <- le:
 			}
 		}
 	}

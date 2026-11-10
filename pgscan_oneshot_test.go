@@ -63,8 +63,8 @@ func TestContinuousGapScanStopsAtSnapshotEnd(t *testing.T) {
 
 	incomplete := newStream("https://example.test/oneshot-incomplete", []int64{0, 2})
 	failedFetch := func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
-		if start != 1 || end != 1 {
-			t.Fatalf("gap = %d..%d, want 1..1", start, end)
+		if start != 0 || end != 2 {
+			t.Fatalf("fetch = %d..%d, want aligned range 0..2", start, end)
 		}
 		remaining.Add(-(end - start + 1))
 		return start, false
@@ -77,7 +77,7 @@ func TestContinuousGapScanStopsAtSnapshotEnd(t *testing.T) {
 	}
 
 	incomplete.SetGapScanContinuous(true)
-	resumed := coldScanState{next: 2, end: 2, cursorBlocked: true, wasContinuous: true}
+	resumed := coldScanState{next: 2, end: 2, cursor: 1, cursorBlocked: true, wasContinuous: true}
 	if err := db.scanAndBackfillGapsMode(ctx, incomplete, noFetch, false, &resumed, false, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -158,8 +158,8 @@ func TestContinuousGapScanReenableDuringDrain(t *testing.T) {
 	releaseFetch()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, errGapIncomplete) {
+			t.Fatalf("fetch without entries = %v, want %v", err, errGapIncomplete)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("gap fetch did not finish")
@@ -185,15 +185,15 @@ func TestContinuousGapScanCoversSharedSweepPrefix(t *testing.T) {
 	ls.SetGapScanContinuous(true)
 	seenGap := false
 	fetch := func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
-		if start != 1 || end != 1 {
-			t.Fatalf("gap = %d..%d, want shared-prefix gap 1..1", start, end)
+		if start != 0 || end != 4 {
+			t.Fatalf("fetch = %d..%d, want aligned shared-prefix range 0..4", start, end)
 		}
 		seenGap = true
 		remaining.Add(-1)
 		return end + 1, false
 	}
-	if err := db.scanAndBackfillGapsMode(ctx, ls, fetch, false, &cold, false, nil); err != nil {
-		t.Fatal(err)
+	if err := db.scanAndBackfillGapsMode(ctx, ls, fetch, false, &cold, false, nil); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("fetch without entries = %v, want %v", err, errGapIncomplete)
 	}
 	if !seenGap || ls.GapScanContinuous() {
 		t.Fatalf("shared-prefix gap seen=%t, continuous=%t; want true, false", seenGap, ls.GapScanContinuous())
