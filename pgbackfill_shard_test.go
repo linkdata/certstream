@@ -56,7 +56,7 @@ func TestRunGapBatchesKeepsSHAPrefixesSeparate(t *testing.T) {
 		entries[i] = retentionEntry(t, ls, int64(i), time.Now().UTC().Add(time.Hour))
 		want[db.workerIndexFor(entries[i])]++
 	}
-	stored, err := db.runGapBatches(ctx, entries)
+	stored, err := db.runGapBatches(ctx, entries, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

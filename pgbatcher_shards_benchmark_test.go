@@ -81,7 +81,7 @@ func BenchmarkPgDBRunGapBatchesByPrefix(b *testing.B) {
 					}
 					b.StartTimer()
 					if sharded {
-						stored, err := db.runGapBatches(ctx, entries)
+						stored, err := db.runGapBatches(ctx, entries, nil)
 						if err != nil {
 							b.Fatal(err)
 						}

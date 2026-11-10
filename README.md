@@ -21,8 +21,8 @@ Streams with database and tail fetching enabled scan stored entry gaps at startu
 Within each pass, missing indexes are fetched in ascending order. Classic CT
 logs request 256-index ranges aligned to 256, regardless of `LogBatchSize`.
 Tiled logs fetch one aligned data tile of up to 256 entries at a time and use
-it for every known hole in that tile. Only missing entries are stored. Each
-fetch's missing entries commit as one database batch.
+it for every known hole in that tile. Only missing entries are stored. Fetched
+entries are grouped by SHA-256 prefix, with one database batch per group.
 The durable `backfill_logindex` cursor advances through verified gap-free
 ranges and after successful commits through the contiguous repaired prefix.
 `GapScanIndex` tracks the cold scan position. It can be ahead of the durable
@@ -43,7 +43,8 @@ up to 10,000 of those trailing indexes are fetched again.
 
 When `Config.OnRetiredStreams` is set, each successfully fetched CT log list
 passes database IDs of explicitly retired streams to the callback when any remain,
-after their readers stop and queued database writes finish. Retired status is
+after their readers stop and queued database writes succeed. A database write
+failure skips that refresh's callback. Retired status is
 recorded in the existing stream JSON; an explicitly listed non-retired status
 clears it. Retired IDs remain eligible for later refreshes until their rows
 are removed or the list explicitly reports another status.
