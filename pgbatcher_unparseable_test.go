@@ -32,14 +32,6 @@ func TestUnparseableCertificatesCloseGaps(t *testing.T) {
 	cs.mu.Lock()
 	cs.sendEntryCh = make(chan *LogEntry, 5)
 	cs.mu.Unlock()
-	workerCtx, cancel := context.WithCancel(ctx)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go db.worker(workerCtx, &wg, 0)
-	t.Cleanup(func() {
-		cancel()
-		wg.Wait()
-	})
 
 	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -69,6 +61,20 @@ SELECT 'https://example.com/second-log', operator, '{}' FROM CERTDB_stream WHERE
 		Certificate: []byte{},
 		Timestamp:   now.UnixMilli(),
 	}, true))
+	workerCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	shards := make(map[int]bool)
+	for _, le := range entries {
+		shards[db.workerIndexFor(le)] = true
+	}
+	for shard := range shards {
+		wg.Add(1)
+		go db.worker(workerCtx, &wg, shard)
+	}
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
 	for _, le := range entries {
 		if le.Err == nil || le.Certificate != nil || le.rawCert == nil {
 			t.Fatalf("entry %d = (certificate %v, err %v), want parse error", le.LogIndex, le.Certificate, le.Err)
@@ -78,16 +84,21 @@ SELECT 'https://example.com/second-log', operator, '{}' FROM CERTDB_stream WHERE
 		}
 	}
 	for range 2 {
-		ack := make(chan struct{}, 1)
-		select {
-		case db.batchCh[0] <- &LogEntry{flushAck: ack}:
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-		select {
-		case <-ack:
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
+		for shard := range shards {
+			ack := make(chan error, 1)
+			select {
+			case db.batchCh[shard] <- &LogEntry{flushAck: ack}:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			select {
+			case err := <-ack:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
 		}
 	}
 	select {

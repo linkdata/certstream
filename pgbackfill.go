@@ -220,6 +220,23 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					next, _ = fetchFn(ctx, start, group.end, true, fetchHandle, &remaining)
 				}
 				ls.Backfill.Add(-group.missing)
+				var stored []bool
+				if storeDirect && len(entries) > 0 {
+					var err error
+					stored, err = cdb.runGapBatches(ctx, entries)
+					for i, le := range entries {
+						if !stored[i] {
+							seen[le.Index()-group.start] = false
+							if le.Certificate != nil {
+								ls.Count.Add(-1)
+								ls.LogOperator.Count.Add(-1)
+							}
+						}
+					}
+					if err != nil {
+						scanErr = errors.Join(scanErr, cdb.LogError(err, "backfill gap batch", "stream", ls.Id, "start", group.start, "end", group.end))
+					}
+				}
 				complete := next > group.gaps[len(group.gaps)-1].end
 				target := group.gaps[len(group.gaps)-1].end + 1
 				if storeDirect {
@@ -238,30 +255,18 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					allGapsFilled = false
 				}
 				if storeDirect && len(entries) > 0 {
-					if err := cdb.runBatch(ctx, entries); err != nil {
-						for _, le := range entries {
-							if le.Certificate != nil {
-								ls.Count.Add(-1)
-								ls.LogOperator.Count.Add(-1)
-							}
+					if cursorReady && advanceCursor {
+						if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
+							scanErr = errors.Join(scanErr, err)
+							cursorReady = false
 						}
-						scanErr = errors.Join(scanErr, cdb.LogError(err, "backfill gap batch", "stream", ls.Id, "start", group.start, "end", group.end))
-						allGapsFilled = false
-						cursorReady = false
-					} else {
-						if cursorReady && advanceCursor {
-							if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
-								scanErr = errors.Join(scanErr, err)
-								cursorReady = false
-							}
-						}
-						for _, le := range entries {
-							if le.Certificate != nil {
-								if ch := cdb.getSendEntryCh(); ch != nil {
-									select {
-									case <-ctx.Done():
-									case ch <- le:
-									}
+					}
+					for i, le := range entries {
+						if stored[i] && le.Certificate != nil {
+							if ch := cdb.getSendEntryCh(); ch != nil {
+								select {
+								case <-ctx.Done():
+								case ch <- le:
 								}
 							}
 						}

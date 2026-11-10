@@ -11,10 +11,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const insertBadCertIdents = `INSERT /* CERTDB_badcert_idents */ INTO CERTDB_ident (organization, province, country)
-SELECT organization, province, country
-FROM (VALUES ($1::text, $2::text, $3::text), ($4::text, $5::text, $6::text)) AS identities(organization, province, country)
-ORDER BY organization, province, country
+const insertBatchIdents = `INSERT /* CERTDB_batch_idents */ INTO CERTDB_ident (organization, province, country)
+SELECT n.organization, n.province, n.country
+FROM (
+  SELECT DISTINCT organization, province, country
+  FROM unnest($1::text[], $2::text[], $3::text[]) AS identities(organization, province, country)
+) AS n
+WHERE NOT EXISTS (
+  SELECT 1 FROM CERTDB_ident i
+  WHERE i.organization = n.organization AND i.province = n.province AND i.country = n.country
+)
+ORDER BY n.organization, n.province, n.country
 ON CONFLICT (organization, province, country) DO NOTHING;`
 
 const insertBadCert = `INSERT /* CERTDB_badcert_insert */ INTO CERTDB_badcert
@@ -102,11 +109,7 @@ func badCertText(s string) string {
 	return strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "")
 }
 
-func (cdb *PgDB) queueBadCert(batch *pgx.Batch, le *LogEntry, seen time.Time) {
-	metadata := parseBadCertMetadata(le.rawCert)
-	batch.Queue(cdb.Pfx(insertBadCertIdents),
-		metadata.subject[0], metadata.subject[1], metadata.subject[2],
-		metadata.issuer[0], metadata.issuer[1], metadata.issuer[2])
+func (cdb *PgDB) queueBadCert(batch *pgx.Batch, le *LogEntry, seen time.Time, metadata badCertMetadata) {
 	hash := sha256.Sum256(le.rawCert)
 	batch.Queue(cdb.Pfx(insertBadCert), seen, le.LogIndex, le.LogStream.Id, metadata.commonName,
 		metadata.subject[0], metadata.subject[1], metadata.subject[2],

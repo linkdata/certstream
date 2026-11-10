@@ -62,6 +62,8 @@ type PgDB struct {
 	newentrytime          time.Duration
 	newentrycount         int64
 	avgentrytime          time.Duration
+
+	batchMu [256]sync.Mutex // serializes each signature prefix across head and gap batches
 }
 
 func ensureSchema(ctx context.Context, db *pgxpool.Pool, pfx func(string) string) (err error) {
@@ -207,10 +209,8 @@ func (cdb *PgDB) getBatchCh(idx int) (ch chan *LogEntry) {
 }
 
 func (cdb *PgDB) workerIndexFor(le *LogEntry) (idx int) {
-	if cdb != nil && le != nil {
-		if cert := le.Cert(); cert != nil && len(cert.Signature) > 0 {
-			idx = int(cert.Signature[0] >> (8 - cdb.workerBits))
-		}
+	if cdb != nil && le != nil && len(le.Signature) > 0 {
+		idx = int(le.Signature[0] >> (8 - cdb.workerBits))
 	}
 	return
 }
@@ -237,19 +237,22 @@ func (cdb *PgDB) flushWorkers(ctx context.Context) (err error) {
 	cdb.mu.Lock()
 	chans := cdb.batchCh
 	cdb.mu.Unlock()
-	acks := make(chan struct{}, len(chans))
+	acks := make(chan error, len(chans))
 	for _, ch := range chans {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			err = errors.Join(err, ctx.Err())
+			return
 		case ch <- &LogEntry{flushAck: acks}:
 		}
 	}
 	for range chans {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-acks:
+			err = errors.Join(err, ctx.Err())
+			return
+		case batchErr := <-acks:
+			err = errors.Join(err, batchErr)
 		}
 	}
 	return
