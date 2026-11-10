@@ -176,6 +176,7 @@ WITH needed_idents AS (
 INSERT INTO CERTDB_ident(organization, province, country)
 SELECT n.organization, n.province, n.country
 FROM needed_idents n
+ORDER BY n.organization, n.province, n.country
 ON CONFLICT (organization, province, country) DO NOTHING
 $sql$;
     insert_certs_sql text := $sql$
@@ -210,6 +211,7 @@ cert_inserts AS (
     INSERT INTO CERTDB_cert(notbefore, notafter, since, commonname, subject, issuer, sha256, precert)
     SELECT notbefore, notafter, since, commonname, subject, issuer, sha256, precert
     FROM certs_with_since
+    ORDER BY sha256
     ON CONFLICT (sha256) DO NOTHING
     RETURNING id, sha256
 )
@@ -221,6 +223,7 @@ INSERT INTO CERTDB_entry(seen, logindex, cert, stream)
 SELECT ti.seen, ti.logindex, c.id, ti.stream
 FROM tmp_ingest ti
 INNER JOIN CERTDB_cert c ON c.sha256 = ti.sha256
+ORDER BY ti.stream, ti.logindex
 ON CONFLICT (stream, logindex) DO NOTHING
 $sql$;
     insert_uri_sql text := $sql$

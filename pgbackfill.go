@@ -220,48 +220,74 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					next, _ = fetchFn(ctx, start, group.end, true, fetchHandle, &remaining)
 				}
 				ls.Backfill.Add(-group.missing)
-				complete := next > group.gaps[len(group.gaps)-1].end
-				target := group.gaps[len(group.gaps)-1].end + 1
-				if storeDirect {
+				cursorTarget := func() int64 {
 					for _, g := range group.gaps {
 						for index := g.start; index <= g.end; index++ {
-							if !seen[index-group.start] {
-								complete = false
-								if target > index {
-									target = index
-								}
+							position := index - group.start
+							if !seen[position] {
+								return index
 							}
 						}
 					}
+					return group.gaps[len(group.gaps)-1].end + 1
 				}
-				if !complete {
-					allGapsFilled = false
+				lastCursorTarget := int64(-1)
+				writeCursor := func(target int64) {
+					if cursorReady && advanceCursor && target > lastCursorTarget {
+						if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
+							scanErr = errors.Join(scanErr, err)
+							cursorReady = false
+						} else {
+							lastCursorTarget = target
+						}
+					}
 				}
+				var stored []bool
 				if storeDirect && len(entries) > 0 {
-					if err := cdb.runBatch(ctx, entries); err != nil {
-						for _, le := range entries {
+					// After fetching, seen tracks entries committed by each SHA batch.
+					for _, le := range entries {
+						seen[le.Index()-group.start] = false
+					}
+					var err error
+					stored, err = cdb.runGapBatches(ctx, entries, func(indexes []int) {
+						for _, i := range indexes {
+							seen[entries[i].Index()-group.start] = true
+						}
+						// The cursor follows each committed contiguous prefix before
+						// later SHA batches in this tile run.
+						if target := cursorTarget(); target > group.gaps[0].start {
+							writeCursor(target)
+						}
+					})
+					for i, le := range entries {
+						if !stored[i] {
 							if le.Certificate != nil {
 								ls.Count.Add(-1)
 								ls.LogOperator.Count.Add(-1)
 							}
 						}
+					}
+					if err != nil {
 						scanErr = errors.Join(scanErr, cdb.LogError(err, "backfill gap batch", "stream", ls.Id, "start", group.start, "end", group.end))
-						allGapsFilled = false
-						cursorReady = false
-					} else {
-						if cursorReady && advanceCursor {
-							if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
-								scanErr = errors.Join(scanErr, err)
-								cursorReady = false
-							}
-						}
-						for _, le := range entries {
-							if le.Certificate != nil {
-								if ch := cdb.getSendEntryCh(); ch != nil {
-									select {
-									case <-ctx.Done():
-									case ch <- le:
-									}
+					}
+				}
+				complete := next > group.gaps[len(group.gaps)-1].end
+				target := group.gaps[len(group.gaps)-1].end + 1
+				if storeDirect {
+					target = cursorTarget()
+					complete = complete && target > group.gaps[len(group.gaps)-1].end
+				}
+				if !complete {
+					allGapsFilled = false
+				}
+				if storeDirect && len(entries) > 0 {
+					writeCursor(target)
+					for i, le := range entries {
+						if stored[i] && le.Certificate != nil {
+							if ch := cdb.getSendEntryCh(); ch != nil {
+								select {
+								case <-ctx.Done():
+								case ch <- le:
 								}
 							}
 						}

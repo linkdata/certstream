@@ -31,7 +31,7 @@ type Config struct {
 	DataDir          string                                      // log and cache directory; leave empty to disable
 	CacheMaxAge      time.Duration                               // remove cached tile data older than this age; zero disables caching of tiles
 	TailLog          string                                      // log HTTP requests using the tail dialer to this file
-	OnRetiredStreams func(context.Context, *PgDB, []int32) error // nil disables callback; invoked for retired database rows after readers stop and queued database writes finish
+	OnRetiredStreams func(context.Context, *PgDB, []int32) error // nil disables callback; invoked for retired database rows after readers stop if queued database writes succeed
 
 	// ProviderConcurrency overrides Concurrency for matching CT log providers.
 	//

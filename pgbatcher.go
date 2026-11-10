@@ -2,6 +2,9 @@ package certstream
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +17,48 @@ SELECT marker.seen AT TIME ZONE 'UTC', marker.logindex, 0, marker.stream
 FROM unnest($1::timestamptz[], $2::bigint[], $3::integer[]) AS marker(seen, logindex, stream)
 ORDER BY marker.stream, marker.logindex
 ON CONFLICT (stream, logindex) DO NOTHING;`
+
+func (cdb *PgDB) runShardBatch(ctx context.Context, shard int, queued []*LogEntry) (err error) {
+	// Only one head or gap batch for a SHA prefix writes at a time.
+	cdb.batchMu[shard].Lock()
+	defer cdb.batchMu[shard].Unlock()
+	err = cdb.runBatch(ctx, queued)
+	return
+}
+
+func (cdb *PgDB) runGapBatches(ctx context.Context, entries []*LogEntry, afterCommit func([]int)) (stored []bool, err error) {
+	// A fetched tile can contain certificates from many worker shards.
+	shards := make([][]int, max(1, cdb.workerCount))
+	for i, le := range entries {
+		shard := cdb.workerIndexFor(le)
+		shards[shard] = append(shards[shard], i)
+	}
+	stored = make([]bool, len(entries))
+	for shard, indexes := range shards {
+		if len(indexes) == 0 {
+			continue
+		}
+		if ctx.Err() != nil {
+			err = errors.Join(err, ctx.Err())
+			break
+		}
+		batch := make([]*LogEntry, len(indexes))
+		for i, index := range indexes {
+			batch[i] = entries[index]
+		}
+		if batchErr := cdb.runShardBatch(ctx, shard, batch); batchErr != nil {
+			err = errors.Join(err, fmt.Errorf("batch shard %d: %w", shard, batchErr))
+		} else {
+			for _, index := range indexes {
+				stored[index] = true
+			}
+			if afterCommit != nil {
+				afterCommit(indexes)
+			}
+		}
+	}
+	return
+}
 
 func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	batchTime := time.Now().UTC()
@@ -31,7 +76,12 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 	var markerSeen []time.Time
 	var markerIndexes []int64
 	var markerStreams []int32
-	var batch pgx.Batch
+	type badCert struct {
+		entry    *LogEntry
+		seen     time.Time
+		metadata badCertMetadata
+	}
+	var badCerts []badCert
 	for _, le := range queued {
 		if le.Certificate == nil || (!cutoff.IsZero() && !le.Certificate.NotAfter.After(cutoff)) {
 			at := le.Seen
@@ -40,7 +90,7 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 			}
 			at = at.UTC().Truncate(time.Second)
 			if le.Certificate == nil && le.rawCert != nil {
-				cdb.queueBadCert(&batch, le, at)
+				badCerts = append(badCerts, badCert{le, at, parseBadCertMetadata(le.rawCert)})
 			}
 			markerSeen = append(markerSeen, at)
 			markerIndexes = append(markerIndexes, le.Index())
@@ -53,23 +103,67 @@ func (cdb *PgDB) runBatch(ctx context.Context, queued []*LogEntry) (err error) {
 		}
 	}
 	b = append(b, `]`...)
-	now := time.Now()
-	if len(markerSeen) == 0 {
-		_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
-	} else {
-		if len(markerSeen) != len(queued) {
-			batch.Queue(cdb.funcIngestBatch, string(b))
+	var identOrgs, identProvs, identCountries []string
+	if len(badCerts) > 0 {
+		addIdent := func(ident [3]string) {
+			identOrgs = append(identOrgs, ident[0])
+			identProvs = append(identProvs, ident[1])
+			identCountries = append(identCountries, ident[2])
 		}
-		batch.Queue(cdb.Pfx(insertSkippedEntries), markerSeen, markerIndexes, markerStreams)
-		err = cdb.SendBatch(ctx, &batch).Close()
-	}
-	elapsed := time.Since(now)
-	if err != nil {
-		if pe, ok := err.(*pgconn.PgError); ok {
-			if pe.SQLState() == "22P02" {
-				cdb.LogInfo("generated invalid JSON data", "json", string(b))
+		for _, badCert := range badCerts {
+			addIdent(badCert.metadata.issuer)
+			addIdent(badCert.metadata.subject)
+		}
+		// The ingest function finds these identities in the same transaction,
+		// so the batch acquires identity locks in one sorted pass.
+		for _, le := range queued {
+			if le.Certificate != nil && (cutoff.IsZero() || le.Certificate.NotAfter.After(cutoff)) {
+				addIdent([3]string{
+					strings.Join(le.Certificate.Issuer.Organization, ","),
+					strings.Join(le.Certificate.Issuer.Province, ","),
+					strings.Join(le.Certificate.Issuer.Country, ","),
+				})
+				addIdent([3]string{
+					strings.Join(le.Certificate.Subject.Organization, ","),
+					strings.Join(le.Certificate.Subject.Province, ","),
+					strings.Join(le.Certificate.Subject.Country, ","),
+				})
 			}
 		}
+	}
+	now := time.Now()
+	// PostgreSQL aborts the whole implicit batch on a deadlock, so rebuild it
+	// for each retry.
+	for attempt := 0; attempt < 3; attempt++ {
+		if len(markerSeen) == 0 {
+			_, err = cdb.Exec(ctx, cdb.funcIngestBatch, string(b))
+		} else {
+			var batch pgx.Batch
+			if len(badCerts) > 0 {
+				batch.Queue(cdb.Pfx(insertBatchIdents), identOrgs, identProvs, identCountries)
+			}
+			for _, badCert := range badCerts {
+				cdb.queueBadCert(&batch, badCert.entry, badCert.seen, badCert.metadata)
+			}
+			if len(markerSeen) != len(queued) {
+				batch.Queue(cdb.funcIngestBatch, string(b))
+			}
+			batch.Queue(cdb.Pfx(insertSkippedEntries), markerSeen, markerIndexes, markerStreams)
+			err = cdb.SendBatch(ctx, &batch).Close()
+		}
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.SQLState() != "40P01" || attempt == 2 {
+			break
+		}
+		if waitErr := sleep(ctx, time.Duration(attempt+1)*25*time.Millisecond); waitErr != nil {
+			err = errors.Join(err, waitErr)
+			break
+		}
+	}
+	elapsed := time.Since(now)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.SQLState() == "22P02" {
+		cdb.LogInfo("generated invalid JSON data", "json", string(b))
 	}
 	cdb.mu.Lock()
 	cdb.newentrycount += int64(len(queued))
@@ -88,9 +182,10 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 		tckr := time.NewTicker(1 + (staggerInterval * time.Duration(workerID)))
 		stop := false
 		var queued []*LogEntry
+		var pendingErr error
 		for !stop {
 			ticked := false
-			var flushAck chan struct{}
+			var flushAck chan error
 			select {
 			case <-ctx.Done():
 				stop = true
@@ -113,17 +208,26 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 				}
 			}
 			if l := len(queued); l > 0 && (l >= DbIngestBatchSize || ticked || stop) {
-				_ = cdb.LogError(cdb.runBatch(ctx, queued), "runBatch")
+				batchErr := cdb.LogError(cdb.runShardBatch(ctx, workerID, queued), "runBatch")
+				if pendingErr == nil {
+					pendingErr = batchErr
+				}
 				if flushAck != nil {
-					flushAck <- struct{}{}
+					flushAck <- pendingErr
+					pendingErr = nil
 					flushAck = nil
 				}
 				for _, le := range queued {
-					if !stop && le.Certificate != nil {
-						select {
-						case <-ctx.Done():
-							stop = true
-						case cdb.getSendEntryCh() <- le:
+					if le.Certificate != nil {
+						if batchErr != nil {
+							le.Count.Add(-1)
+							le.LogOperator.Count.Add(-1)
+						} else if !stop {
+							select {
+							case <-ctx.Done():
+								stop = true
+							case cdb.getSendEntryCh() <- le:
+							}
 						}
 					}
 				}
@@ -131,7 +235,8 @@ func (cdb *PgDB) worker(ctx context.Context, wg *sync.WaitGroup, workerID int) {
 				queued = queued[:0]
 			}
 			if flushAck != nil {
-				flushAck <- struct{}{}
+				flushAck <- pendingErr
+				pendingErr = nil
 			}
 		}
 	}
