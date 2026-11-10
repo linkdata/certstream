@@ -161,6 +161,44 @@ func TestRawEntriesStopIndexAlignsWindows(t *testing.T) {
 	}
 }
 
+func TestGetRawEntriesSizedUsesItsOwnWindow(t *testing.T) {
+	oldBatchSize := LogBatchSize
+	LogBatchSize = 32
+	t.Cleanup(func() { LogBatchSize = oldBatchSize })
+
+	entry := makeTestLeafEntry(t, time.Now().UTC().Truncate(time.Millisecond))
+	client := &stubRawEntriesClient{entry: entry}
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: &CertStream{}}}
+	var count int
+	handle := func(_ context.Context, _ time.Time, le *LogEntry) bool {
+		if le.LogIndex != int64(256+count) {
+			t.Fatalf("entry %d has index %d", count, le.LogIndex)
+		}
+		count++
+		return false
+	}
+	_, next, err := ls.getRawEntriesSized(t.Context(), client, 256, 511, true, handle, nil, 256)
+	if err != nil || next != 512 || count != 256 {
+		t.Fatalf("sized fetch = (next %d, count %d, err %v), want (512, 256, nil)", next, count, err)
+	}
+	if want := []rawEntriesCall{{256, 511}}; !slices.Equal(client.calls, want) {
+		t.Fatalf("sized requests = %v, want %v", client.calls, want)
+	}
+
+	client.calls = nil
+	_, next, err = ls.getRawEntries(t.Context(), client, 256, 511, true, func(context.Context, time.Time, *LogEntry) bool { return false }, nil)
+	if err != nil || next != 512 {
+		t.Fatalf("default fetch = (next %d, err %v), want (512, nil)", next, err)
+	}
+	var want []rawEntriesCall
+	for start := int64(256); start <= 511; start += 32 {
+		want = append(want, rawEntriesCall{start, start + 31})
+	}
+	if !slices.Equal(client.calls, want) {
+		t.Fatalf("default requests = %v, want %v", client.calls, want)
+	}
+}
+
 func TestGetRawEntriesConvergesOn256(t *testing.T) {
 	oldBatchSize := LogBatchSize
 	LogBatchSize = 256
@@ -195,9 +233,16 @@ func TestGetRawEntriesConvergesOn256(t *testing.T) {
 		}
 	}
 	if got, want := client.calls, []rawEntriesCall{
-		{1025, 1279}, {1056, 1279}, {1088, 1279}, {1120, 1279},
-		{1152, 1279}, {1184, 1279}, {1216, 1279}, {1248, 1279},
-		{1280, 1535}, {1536, 1791},
+		{1025, 1279},
+		{1056, 1279},
+		{1088, 1279},
+		{1120, 1279},
+		{1152, 1279},
+		{1184, 1279},
+		{1216, 1279},
+		{1248, 1279},
+		{1280, 1535},
+		{1536, 1791},
 	}; !slices.Equal(got, want) {
 		t.Fatalf("requests = %v, want %v", got, want)
 	}

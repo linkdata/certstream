@@ -42,14 +42,14 @@ func TestPgDB_GapLoggingDiscovery(t *testing.T) {
 	if err := db.backfillGapsWithFetcher(ctx, ls, func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
 		if firstFetch {
 			firstFetch = false
-			if got := remaining.Load(); got != 1005 {
+			if got := ls.Backfill.Load(); got != 1005 {
 				t.Fatalf("backfill including queued and trailing gaps = %d, want 1005", got)
 			}
 		}
 		remaining.Add(-((end - start) + 1))
 		return end + 1, true
-	}, nil); err != nil {
-		t.Fatal(err)
+	}, nil); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("fetch without persisted entries = %v, want incomplete gap", err)
 	}
 	if got := ls.Backfill.Load(); got != 0 {
 		t.Fatalf("backfill after fetch = %d, want 0", got)
@@ -114,20 +114,20 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 		}
 	}
 
-	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
-		t.Fatal(err)
+	if err := db.scanAndBackfillGaps(ctx, ls, fetch); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("fetch without persisted entries = %v, want incomplete gap", err)
 	}
-	check([]gap{{2, 2}}, 2)
+	check([]gap{{0, 3}}, 2)
 	if err := insertEntries(ctx, db, streamID, []int64{2}); err != nil {
 		t.Fatal(err)
 	}
 	if err := insertEntries(ctx, db, streamID, []int64{5}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
-		t.Fatal(err)
+	if err := db.scanAndBackfillGaps(ctx, ls, fetch); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("fetch without persisted entries = %v, want incomplete gap", err)
 	}
-	check([]gap{{2, 2}, {4, 4}}, 4)
+	check([]gap{{0, 3}, {0, 5}}, 4)
 	if err := insertEntries(ctx, db, streamID, []int64{4}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,19 +140,19 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err == nil {
 		t.Fatal("invalid gap query did not fail")
 	}
-	check([]gap{{2, 2}, {4, 4}}, 4)
+	check([]gap{{0, 3}, {0, 5}}, 4)
 	db.stmtSelectGapWindow = findGap
-	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
-		t.Fatal(err)
+	if err := db.scanAndBackfillGaps(ctx, ls, fetch); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("fetch without persisted entries = %v, want incomplete gap", err)
 	}
-	check([]gap{{2, 2}, {4, 4}, {6, 6}}, 6)
+	check([]gap{{0, 3}, {0, 5}, {0, 7}}, 6)
 	if err := insertEntries(ctx, db, streamID, []int64{6}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.scanAndBackfillGaps(ctx, ls, fetch); err != nil {
 		t.Fatal(err)
 	}
-	check([]gap{{2, 2}, {4, 4}, {6, 6}}, 7)
+	check([]gap{{0, 3}, {0, 5}, {0, 7}}, 7)
 
 	ls.LastIndex.Store(9)
 	selectMax := db.stmtSelectMaxIdx
@@ -163,7 +163,7 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 		t.Fatal("invalid max query did not fail")
 	}
 	ls.gapCh = nil
-	check([]gap{{2, 2}, {4, 4}, {6, 6}}, 7)
+	check([]gap{{0, 3}, {0, 5}, {0, 7}}, 7)
 	db.stmtSelectMaxIdx = selectMax
 
 	canceled, cancel := context.WithCancel(ctx)
@@ -171,7 +171,7 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 	if err := db.scanAndBackfillGaps(canceled, ls, fetch); err == nil {
 		t.Fatal("canceled scan did not fail")
 	}
-	check([]gap{{2, 2}, {4, 4}, {6, 6}}, 7)
+	check([]gap{{0, 3}, {0, 5}, {0, 7}}, 7)
 
 	newURL := "https://example.com/new-gap-stream"
 	var newStreamID int32
@@ -191,10 +191,10 @@ func TestPgDB_ScanAndBackfillGapsRepeated(t *testing.T) {
 		newFetched = append(newFetched, gap{start, end})
 		remaining.Add(-((end - start) + 1))
 		return end + 1, true
-	}); err != nil {
-		t.Fatal(err)
+	}); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("fetch without persisted entries = %v, want incomplete gap", err)
 	}
-	if !gapsEqual(newFetched, []gap{{11, 11}}) || newStream.getGapCh() != nil {
+	if !gapsEqual(newFetched, []gap{{0, 12}}) || newStream.getGapCh() != nil {
 		t.Fatalf("new stream scan = %v, channel = %v", newFetched, newStream.getGapCh())
 	}
 }
@@ -344,15 +344,16 @@ func TestPgDB_ScanAndBackfillGapsCanceledFetch(t *testing.T) {
 	}
 
 	var retried gap
-	if err := db.scanAndBackfillGaps(ctx, ls, func(_ context.Context, start, end int64, _ bool, _ handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+	if err := db.scanAndBackfillGaps(ctx, ls, func(fetchCtx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
 		retried = gap{start, end}
+		handle(fetchCtx, time.Now(), &LogEntry{LogStream: ls, LogIndex: 2, Err: errors.New("unparseable test entry")})
 		remaining.Add(-((end - start) + 1))
 		return end + 1, true
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if retried != (gap{2, 2}) {
-		t.Fatalf("retried gap = %v, want {2 2}", retried)
+	if retried != (gap{0, 3}) {
+		t.Fatalf("retried range = %v, want {0 3}", retried)
 	}
 }
 
@@ -501,10 +502,7 @@ func TestPgDB_BackfillGapsStopsAdvancingAfterIncompleteGap(t *testing.T) {
 					if gapcounter != nil {
 						gapcounter.Add(-1)
 					}
-					next = end + 1
-					if start == 3 {
-						next = 4
-					}
+					next = 4
 					wanted = true
 					return
 				}

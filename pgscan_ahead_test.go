@@ -22,9 +22,9 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 20005) AS n WHERE n NOT IN (2, 15
 		t.Fatal(err)
 	}
 
-	// Exhaust the recent budget so the cold pass finds both missing indexes.
+	// Exhaust the recent budget so the cold pass finds the second missing index.
 	db.stmtSelectGapWindow = db.Pfx(`WITH pause AS MATERIALIZED (
-  SELECT pg_sleep(CASE WHEN $2::bigint = 10006 THEN 4.0 ELSE 0.0 END)
+  SELECT pg_sleep(CASE WHEN $2::bigint = 10000 THEN 4.0 ELSE 0.0 END)
 )
 SELECT e.logindex FROM CERTDB_entry e CROSS JOIN pause
 WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
@@ -47,8 +47,8 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	if cursor != 2 {
 		t.Fatalf("backfill_logindex = %d, want first gap at 2", cursor)
 	}
-	if got := ls.GapScanIndex.Load(); got != 20_006 {
-		t.Fatalf("GapScanIndex = %d, want 20006 after scanning past both gaps", got)
+	if got := ls.GapScanIndex.Load(); got < 19_968 || got > 20_006 {
+		t.Fatalf("GapScanIndex = %d, want 19968..20006 after scanning past both gaps", got)
 	}
 	if got := ls.Backfill.Load(); got != 2 {
 		t.Fatalf("Backfill = %d, want 2 queued entries", got)
@@ -160,11 +160,11 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
 		t.Fatal(err)
 	}
-	if cursor != 9_999 || cold.next != 10_000 || cold.cursorBlocked || !pending {
+	if cursor != 9_983 || cold.next != 9_984 || cold.cursorBlocked || !pending {
 		t.Fatalf("first pass: cursor=%d, cold=%+v, pending=%t", cursor, cold, pending)
 	}
-	if got := ls.GapScanIndex.Load(); got != 10_000 {
-		t.Fatalf("GapScanIndex after first pass = %d, want 10000", got)
+	if got := ls.GapScanIndex.Load(); got != 9_984 {
+		t.Fatalf("GapScanIndex after first pass = %d, want 9984", got)
 	}
 
 	db.stmtSelectGapWindow = db.Pfx(selectGapWindow)

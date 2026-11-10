@@ -222,3 +222,172 @@ func TestGapScanContinuousWakesScheduledScan(t *testing.T) {
 		}
 	}
 }
+
+func TestContinuousGapScanAdvancesCursorAfterRestartedGapCommit(t *testing.T) {
+	ctx, db, cs := setupSelectGapsDB(t)
+	var operatorID, streamID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertStream(ctx, db, "https://example.test/continuous-cursor", operatorID, &streamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream)
+SELECT n + 1000, n, $1 FROM generate_series(0, 20005) AS n WHERE n NOT IN (1, 15000)`), streamID); err != nil {
+		t.Fatal(err)
+	}
+	ls, _ := newTileTestStream(t, 256)
+	ls.CertStream = cs
+	ls.Id = streamID
+	ls.LastIndex.Store(20005)
+	cold := coldScanState{next: -1, end: -1}
+	ls.gapCh = make(chan gap, 1)
+	if err := db.selectStreamGapsMode(ctx, ls, &cold, false, nil); !errors.Is(err, errGapChannelFull) {
+		t.Fatalf("shared scan = %v, want full gap queue", err)
+	}
+	if cold.next != 15000 || cold.cursor != 1 || !cold.cursorBlocked || cold.wasContinuous {
+		t.Fatalf("shared scan state = %+v, want blocked sweep ahead of cursor", cold)
+	}
+	for range ls.gapCh {
+	}
+	ls.Backfill.Store(0)
+
+	lockConn, err := db.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock($1::integer, 37)`, streamID); err != nil {
+		lockConn.Release()
+		t.Fatal(err)
+	}
+	// Hold the second cold read so the first gap commits before the sweep ends.
+	db.stmtSelectGapWindow = db.Pfx(`WITH pause AS MATERIALIZED (
+  SELECT CASE WHEN $2::bigint > 1 THEN pg_advisory_xact_lock($1::integer, 37) ELSE pg_sleep(0) END
+)
+SELECT e.logindex FROM CERTDB_entry e CROSS JOIN pause
+WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
+	cs.sendEntryCh = make(chan *LogEntry, 1)
+	ls.SetGapScanContinuous(true)
+	scanCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- db.scanAndBackfillGapsMode(scanCtx, ls, ls.getGapEntries, false, &cold, false, nil) }()
+	defer func() {
+		cancel()
+		if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_unlock($1::integer, 37)`, streamID); err != nil {
+			t.Errorf("release scan pause: %v", err)
+		}
+		lockConn.Release()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("continuous scan did not stop")
+		}
+	}()
+	select {
+	case le := <-cs.sendEntryCh:
+		if le.LogIndex != 1 {
+			t.Fatalf("committed entry = %d, want oldest gap 1", le.LogIndex)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("oldest gap was not committed")
+	}
+	if !ls.GapScanContinuous() {
+		t.Fatal("continuous sweep finished before the cursor check")
+	}
+	var cursor int64
+	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 2 {
+		t.Fatalf("backfill_logindex = %d after committed oldest gap, want 2", cursor)
+	}
+}
+
+func TestGapScanAdvancesCursorAfterExternalCursorMove(t *testing.T) {
+	ctx, db, cs := setupSelectGapsDB(t)
+	var operatorID, streamID int32
+	if err := db.QueryRow(ctx, db.Pfx(`INSERT INTO CERTDB_operator (name, email) VALUES ('op', 'op@example.com') RETURNING id`)).Scan(&operatorID); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertStream(ctx, db, "https://example.test/external-cursor", operatorID, &streamID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, db.Pfx(`INSERT INTO CERTDB_entry (cert, logindex, stream)
+SELECT n + 1000, n, $1 FROM generate_series(0, 20005) AS n WHERE n NOT IN (1, 3)`), streamID); err != nil {
+		t.Fatal(err)
+	}
+	ls, _ := newTileTestStream(t, 256)
+	ls.CertStream = cs
+	ls.Id = streamID
+	ls.LastIndex.Store(20005)
+	cold := coldScanState{next: -1, end: -1}
+	ls.gapCh = make(chan gap, 1)
+	if err := db.selectStreamGapsMode(ctx, ls, &cold, false, nil); !errors.Is(err, errGapChannelFull) {
+		t.Fatalf("shared scan = %v, want full gap queue", err)
+	}
+	if cold.next != 3 || cold.cursor != 1 || !cold.cursorBlocked {
+		t.Fatalf("shared scan state = %+v, want blocked sweep ahead of cursor", cold)
+	}
+	for range ls.gapCh {
+	}
+	ls.Backfill.Store(0)
+
+	// Another client fills the first gap and moves the durable cursor.
+	if err := insertEntries(ctx, db, streamID, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, db.Pfx(UpdateBackfillIndex), int64(3), streamID); err != nil {
+		t.Fatal(err)
+	}
+	lockConn, err := db.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_lock($1::integer, 37)`, streamID); err != nil {
+		lockConn.Release()
+		t.Fatal(err)
+	}
+	// Hold the second cold read until the new oldest gap commits.
+	db.stmtSelectGapWindow = db.Pfx(`WITH pause AS MATERIALIZED (
+  SELECT CASE WHEN $2::bigint > 3 THEN pg_advisory_xact_lock($1::integer, 37) ELSE pg_sleep(0) END
+)
+SELECT e.logindex FROM CERTDB_entry e CROSS JOIN pause
+WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
+	cs.sendEntryCh = make(chan *LogEntry, 1)
+	scanCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- db.scanAndBackfillGapsMode(scanCtx, ls, ls.getGapEntries, false, &cold, false, nil) }()
+	scanFinished := false
+	defer func() {
+		cancel()
+		if _, err := lockConn.Exec(ctx, `SELECT pg_advisory_unlock($1::integer, 37)`, streamID); err != nil {
+			t.Errorf("release scan pause: %v", err)
+		}
+		lockConn.Release()
+		if !scanFinished {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Error("shared scan did not stop")
+			}
+		}
+	}()
+	select {
+	case le := <-cs.sendEntryCh:
+		if le.LogIndex != 3 {
+			t.Fatalf("committed entry = %d, want oldest gap 3", le.LogIndex)
+		}
+	case err := <-done:
+		scanFinished = true
+		t.Fatalf("shared scan stopped before gap commit: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("oldest gap was not committed")
+	}
+	var cursor int64
+	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 4 {
+		t.Fatalf("backfill_logindex = %d after committed gap, want 4", cursor)
+	}
+}

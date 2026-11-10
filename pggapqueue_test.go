@@ -86,7 +86,7 @@ func TestPgDB_BackfillEstimateCountsQueuedGapsOnce(t *testing.T) {
 		remaining.Add(-(end - start + 1))
 		return end + 1, true
 	}
-	want := []gap{{start: 2, end: 2}, {start: 4, end: 4}}
+	want := []gap{{start: 0, end: 5}}
 	for attempt := 1; attempt <= 2; attempt++ {
 		ls.gapCh = make(chan gap, 8)
 		if err := db.selectStreamGaps(ctx, ls); err != nil {
@@ -96,8 +96,8 @@ func TestPgDB_BackfillEstimateCountsQueuedGapsOnce(t *testing.T) {
 			t.Fatalf("attempt %d queued backfill = %d, want 9", attempt, got)
 		}
 		fetched = nil
-		if err := db.backfillGapsWithFetcherMode(ctx, ls, fetch, nil, false); err != nil {
-			t.Fatal(err)
+		if err := db.backfillGapsWithFetcherMode(ctx, ls, fetch, nil, false); !errors.Is(err, errGapIncomplete) {
+			t.Fatalf("attempt %d error = %v, want incomplete gap", attempt, err)
 		}
 		if !gapsEqual(fetched, want) {
 			t.Fatalf("attempt %d fetched = %v, want %v", attempt, fetched, want)

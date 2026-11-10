@@ -10,11 +10,15 @@ import (
 )
 
 func rawEntriesStopIndex(start, end int64) (stop int64) {
+	return rawEntriesStopIndexSized(start, end, LogBatchSize)
+}
+
+func rawEntriesStopIndexSized(start, end, batchSize int64) (stop int64) {
 	stop = start
 	if start <= end {
 		// End each window at a common boundary so truncated responses can
 		// bring the next request onto a cacheable full-size range.
-		stop = start + min(end-start+1, LogBatchSize-start%LogBatchSize) - 1
+		stop = start + min(end-start+1, batchSize-start%batchSize) - 1
 	}
 	return
 }
@@ -23,9 +27,13 @@ func rawEntriesStopIndex(start, end int64) (stop int64) {
 // Returns 'wanted' set to true if handleFn returned true for any logentry.
 // Returns an error if not all entries could be fetched and processed.
 func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64) (wanted bool, next int64, err error) {
+	return ls.getRawEntriesSized(ctx, client, start, end, historical, handleFn, gapcounter, LogBatchSize)
+}
+
+func (ls *LogStream) getRawEntriesSized(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64, batchSize int64) (wanted bool, next int64, err error) {
 	next = start
 	for next <= end && err == nil {
-		stopIndex := rawEntriesStopIndex(next, end)
+		stopIndex := rawEntriesStopIndexSized(next, end, batchSize)
 		var resp *ct.GetEntriesResponse
 		if err = ls.backoff.Retry(ctx, func() (e error) {
 			if ls.LogOperator != nil {
