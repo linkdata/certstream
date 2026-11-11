@@ -205,21 +205,33 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 258) AS n WHERE n NOT IN (1, 257)
 	ls.Id = streamID
 	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
 	ls.LastIndex.Store(258)
-
-	goodQuery := db.funcIngestBatch
-	db.funcIngestBatch = `SELECT 1/0 WHERE $1::jsonb IS NOT NULL`
-	t.Cleanup(func() { db.funcIngestBatch = goodQuery })
-	fetch := func(ctx context.Context, start, end int64, historical bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
-		if start == 257 {
-			// The first tile has attempted its batch before the second begins.
-			db.funcIngestBatch = goodQuery
+	now := time.Now().UTC()
+	first := newGapTestEntry(ls, 1, now)
+	first.Signature[0] = 0
+	second := newGapTestEntry(ls, 257, now)
+	second.Signature[0] = 255
+	if db.workerIndexFor(first) == db.workerIndexFor(second) {
+		t.Fatal("test entries use the same SHA shard")
+	}
+	installShardIngestProbe(t, db, db.workerIndexFor(first))
+	fetch := func(ctx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+		for index := start; index <= end; index++ {
+			entry := newGapTestEntry(ls, index, now)
+			switch index {
+			case first.Index():
+				entry = first
+			case second.Index():
+				entry = second
+			}
+			handle(ctx, now, entry)
+			remaining.Add(-1)
 		}
-		return ls.getGapEntries(ctx, start, end, historical, handle, remaining)
+		return end + 1, true
 	}
 	err := db.scanAndBackfillGaps(ctx, ls, fetch)
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "22012" {
-		t.Fatalf("scan error = %v, want division by zero", err)
+		t.Fatalf("scan error = %v, want test shard failure", err)
 	}
 	var firstExists, laterExists bool
 	if err := db.QueryRow(ctx, db.Pfx(`SELECT EXISTS(SELECT 1 FROM CERTDB_entry WHERE stream = $1 AND logindex = 1),
