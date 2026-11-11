@@ -64,7 +64,10 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 511) AS n WHERE n NOT BETWEEN 250
 		unblock()
 		if !finished {
 			select {
-			case <-done:
+			case err := <-done:
+				if err != nil {
+					t.Errorf("backfill cleanup: %v", err)
+				}
 			case <-time.After(10 * time.Second):
 				t.Error("backfill did not stop")
 			}

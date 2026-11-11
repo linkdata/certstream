@@ -150,10 +150,10 @@ func TestRecoverTrailingGapReleasesTileCache(t *testing.T) {
 	ls.Id = streamID
 	ls.tiledLog = &loglist3.TiledLog{MonitoringURL: "https://example.test/"}
 	ls.MaxIndex.Store(2)
-	if err := db.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil {
+	if err := db.recoverTrailingGap(ctx, ls, ls.getTrailingGapEntries); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.recoverTrailingGap(ctx, ls, ls.getGapEntries); err != nil {
+	if err := db.recoverTrailingGap(ctx, ls, ls.getTrailingGapEntries); err != nil {
 		t.Fatal(err)
 	}
 	if got := transport.dataTileCalls.Load(); got != 1 {

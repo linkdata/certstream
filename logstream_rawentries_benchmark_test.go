@@ -78,6 +78,27 @@ func BenchmarkGetFullRawEntries(b *testing.B) {
 	b.ReportMetric(float64(client.calls)/float64(b.N), "calls/op")
 }
 
+// BenchmarkHistoricalRawEntriesAfter429 measures a classic historical request
+// after an operator has accumulated old HTTP 429 responses.
+func BenchmarkHistoricalRawEntriesAfter429(b *testing.B) {
+	ls := &LogStream{
+		LogOperator: &LogOperator{CertStream: &CertStream{}},
+		backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, false),
+	}
+	ls.Status429.Store(250)
+	client := &fullRangeBenchmarkClient{}
+	handle := func(context.Context, time.Time, *LogEntry) bool { return false }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_, next, err := ls.getRawEntries(b.Context(), client, 0, 0, true, handle, nil)
+		if err != nil || next != 1 {
+			b.Fatalf("getRawEntries next=%d, err=%v", next, err)
+		}
+	}
+	b.ReportMetric(float64(client.calls)/float64(b.N), "calls/op")
+}
+
 type providerBenchmarkTransport struct {
 	payload []byte
 	delay   time.Duration

@@ -27,7 +27,7 @@ func (cdb *PgDB) runShardBatch(ctx context.Context, shard int, queued []*LogEntr
 }
 
 func (cdb *PgDB) runGapBatches(ctx context.Context, entries []*LogEntry, afterCommit func([]int)) (stored []bool, err error) {
-	// A fetched tile can contain certificates from many worker shards.
+	// Fetched entries can contain certificates from many worker shards.
 	shards := make([][]int, max(1, cdb.workerCount))
 	for i, le := range entries {
 		shard := cdb.workerIndexFor(le)

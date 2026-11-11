@@ -1,17 +1,23 @@
 package certstream
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
+	"net/http"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	ct "github.com/google/certificate-transparency-go"
+	"github.com/google/certificate-transparency-go/client"
+	"github.com/google/certificate-transparency-go/jsonclient"
 	"github.com/google/certificate-transparency-go/tls"
 	ctx509 "github.com/google/certificate-transparency-go/x509"
 )
@@ -39,6 +45,199 @@ type stubRawEntriesClient struct {
 	entry ct.LeafEntry
 	err   error
 	calls []rawEntriesCall
+}
+
+type contextCheckingRawEntriesClient struct{}
+
+func (contextCheckingRawEntriesClient) GetRawEntries(ctx context.Context, _, _ int64) (*ct.GetEntriesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &ct.GetEntriesResponse{Entries: []ct.LeafEntry{{}}}, nil
+}
+
+type rateLimitedRawEntriesClient struct {
+	calls  []rawEntriesCall
+	failAt int64
+	once   bool
+	failed bool
+}
+
+func (c *rateLimitedRawEntriesClient) GetRawEntries(_ context.Context, start, end int64) (*ct.GetEntriesResponse, error) {
+	c.calls = append(c.calls, rawEntriesCall{start, end})
+	if start == c.failAt && (!c.once || !c.failed) {
+		c.failed = true
+		return nil, jsonclient.RspError{Err: errors.New("rate limited"), StatusCode: 429}
+	}
+	return &ct.GetEntriesResponse{Entries: make([]ct.LeafEntry, int(end-start+1))}, nil
+}
+
+func TestClassicGapEntryRetryWiring(t *testing.T) {
+	tests := []struct {
+		name      string
+		end       int64
+		partial   bool
+		trailing  bool
+		wantNext  int64
+		wantCalls int
+	}{
+		{name: "grouped", end: 511, wantNext: 256, wantCalls: 2},
+		{name: "partial", end: 255, partial: true, wantNext: 256, wantCalls: 3},
+		{name: "trailing", end: 511, trailing: true, wantNext: 512, wantCalls: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				calls := 0
+				transport := retryAfterRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls == 2 {
+						return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader([]byte("rate limited")))}, nil
+					}
+					count := 256
+					if tt.partial {
+						count = 240
+						if calls == 1 {
+							count = 16
+						}
+					}
+					body, err := json.Marshal(ct.GetEntriesResponse{Entries: make([]ct.LeafEntry, count)})
+					if err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+				})
+				ls := &LogStream{
+					LogOperator: &LogOperator{CertStream: &CertStream{}},
+					backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, false),
+				}
+				httpClient := newLimitedProviderClient(&http.Client{Timeout: 30 * time.Second, Transport: transport}, ls.LogOperator, nil)
+				var err error
+				ls.tailClient, err = client.New("https://example.test/", httpClient, jsonclient.Options{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				handle := func(context.Context, time.Time, *LogEntry) bool { return false }
+				var next int64
+				if tt.trailing {
+					next, _ = ls.getTrailingGapEntries(t.Context(), 0, tt.end, true, handle, nil)
+				} else {
+					next, _ = ls.getGapEntries(t.Context(), 0, tt.end, true, handle, nil)
+				}
+				if next != tt.wantNext || calls != tt.wantCalls {
+					t.Fatalf("next=%d calls=%d, want next=%d calls=%d", next, calls, tt.wantNext, tt.wantCalls)
+				}
+			})
+		})
+	}
+}
+
+func TestUngroupedRawEntriesRetryLater429(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ls := &LogStream{
+			LogOperator: &LogOperator{CertStream: &CertStream{}},
+			backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, false),
+		}
+		client := &rateLimitedRawEntriesClient{failAt: 256, once: true}
+		_, next, err := ls.getRawEntriesSized(t.Context(), client, 0, 511, true,
+			func(context.Context, time.Time, *LogEntry) bool { return false }, nil, 256, false)
+		if err != nil || next != 512 {
+			t.Fatalf("ungrouped fetch after 429: next=%d err=%v", next, err)
+		}
+		if got := client.calls; !slices.Equal(got, []rawEntriesCall{{0, 255}, {256, 511}, {256, 511}}) {
+			t.Fatalf("requests = %v, want retry of second tile", got)
+		}
+	})
+}
+
+func TestGroupedRawEntriesRetryFirst429(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ls := &LogStream{
+			LogOperator: &LogOperator{CertStream: &CertStream{}},
+			backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, false),
+		}
+		client := &rateLimitedRawEntriesClient{once: true}
+		_, next, err := ls.getRawEntriesSized(t.Context(), client, 0, 255, true,
+			func(context.Context, time.Time, *LogEntry) bool { return false }, nil, 256, true)
+		if err != nil || next != 256 {
+			t.Fatalf("first 429: next=%d err=%v", next, err)
+		}
+		if got := client.calls; !slices.Equal(got, []rawEntriesCall{{0, 255}, {0, 255}}) {
+			t.Fatalf("requests = %v, want retry of first tile", got)
+		}
+	})
+}
+
+func TestGroupedRawEntriesReturnAfterLater429(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ls := &LogStream{
+			LogOperator: &LogOperator{CertStream: &CertStream{}},
+			backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, false),
+		}
+		client := &rateLimitedRawEntriesClient{failAt: 256}
+		count := 0
+		_, next, err := ls.getRawEntriesSized(t.Context(), client, 0, 511, true,
+			func(context.Context, time.Time, *LogEntry) bool { count++; return false }, nil, 256, true)
+		var responseErr jsonclient.RspError
+		if next != 256 || count != 256 || !errors.As(err, &responseErr) || responseErr.StatusCode != 429 {
+			t.Fatalf("later 429: next=%d count=%d err=%v", next, count, err)
+		}
+		if got := client.calls; !slices.Equal(got, []rawEntriesCall{{0, 255}, {256, 511}}) {
+			t.Fatalf("requests = %v, want one per tile", got)
+		}
+	})
+}
+
+func TestHistoricalRawEntriesDoNotDelayForPast429s(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ls := &LogStream{
+			LogOperator: &LogOperator{CertStream: &CertStream{}},
+			backoff:     newLogStreamBackoff(time.Second, 30*time.Second, 2, false),
+		}
+		ls.Status429.Store(250)
+		ctx, cancel := context.WithTimeout(t.Context(), 750*time.Millisecond)
+		defer cancel()
+		_, next, err := ls.getRawEntries(ctx, contextCheckingRawEntriesClient{}, 0, 0, true,
+			func(context.Context, time.Time, *LogEntry) bool { return false }, nil)
+		if err != nil || next != 1 {
+			t.Fatalf("getRawEntries next=%d, err=%v; want next=1 without waiting for old 429s", next, err)
+		}
+	})
+}
+
+func TestRawEntriesSuccessRelaxesProviderDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lo := &LogOperator{CertStream: &CertStream{}}
+		lo.addStatus(429)
+		ls := &LogStream{LogOperator: lo}
+		_, next, err := ls.getRawEntries(t.Context(), contextCheckingRawEntriesClient{}, 0, 0, false,
+			func(context.Context, time.Time, *LogEntry) bool { return false }, nil)
+		if err != nil || next != 1 {
+			t.Fatalf("getRawEntries next=%d, err=%v", next, err)
+		}
+		if got := lo.rawRequestDelay(false); got != 31*time.Millisecond {
+			t.Fatalf("shared provider delay after success = %v, want 31ms", got)
+		}
+	})
+}
+
+func TestRawEntriesCanceledDuringProviderDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lo := &LogOperator{CertStream: &CertStream{}}
+		lo.addStatus(429)
+		ls := &LogStream{LogOperator: lo}
+		client := &stubRawEntriesClient{}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Millisecond)
+		defer cancel()
+		_, next, err := ls.getRawEntries(ctx, client, 0, 0, true,
+			func(context.Context, time.Time, *LogEntry) bool { return false }, nil)
+		if !errors.Is(err, context.DeadlineExceeded) || next != 0 {
+			t.Fatalf("canceled getRawEntries next=%d, err=%v", next, err)
+		}
+		if len(client.calls) != 0 {
+			t.Fatalf("client called after canceled provider delay: %v", client.calls)
+		}
+	})
 }
 
 func (c *stubRawEntriesClient) GetRawEntries(ctx context.Context, start, end int64) (resp *ct.GetEntriesResponse, err error) {
@@ -177,7 +376,7 @@ func TestGetRawEntriesSizedUsesItsOwnWindow(t *testing.T) {
 		count++
 		return false
 	}
-	_, next, err := ls.getRawEntriesSized(t.Context(), client, 256, 511, true, handle, nil, 256)
+	_, next, err := ls.getRawEntriesSized(t.Context(), client, 256, 511, true, handle, nil, 256, false)
 	if err != nil || next != 512 || count != 256 {
 		t.Fatalf("sized fetch = (next %d, count %d, err %v), want (512, 256, nil)", next, count, err)
 	}

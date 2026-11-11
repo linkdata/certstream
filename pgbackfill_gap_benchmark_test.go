@@ -1,11 +1,43 @@
 package certstream
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/loglist3"
 )
+
+func BenchmarkBackfillClassicFullGapTiles(b *testing.B) {
+	const tiles = 4
+	ctx, db, cs, streamID, _ := cleanTestFixture(b)
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	now := time.Now().UTC()
+	fetch := func(ctx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+		for index := start; index <= end; index++ {
+			handle(ctx, now, newGapTestEntry(ls, index, now))
+			remaining.Add(-1)
+		}
+		return end + 1, true
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		start := int64(i * tiles * sunlight.TileWidth)
+		end := start + tiles*sunlight.TileWidth - 1
+		ls.LastIndex.Store(end)
+		queueTestGaps(ls, []gap{{start: start, end: end}})
+		if err := db.backfillGapsWithFetcherMode(ctx, ls, fetch, nil, false); err != nil {
+			b.Fatal(err)
+		}
+		if got := ls.Backfill.Load(); got != 0 {
+			b.Fatalf("Backfill = %d, want 0", got)
+		}
+	}
+}
 
 func BenchmarkBackfillTiledSingletonGaps(b *testing.B) {
 	const holes = 32

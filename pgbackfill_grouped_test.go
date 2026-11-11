@@ -2,6 +2,7 @@ package certstream
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"slices"
 	"sync/atomic"
@@ -10,7 +11,22 @@ import (
 
 	"filippo.io/sunlight"
 	"github.com/google/certificate-transparency-go/loglist3"
+	ctx509 "github.com/google/certificate-transparency-go/x509"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func newGapTestEntry(ls *LogStream, index int64, now time.Time) *LogEntry {
+	sig := make([]byte, 32)
+	sig[0] = byte(index)
+	binary.BigEndian.PutUint64(sig[24:], uint64(index+1))
+	return &LogEntry{
+		LogStream:   ls,
+		LogIndex:    index,
+		Certificate: &ctx509.Certificate{Signature: sig, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour)},
+		Signature:   sig,
+		Seen:        now,
+	}
+}
 
 func queueTestGaps(ls *LogStream, gaps []gap) {
 	ls.gapCh = make(chan gap, len(gaps))
@@ -167,6 +183,10 @@ func TestBackfillAlignedGapRanges(t *testing.T) {
 		{"partial head tile", 271, []gap{{265, 265}}, []gap{{265, 265}}, false},
 		{"spanning tiled", 512, []gap{{250, 260}}, []gap{{250, 255}, {256, 260}}, false},
 		{"spanning classic", 512, []gap{{250, 260}}, []gap{{0, 255}, {256, 511}}, true},
+		{"four full classic tiles", 1536, []gap{{256, 1279}}, []gap{{256, 1279}}, true},
+		{"five full classic tiles", 1536, []gap{{256, 1535}}, []gap{{256, 1279}, {1280, 1535}}, true},
+		{"partial classic tile", 1024, []gap{{0, 255}, {256, 257}, {512, 767}}, []gap{{0, 255}, {256, 511}, {512, 767}}, true},
+		{"separated full classic tiles", 1024, []gap{{0, 255}, {512, 767}}, []gap{{0, 255}, {512, 767}}, true},
 		{"sparse tiled", 1024, []gap{{257, 257}, {768, 768}}, []gap{{257, 257}, {768, 768}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -260,6 +280,92 @@ func TestBackfillGroupedPartialFetch(t *testing.T) {
 	}
 	if got := ls.Backfill.Load(); got != 0 {
 		t.Fatalf("Backfill after retry = %d, want 0", got)
+	}
+}
+
+func TestBackfillClassicFullGroupPartialFetchKeepsCursor(t *testing.T) {
+	ctx, db, cs, streamID, _ := cleanTestFixture(t)
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	ls.LastIndex.Store(1023)
+	queueTestGaps(ls, []gap{{0, 1023}})
+	now := time.Now().UTC()
+	limit := int64(512)
+	var fetched []gap
+	fetch := func(ctx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+		fetched = append(fetched, gap{start, end})
+		next := min(end+1, limit)
+		for index := start; index < next; index++ {
+			handle(ctx, now, newGapTestEntry(ls, index, now))
+			remaining.Add(-1)
+		}
+		return next, true
+	}
+	check := func(want int64) {
+		t.Helper()
+		var cursor, count int64
+		err := db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex,
+(SELECT count(*) FROM CERTDB_entry WHERE stream = $1)
+FROM CERTDB_stream WHERE id = $1`), streamID).Scan(&cursor, &count)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cursor != want || count != want {
+			t.Fatalf("cursor=%d, stored=%d; want both %d", cursor, count, want)
+		}
+	}
+	if err := db.backfillGapsWithFetcherMode(ctx, ls, fetch, nil, false); !errors.Is(err, errGapIncomplete) {
+		t.Fatalf("partial fetch error = %v, want %v", err, errGapIncomplete)
+	}
+	if !gapsEqual(fetched, []gap{{0, 1023}}) {
+		t.Fatalf("fetches = %v, want one grouped range", fetched)
+	}
+	check(512)
+
+	limit = 1024
+	queueTestGaps(ls, []gap{{512, 1023}})
+	if err := db.backfillGapsWithFetcherMode(ctx, ls, fetch, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if !gapsEqual(fetched, []gap{{0, 1023}, {512, 1023}}) {
+		t.Fatalf("fetches after retry = %v", fetched)
+	}
+	check(1024)
+}
+
+func TestBackfillClassicFullGroupPartialShardFailureKeepsCursor(t *testing.T) {
+	ctx, db, cs, streamID, _ := cleanTestFixture(t)
+	installShardIngestProbe(t, db, 1)
+	ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
+	ls.LastIndex.Store(1023)
+	queueTestGaps(ls, []gap{{0, 1023}})
+	now := time.Now().UTC()
+	fetch := func(ctx context.Context, start, end int64, _ bool, handle handleLogEntryFn, remaining *atomic.Int64) (int64, bool) {
+		for index := start; index <= end; index++ {
+			entry := newGapTestEntry(ls, index, now)
+			if index < 512 {
+				entry.Signature[0] = 0
+			} else {
+				entry.Signature[0] = 8
+			}
+			handle(ctx, now, entry)
+			remaining.Add(-1)
+		}
+		return end + 1, true
+	}
+	err := db.backfillGapsWithFetcherMode(ctx, ls, fetch, nil, false)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "22012" {
+		t.Fatalf("backfill error = %v, want test shard failure", err)
+	}
+	var cursor, count int64
+	err = db.QueryRow(ctx, db.Pfx(`SELECT backfill_logindex,
+(SELECT count(*) FROM CERTDB_entry WHERE stream = $1)
+FROM CERTDB_stream WHERE id = $1`), streamID).Scan(&cursor, &count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 512 || count != 512 {
+		t.Fatalf("cursor=%d, stored=%d; want both 512", cursor, count)
 	}
 }
 
