@@ -31,34 +31,23 @@ func (ls *LogStream) getRawEntries(ctx context.Context, client rawEntriesClient,
 }
 
 func (ls *LogStream) getRawEntriesSized(ctx context.Context, client rawEntriesClient, start, end int64, historical bool, handleFn handleLogEntryFn, gapcounter *atomic.Int64, batchSize int64, stopAfterProgress bool) (wanted bool, next int64, err error) {
-	progressCtx := ctx
-	var cancelProgress context.CancelFunc
 	next = start
 	for next <= end && err == nil {
-		requestCtx := ctx
-		if stopAfterProgress && next > start {
-			if cancelProgress == nil {
-				// Keep fetched entries ready to commit if a later request stalls.
-				progressCtx, cancelProgress = context.WithTimeout(ctx, 30*time.Second)
-				defer cancelProgress()
-			}
-			requestCtx = progressCtx
-		}
 		stopIndex := rawEntriesStopIndexSized(next, end, batchSize)
 		var resp *ct.GetEntriesResponse
-		if err = ls.backoff.Retry(requestCtx, func() (e error) {
+		if err = ls.backoff.Retry(ctx, func() (e error) {
 			if ls.LogOperator != nil {
 				if delay := ls.rawRequestDelay(historical); delay > 0 {
-					if e = sleep(requestCtx, delay); e != nil {
+					if e = sleep(ctx, delay); e != nil {
 						return
 					}
 				}
 			}
-			if e = ls.waitForQueue(requestCtx, historical); e != nil {
+			if e = ls.waitForQueue(ctx, historical); e != nil {
 				return
 			}
-			if resp, e = client.GetRawEntries(requestCtx, next, stopIndex); e != nil {
-				// Return later grouped errors so the caller can commit earlier entries.
+			if resp, e = client.GetRawEntries(ctx, next, stopIndex); e != nil {
+				// Later failures return so the caller can commit the fetched prefix.
 				if !ls.handleStreamError(e, "GetRawEntries") && (!stopAfterProgress || next == start) {
 					e = wrapLogStreamRetryable(e)
 				}

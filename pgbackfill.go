@@ -343,7 +343,6 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 						}
 					}
 					group.end = max(group.end, partEnd)
-					group.full = group.full && full
 					group.gaps = append(group.gaps, gap{start: start, end: partEnd})
 					group.missing += partEnd - start + 1
 					start = partEnd + 1
@@ -371,6 +370,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 				}
 			}
 			if lastgap.end != 0 {
+				// Startup trailing gaps are best effort; ongoing recovery retries them.
 				appendGap(lastgap, false)
 				flushGroup(false)
 			}

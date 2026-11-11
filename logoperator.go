@@ -70,11 +70,9 @@ func (lo *LogOperator) ErrorCount() (n int) {
 
 func (lo *LogOperator) addStatus(statuscode int) {
 	if statuscode > http.StatusOK {
-		if statuscode == http.StatusTooManyRequests {
-			lo.Status429.Add(1)
-		}
 		lo.mu.Lock()
 		if statuscode == http.StatusTooManyRequests {
+			lo.Status429.Add(1)
 			// Each 429 adds up to 32ms; classic successes remove 1ms each.
 			lo.rawDelay = min(500*time.Millisecond, lo.rawDelay+32*time.Millisecond)
 		}
