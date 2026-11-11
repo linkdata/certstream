@@ -278,7 +278,10 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 		}
 		lockConn.Release()
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("continuous scan cleanup: %v", err)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("continuous scan did not stop")
 		}
@@ -366,7 +369,10 @@ WHERE e.stream = $1 AND e.logindex BETWEEN $2 AND $3 ORDER BY e.logindex`)
 		lockConn.Release()
 		if !scanFinished {
 			select {
-			case <-done:
+			case err := <-done:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					t.Errorf("shared scan cleanup: %v", err)
+				}
 			case <-time.After(10 * time.Second):
 				t.Error("shared scan did not stop")
 			}

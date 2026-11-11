@@ -16,11 +16,12 @@ import (
 	"github.com/google/certificate-transparency-go/loglist3"
 )
 
+// LogOperator tracks CT streams and request limits for one provider.
 type LogOperator struct {
 	*CertStream
 	Domain      string             // e.g. "letsencrypt.org" or "googleapis.com"
 	Count       atomic.Int64       // atomic; sum of the stream's Count
-	Status429   atomic.Int64       // atomic; number of 429 Too Many Requests
+	Status429   atomic.Int64       // atomic; cumulative number of 429 Too Many Requests
 	Id          int32              // database ID, if available
 	operator    *loglist3.Operator // read-only
 	mu          sync.Mutex         // protects following
@@ -28,7 +29,8 @@ type LogOperator struct {
 	streams     map[string]*LogStream
 	errcount    int
 	errors      []*StreamError
-	limitMu     sync.Mutex // protects limit, notifications, and reader active counts
+	rawDelay    time.Duration // delay before classic entry requests
+	limitMu     sync.Mutex    // protects limit, notifications, and reader active counts
 	limit       int
 	limitWait   chan struct{}
 	limitChange chan struct{}
@@ -72,12 +74,32 @@ func (lo *LogOperator) addStatus(statuscode int) {
 			lo.Status429.Add(1)
 		}
 		lo.mu.Lock()
+		if statuscode == http.StatusTooManyRequests {
+			// Each 429 adds up to 32ms; classic successes remove 1ms each.
+			lo.rawDelay = min(500*time.Millisecond, lo.rawDelay+32*time.Millisecond)
+		}
 		if lo.statuses == nil {
 			lo.statuses = make(map[int]int)
 		}
 		lo.statuses[statuscode]++
 		lo.mu.Unlock()
 	}
+}
+
+func (lo *LogOperator) rawRequestDelay(historical bool) (delay time.Duration) {
+	lo.mu.Lock()
+	delay = lo.rawDelay
+	lo.mu.Unlock()
+	if historical {
+		delay *= 2
+	}
+	return
+}
+
+func (lo *LogOperator) rawRequestSucceeded() {
+	lo.mu.Lock()
+	lo.rawDelay = max(0, lo.rawDelay-time.Millisecond)
+	lo.mu.Unlock()
 }
 
 func (lo *LogOperator) StatusCounts() (m map[int]int) {
