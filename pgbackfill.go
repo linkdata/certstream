@@ -148,17 +148,19 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 			if lastgap.end != 0 {
 				ls.Backfill.Add(lastgap.end - lastgap.start + 1)
 			}
+			storeDirect := ls.LogOperator != nil && ls.CertStream != nil && ls.DB() == cdb && cdb.Pool != nil
+			cacheDecoded := !ls.isTiled()
 			cachedGroupStart := int64(-1)
 			var cachedEntries []*LogEntry
-			fillGroup := func(group gapGroup, advanceCursor bool) {
+			fetchGroup := func(group gapGroup, advanceCursor bool) (commit func()) {
 				if ctx.Err() != nil {
 					ls.Backfill.Add(-group.missing)
-					allGapsFilled = false
-					cursorReady = false
+					commit = func() {
+						allGapsFilled = false
+						cursorReady = false
+					}
 					return
 				}
-				storeDirect := ls.LogOperator != nil && ls.CertStream != nil && ls.DB() == cdb && cdb.Pool != nil
-				cacheDecoded := !ls.isTiled()
 				seen := make([]bool, int(group.end-group.start+1))
 				var entries []*LogEntry
 				gapIndex := 0
@@ -233,87 +235,109 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 					next, _ = fetchFn(ctx, start, group.end, true, fetchHandle, &remaining)
 				}
 				ls.Backfill.Add(-group.missing)
-				cursorTarget := func() int64 {
-					for _, g := range group.gaps {
-						for index := g.start; index <= g.end; index++ {
-							position := index - group.start
-							if !seen[position] {
-								return index
+				commit = func() {
+					cursorTarget := func() int64 {
+						for _, g := range group.gaps {
+							for index := g.start; index <= g.end; index++ {
+								position := index - group.start
+								if !seen[position] {
+									return index
+								}
+							}
+						}
+						return group.gaps[len(group.gaps)-1].end + 1
+					}
+					lastCursorTarget := int64(-1)
+					writeCursor := func(target int64) {
+						if cursorReady && advanceCursor && target > lastCursorTarget {
+							if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
+								scanErr = errors.Join(scanErr, err)
+								cursorReady = false
+							} else {
+								lastCursorTarget = target
 							}
 						}
 					}
-					return group.gaps[len(group.gaps)-1].end + 1
-				}
-				lastCursorTarget := int64(-1)
-				writeCursor := func(target int64) {
-					if cursorReady && advanceCursor && target > lastCursorTarget {
-						if err := cdb.backfillSetGapStartIndex(ctx, ls, target); err != nil {
-							scanErr = errors.Join(scanErr, err)
-							cursorReady = false
-						} else {
-							lastCursorTarget = target
+					var stored []bool
+					if storeDirect && len(entries) > 0 {
+						// After fetching, seen tracks entries committed by each SHA batch.
+						for _, le := range entries {
+							seen[le.Index()-group.start] = false
 						}
-					}
-				}
-				var stored []bool
-				if storeDirect && len(entries) > 0 {
-					// After fetching, seen tracks entries committed by each SHA batch.
-					for _, le := range entries {
-						seen[le.Index()-group.start] = false
-					}
-					var err error
-					stored, err = cdb.runGapBatches(ctx, entries, func(indexes []int) {
-						for _, i := range indexes {
-							seen[entries[i].Index()-group.start] = true
-						}
-						// The cursor follows each committed contiguous prefix before
-						// later SHA batches in this group run.
-						if target := cursorTarget(); target > group.gaps[0].start {
-							writeCursor(target)
-						}
-					})
-					for i, le := range entries {
-						if !stored[i] {
-							if le.Certificate != nil {
-								ls.Count.Add(-1)
-								ls.LogOperator.Count.Add(-1)
+						var err error
+						stored, err = cdb.runGapBatches(ctx, entries, func(indexes []int) {
+							for _, i := range indexes {
+								seen[entries[i].Index()-group.start] = true
+							}
+							// The cursor follows each committed contiguous prefix before
+							// later SHA batches in this group run.
+							if target := cursorTarget(); target > group.gaps[0].start {
+								writeCursor(target)
+							}
+						})
+						for i, le := range entries {
+							if !stored[i] {
+								if le.Certificate != nil {
+									ls.Count.Add(-1)
+									ls.LogOperator.Count.Add(-1)
+								}
 							}
 						}
+						if err != nil {
+							scanErr = errors.Join(scanErr, cdb.LogError(err, "backfill gap batch", "stream", ls.Id, "start", group.start, "end", group.end))
+						}
 					}
-					if err != nil {
-						scanErr = errors.Join(scanErr, cdb.LogError(err, "backfill gap batch", "stream", ls.Id, "start", group.start, "end", group.end))
+					complete := next > group.gaps[len(group.gaps)-1].end
+					target := group.gaps[len(group.gaps)-1].end + 1
+					if storeDirect {
+						target = cursorTarget()
+						complete = complete && target > group.gaps[len(group.gaps)-1].end
 					}
-				}
-				complete := next > group.gaps[len(group.gaps)-1].end
-				target := group.gaps[len(group.gaps)-1].end + 1
-				if storeDirect {
-					target = cursorTarget()
-					complete = complete && target > group.gaps[len(group.gaps)-1].end
-				}
-				if !complete {
-					allGapsFilled = false
-				}
-				if storeDirect && len(entries) > 0 {
-					writeCursor(target)
-					for i, le := range entries {
-						if stored[i] && le.Certificate != nil {
-							if ch := cdb.getSendEntryCh(); ch != nil {
-								select {
-								case <-ctx.Done():
-								case ch <- le:
+					if !complete {
+						allGapsFilled = false
+					}
+					if storeDirect && len(entries) > 0 {
+						writeCursor(target)
+						for i, le := range entries {
+							if stored[i] && le.Certificate != nil {
+								if ch := cdb.getSendEntryCh(); ch != nil {
+									select {
+									case <-ctx.Done():
+									case ch <- le:
+									}
 								}
 							}
 						}
 					}
+					if !complete || !storeDirect || !advanceCursor {
+						cursorReady = false
+					}
 				}
-				if !complete || !storeDirect || !advanceCursor {
-					cursorReady = false
+				return
+			}
+			// One commit overlaps the next fetch; joins keep cursor updates in gap order.
+			var commitDone chan struct{}
+			waitCommit := func() {
+				if commitDone != nil {
+					<-commitDone
+					commitDone = nil
 				}
 			}
 			var group gapGroup
 			flushGroup := func(advanceCursor bool) {
 				if len(group.gaps) > 0 {
-					fillGroup(group, advanceCursor)
+					commit := fetchGroup(group, advanceCursor)
+					waitCommit()
+					if storeDirect {
+						done := make(chan struct{})
+						commitDone = done
+						go func() {
+							defer close(done)
+							commit()
+						}()
+					} else {
+						commit()
+					}
 					group = gapGroup{}
 				}
 			}
@@ -363,6 +387,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 				appendGap(g, true)
 			}
 			flushGroup(true)
+			waitCommit()
 			if scanDone != nil {
 				scanErr = errors.Join(scanErr, <-scanDone)
 				if scanErr != nil {
@@ -374,6 +399,7 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 				appendGap(lastgap, false)
 				flushGroup(false)
 			}
+			waitCommit()
 			if !allGapsFilled && scanErr == nil && ctx.Err() == nil {
 				scanErr = errGapIncomplete
 			}

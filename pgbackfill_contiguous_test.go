@@ -85,14 +85,27 @@ SELECT n + 1000, n, $1 FROM generate_series(0, 511) AS n WHERE n NOT BETWEEN 250
 	default:
 	}
 	var firstTileCount, cursor int64
-	if err := db.QueryRow(ctx, db.Pfx(`SELECT count(*) FROM CERTDB_entry WHERE stream = $1 AND logindex BETWEEN 250 AND 255`), streamID).Scan(&firstTileCount); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(ctx, db.Pfx(SelectBackfillIndex), streamID).Scan(&cursor); err != nil {
-		t.Fatal(err)
-	}
-	if firstTileCount != 6 || cursor != 256 {
-		t.Fatalf("paused fetch: first tile rows = %d, cursor = %d; want 6 rows and cursor 256", firstTileCount, cursor)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		if err := db.QueryRow(ctx, db.Pfx(`SELECT
+(SELECT count(*) FROM CERTDB_entry WHERE stream = $1 AND logindex BETWEEN 250 AND 255),
+backfill_logindex FROM CERTDB_stream WHERE id = $1`), streamID).Scan(&firstTileCount, &cursor); err != nil {
+			t.Fatal(err)
+		}
+		if firstTileCount == 6 && cursor == 256 {
+			break
+		}
+		select {
+		case err := <-done:
+			finished = true
+			t.Fatalf("backfill finished while fetch was paused: %v", err)
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("paused fetch: first tile rows = %d, cursor = %d; want 6 rows and cursor 256", firstTileCount, cursor)
+		}
 	}
 	unblock()
 	select {
