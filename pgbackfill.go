@@ -269,8 +269,8 @@ func (cdb *PgDB) backfillGapsWithFetcherCursor(ctx context.Context, ls *LogStrea
 							for _, i := range indexes {
 								seen[entries[i].Index()-group.start] = true
 							}
-							// The cursor follows each committed contiguous prefix before
-							// later SHA batches in this group run.
+							// The cursor follows the contiguous committed prefix as
+							// SHA batches finish.
 							if target := cursorTarget(); target > group.gaps[0].start {
 								writeCursor(target)
 							}
