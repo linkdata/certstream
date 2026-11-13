@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 // The mixed case measures one database call as a control. The prefix case uses
 // the production grouping. Each iteration uses new hashes and log indexes;
 // the sparse case places two entries in different prefixes of one 256-wide tile.
-// Run with -benchtime=3x -count=6 when comparing batching changes.
+// Run with -benchtime=3x -count=6 -cpu=1,4 when comparing batching changes.
 func BenchmarkPgDBRunGapBatchesByPrefix(b *testing.B) {
 	const tileSize = 256
 	for _, tc := range []struct {
@@ -39,24 +40,21 @@ func BenchmarkPgDBRunGapBatchesByPrefix(b *testing.B) {
 					b.Fatal(err)
 				}
 				ls := &LogStream{LogOperator: &LogOperator{CertStream: cs}, Id: streamID}
-				entries := make([]*LogEntry, tc.size)
-				for i := range entries {
-					cert := *baseCert
-					cert.Subject.CommonName = "gap-" + strconv.Itoa(i) + ".example.test"
-					entries[i] = &LogEntry{
-						LogStream:   ls,
-						Certificate: &cert,
-						Signature:   make([]byte, sha256.Size),
-						Seen:        now,
-					}
-				}
-				b.ReportAllocs()
-				b.ResetTimer()
+				prepared := make([][]*LogEntry, b.N)
 				var totalBatches int
 				for n := range b.N {
-					b.StopTimer()
+					entries := make([]*LogEntry, tc.size)
 					var occupied [256]bool
-					for i, entry := range entries {
+					for i := range entries {
+						cert := *baseCert
+						cert.Subject.CommonName = "gap-" + strconv.Itoa(i) + ".example.test"
+						entry := &LogEntry{
+							LogStream:   ls,
+							Certificate: &cert,
+							Signature:   make([]byte, sha256.Size),
+							Seen:        now,
+						}
+						entries[i] = entry
 						index := int64(n*tileSize + i*tileSize/tc.size)
 						entry.LogIndex = index
 						var seed [8]byte
@@ -79,21 +77,29 @@ func BenchmarkPgDBRunGapBatchesByPrefix(b *testing.B) {
 					} else {
 						totalBatches++
 					}
-					b.StartTimer()
-					if sharded {
-						stored, err := db.runGapBatches(ctx, entries, nil)
-						if err != nil {
-							b.Fatal(err)
-						}
-						for _, ok := range stored {
-							if !ok {
-								b.Fatal("gap batch was not stored")
-							}
-						}
-					} else if err := db.runBatch(ctx, entries); err != nil {
-						b.Fatal(err)
-					}
+					prepared[n] = entries
 				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				var next atomic.Int64
+				b.RunParallel(func(pb *testing.PB) {
+					for pb.Next() {
+						entries := prepared[next.Add(1)-1]
+						if sharded {
+							stored, err := db.runGapBatches(ctx, entries, nil)
+							if err != nil {
+								b.Error(err)
+							}
+							for _, ok := range stored {
+								if !ok {
+									b.Error("gap batch was not stored")
+								}
+							}
+						} else if err := db.runBatch(ctx, entries); err != nil {
+							b.Error(err)
+						}
+					}
+				})
 				b.StopTimer()
 				b.ReportMetric(float64(totalBatches)/float64(b.N), "db_batches/op")
 			})

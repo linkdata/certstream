@@ -34,6 +34,12 @@ func (cdb *PgDB) runGapBatches(ctx context.Context, entries []*LogEntry, afterCo
 		shards[shard] = append(shards[shard], i)
 	}
 	stored = make([]bool, len(entries))
+	type result struct {
+		shard int
+		err   error
+	}
+	results := make(chan result, len(shards))
+	started := 0
 	for shard, indexes := range shards {
 		if len(indexes) == 0 {
 			continue
@@ -46,9 +52,18 @@ func (cdb *PgDB) runGapBatches(ctx context.Context, entries []*LogEntry, afterCo
 		for i, index := range indexes {
 			batch[i] = entries[index]
 		}
-		if batchErr := cdb.runShardBatch(ctx, shard, batch); batchErr != nil {
-			err = errors.Join(err, fmt.Errorf("batch shard %d: %w", shard, batchErr))
+		started++
+		go func() {
+			results <- result{shard: shard, err: cdb.runShardBatch(ctx, shard, batch)}
+		}()
+	}
+	// Process completions here so the gap cursor callback runs in one goroutine.
+	for range started {
+		result := <-results
+		if result.err != nil {
+			err = errors.Join(err, fmt.Errorf("batch shard %d: %w", result.shard, result.err))
 		} else {
+			indexes := shards[result.shard]
 			for _, index := range indexes {
 				stored[index] = true
 			}
