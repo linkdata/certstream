@@ -382,7 +382,9 @@ func TestPgDB_DeleteCertificates_CanceledStatementKeepsCursor(t *testing.T) {
 	for {
 		var blocked bool
 		if err := db.QueryRow(ctx, db.Pfx(`SELECT EXISTS (
-SELECT 1 FROM pg_locks WHERE relation = 'CERTDB_cert'::regclass AND NOT granted)`)).Scan(&blocked); err != nil {
+	SELECT 1 FROM pg_locks
+	WHERE database = (SELECT oid FROM pg_database WHERE datname = current_database())
+	AND relation = 'CERTDB_cert'::regclass AND NOT granted)`)).Scan(&blocked); err != nil {
 			t.Fatalf("inspect blocked cleanup: %v", err)
 		}
 		if blocked {

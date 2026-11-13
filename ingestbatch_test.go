@@ -3,14 +3,13 @@ package certstream_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/linkdata/certstream"
+	"github.com/linkdata/certstream/internal/testpg"
 )
 
 const (
@@ -137,66 +136,29 @@ func assertSplitDomainCallCount(t *testing.T, ctx context.Context, conn *pgx.Con
 
 func setupIngestBatchTest(t testing.TB) (ctx context.Context, conn *pgx.Conn, streamID int32) {
 	t.Helper()
-
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found in PATH; skipping Postgres container portion")
-	} else {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
-		t.Cleanup(cancel)
-
-		cname := "certstream-ingest-" + randHex(6)
-		if out, err := run(ctx, "docker", "pull", pgImage); err != nil {
-			t.Fatalf("docker pull %s failed: %v\n%s", pgImage, err, out)
-		} else {
-			if out, err := run(ctx, "docker", "run", "--rm", "-d",
-				"--name", cname,
-				"-e", "POSTGRES_USER="+pgUser,
-				"-e", "POSTGRES_PASSWORD="+pgPass,
-				"-e", "POSTGRES_DB="+pgDB,
-				"-P", pgImage); err != nil {
-				t.Fatalf("docker run failed: %v\n%s", err, out)
-			} else {
-				t.Cleanup(func() {
-					_, _ = run(context.Background(), "docker", "kill", cname)
-				})
-
-				hostPort := dockerMappedPort(ctx, t, cname, "5432/tcp")
-				waitForPostgresQueryReady(ctx, t, cname, pgUser, pgPass, pgDB, 2*time.Minute)
-
-				dsn := fmt.Sprintf("postgres://%s:%s@127.0.0.1:%s/%s?sslmode=disable", pgUser, pgPass, hostPort, pgDB)
-				if conn, err = pgx.Connect(ctx, dsn); err != nil {
-					t.Fatalf("pgx connect failed: %v", err)
-				} else {
-					t.Cleanup(func() {
-						_ = conn.Close(ctx)
-					})
-
-					if _, err = conn.Exec(ctx, certstream.CreateSchema); err != nil {
-						t.Fatalf("CreateSchema failed: %v", err)
-					} else {
-						if _, err = conn.Exec(ctx, certstream.FuncIngestBatch); err != nil {
-							t.Fatalf("FuncIngestBatch failed: %v", err)
-						} else {
-							var operatorID int32
-							if err = conn.QueryRow(ctx,
-								"INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id",
-								"op", "op@example.com").Scan(&operatorID); err != nil {
-								t.Fatalf("insert operator failed: %v", err)
-							} else {
-								if err = conn.QueryRow(ctx,
-									"INSERT INTO CERTDB_stream (url, operator, json) VALUES ($1, $2, $3) RETURNING id",
-									"https://example.com/log", operatorID, "{}").Scan(&streamID); err != nil {
-									t.Fatalf("insert stream failed: %v", err)
-								}
-							}
-						}
-					}
-				}
-			}
-		}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
+	t.Cleanup(cancel)
+	fixture := testpg.NewDatabase(ctx, t)
+	conn = testpg.Connect(ctx, t, fixture)
+	var err error
+	if _, err = conn.Exec(ctx, certstream.CreateSchema); err != nil {
+		t.Fatalf("CreateSchema failed: %v", err)
 	}
-
+	if _, err = conn.Exec(ctx, certstream.FuncIngestBatch); err != nil {
+		t.Fatalf("FuncIngestBatch failed: %v", err)
+	}
+	var operatorID int32
+	if err = conn.QueryRow(ctx,
+		"INSERT INTO CERTDB_operator (name, email) VALUES ($1, $2) RETURNING id",
+		"op", "op@example.com").Scan(&operatorID); err != nil {
+		t.Fatalf("insert operator failed: %v", err)
+	}
+	if err = conn.QueryRow(ctx,
+		"INSERT INTO CERTDB_stream (url, operator, json) VALUES ($1, $2, $3) RETURNING id",
+		"https://example.com/log", operatorID, "{}").Scan(&streamID); err != nil {
+		t.Fatalf("insert stream failed: %v", err)
+	}
 	return
 }
 
