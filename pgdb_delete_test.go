@@ -117,16 +117,15 @@ func streamLogIndices(ctx context.Context, db *certstream.PgDB, streamID int32) 
 	return
 }
 
-// waitForBlockedLock waits until some backend is waiting on a lock. The test
-// database serves only this test, so the only candidate is the call under test
-// blocking on the stream row.
+// waitForBlockedLock waits for a lock in this test's database.
 func waitForBlockedLock(ctx context.Context, tb testing.TB, q queryer) {
 	tb.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var blocked int
-		if err := q.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE NOT granted;`).Scan(&blocked); err != nil {
-			tb.Fatalf("pg_locks query failed: %v", err)
+		if err := q.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database() AND wait_event_type = 'Lock';`).Scan(&blocked); err != nil {
+			tb.Fatalf("pg_stat_activity query failed: %v", err)
 		}
 		if blocked > 0 {
 			return

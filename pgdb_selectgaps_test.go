@@ -1,25 +1,14 @@
 package certstream
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/certificate-transparency-go/loglist3"
-)
-
-const (
-	pgImage = "postgres:18-alpine"
-	pgUser  = "cert"
-	pgPass  = "secretpass"
-	pgDB    = "certstream"
-	pgPort  = "5432"
+	"github.com/linkdata/certstream/internal/testpg"
 )
 
 func TestPgDB_SelectStreamGapsUpdatesBackfillIndexOnNoGaps(t *testing.T) {
@@ -494,57 +483,27 @@ func TestPgDB_SelectStreamGapsKeepsLeadingGapBeforeBackfillIndex(t *testing.T) {
 
 func setupSelectGapsDB(t testing.TB) (ctx context.Context, db *PgDB, cs *CertStream) {
 	t.Helper()
-
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found in PATH; skipping Postgres container portion")
-	} else {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
-		t.Cleanup(cancel)
-
-		cname := "certstream-gaps-" + randHex(6)
-		if out, err := run(ctx, "docker", "pull", pgImage); err != nil {
-			t.Fatalf("docker pull %s failed: %v\n%s", pgImage, err, out)
-		} else {
-			if out, err := run(ctx, "docker", "run", "--rm", "-d",
-				"--name", cname,
-				"-e", "POSTGRES_USER="+pgUser,
-				"-e", "POSTGRES_PASSWORD="+pgPass,
-				"-e", "POSTGRES_DB="+pgDB,
-				"-P", pgImage); err != nil {
-				t.Fatalf("docker run failed: %v\n%s", err, out)
-			} else {
-				t.Cleanup(func() {
-					_, _ = run(context.Background(), "docker", "kill", cname)
-				})
-
-				hostPort := dockerMappedPort(ctx, t, cname, "5432/tcp")
-				waitForPostgresQueryReady(ctx, t, cname, pgUser, pgPass, pgDB, 2*time.Minute)
-
-				cfg := NewConfig()
-				cfg.PgUser = pgUser
-				cfg.PgPass = pgPass
-				cfg.PgName = pgDB
-				cfg.PgAddr = "127.0.0.1:" + hostPort
-				cfg.PgNoSSL = true
-				cfg.PgConns = 4
-
-				cs = &CertStream{
-					Config:    *cfg,
-					operators: map[string]*LogOperator{},
-				}
-				if db, err = NewPgDB(ctx, cs); err != nil {
-					t.Fatalf("NewPgDB failed: %v", err)
-				} else {
-					cs.db = db
-					t.Cleanup(func() {
-						db.Close()
-					})
-				}
-			}
-		}
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(t.Context(), 3*time.Minute)
+	t.Cleanup(cancel)
+	fixture := testpg.NewDatabase(ctx, t)
+	cfg := NewConfig()
+	cfg.PgUser = testpg.User
+	cfg.PgPass = testpg.Password
+	cfg.PgName = fixture.Name
+	cfg.PgAddr = fixture.Addr
+	cfg.PgNoSSL = true
+	cfg.PgConns = 4
+	cs = &CertStream{
+		Config:    *cfg,
+		operators: map[string]*LogOperator{},
 	}
-
+	var err error
+	if db, err = NewPgDB(ctx, cs); err != nil {
+		t.Fatalf("NewPgDB failed: %v", err)
+	}
+	cs.db = db
+	t.Cleanup(db.Close)
 	return
 }
 
@@ -608,68 +567,4 @@ func gapsEqual(got []gap, want []gap) (equal bool) {
 		}
 	}
 	return
-}
-
-func randHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
-func run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	err := cmd.Run()
-	return buf.Bytes(), err
-}
-
-func dockerMappedPort(ctx context.Context, t testing.TB, cname, containerPort string) string {
-	t.Helper()
-
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		out, err := run(ctx, "docker", "port", cname, containerPort)
-		if err == nil {
-			lines := strings.SplitSeq(strings.TrimSpace(string(out)), "\n")
-			for ln := range lines {
-				if idx := strings.LastIndex(ln, ":"); idx > 0 && idx < len(ln)-1 {
-					return strings.TrimSpace(ln[idx+1:])
-				}
-			}
-		}
-		time.Sleep(300 * time.Millisecond)
-	}
-	t.Fatalf("timed out resolving mapped port for %s", containerPort)
-	return ""
-}
-
-func waitForPostgresQueryReady(ctx context.Context, t testing.TB, cname, user, pass, dbname string, timeout time.Duration) {
-	t.Helper()
-
-	deadline := time.Now().Add(timeout)
-	var lastOut []byte
-	var lastErr error
-
-	for time.Now().Before(deadline) {
-		out1, err1 := run(ctx, "docker", "exec", cname,
-			"pg_isready", "-h", "127.0.0.1", "-p", pgPort, "-U", user, "-d", dbname,
-		)
-		if err1 == nil && bytes.Contains(out1, []byte("accepting connections")) {
-			out2, err2 := run(ctx, "docker", "exec",
-				"-e", "PGPASSWORD="+pass, cname,
-				"psql", "-h", "127.0.0.1", "-p", pgPort, "-U", user, "-d", dbname,
-				"-tAc", "SELECT 1",
-			)
-			if err2 == nil && bytes.Equal(bytes.TrimSpace(out2), []byte("1")) {
-				return
-			}
-			lastOut, lastErr = out2, err2
-		} else {
-			lastOut, lastErr = out1, err1
-		}
-		time.Sleep(400 * time.Millisecond)
-	}
-
-	t.Fatalf("Postgres not query-ready within %s.\nLast error: %v\nLast output:\n%s", timeout, lastErr, string(lastOut))
 }
